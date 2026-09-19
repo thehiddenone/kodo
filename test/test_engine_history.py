@@ -118,7 +118,7 @@ def test_tool_results_from_messages_skips_non_dict_json() -> None:
 
 def test_divider_entry_shape() -> None:
     marker = {
-        "agent": "investigator",
+        "agent": "kodo_investigator",
         "display_name": "Investigator",
         "parent_display_name": "Guide",
         "failed": True,
@@ -126,7 +126,7 @@ def test_divider_entry_shape() -> None:
     }
     assert HistoryProjector._divider_entry("subsession_start", marker) == {
         "type": "subsession_start",
-        "agent": "investigator",
+        "agent": "kodo_investigator",
         "displayName": "Investigator",
         "parentDisplayName": "Guide",
         "failed": True,
@@ -490,19 +490,19 @@ async def test_history_entries_review_findings_marker(tmp_path: Path) -> None:
     transient._lines = [
         {
             "type": "review_findings",
-            "work_product_id": "proj/architect",
-            "agent": "architect",
-            "reviewer_name": "architect_critic",
+            "work_product_id": "proj/kodo_architect",
+            "agent": "kodo_architect",
+            "reviewer_name": "kodo_architect_critic",
             "iteration": 2,
             "max_rounds": 5,
             "paths": ["proj/specs/architecture.md"],
             "findings": [
                 {
-                    "id": "proj_architect_architecture_md_12",
+                    "id": "proj_kodo_architect_architecture_md_12",
                     "kind": "gap",
                     "description": "no requirement covers logout",
                     "state": "outstanding",
-                    "reported_by": "architect_critic",
+                    "reported_by": "kodo_architect_critic",
                     "locations": [
                         {
                             "path": "proj/specs/architecture.md",
@@ -522,19 +522,19 @@ async def test_history_entries_review_findings_marker(tmp_path: Path) -> None:
     assert entries == [
         {
             "type": "review_findings",
-            "workProductId": "proj/architect",
-            "agent": "architect",
-            "reviewerName": "architect_critic",
+            "workProductId": "proj/kodo_architect",
+            "agent": "kodo_architect",
+            "reviewerName": "kodo_architect_critic",
             "iteration": 2,
             "maxRounds": 5,
             "paths": ["proj/specs/architecture.md"],
             "findings": [
                 {
-                    "id": "proj_architect_architecture_md_12",
+                    "id": "proj_kodo_architect_architecture_md_12",
                     "kind": "gap",
                     "description": "no requirement covers logout",
                     "state": "outstanding",
-                    "reportedBy": "architect_critic",
+                    "reportedBy": "kodo_architect_critic",
                     "locations": [
                         {
                             "path": "proj/specs/architecture.md",
@@ -557,10 +557,10 @@ async def test_history_entries_does_not_splice_subsession_transcript(tmp_path: P
         {
             "type": "subsession_start",
             "subsession_id": "sub1",
-            "agent": "investigator",
+            "agent": "kodo_investigator",
             "display_name": "Investigator",
         },
-        {"type": "subsession_end", "subsession_id": "sub1", "agent": "investigator"},
+        {"type": "subsession_end", "subsession_id": "sub1", "agent": "kodo_investigator"},
     ]
     transient._subsessions["sub1"] = [
         {"role": "user", "kind": "subagent_task", "content": "look into it"},
@@ -652,8 +652,8 @@ async def test_full_history_collects_every_referenced_subsession(tmp_path: Path)
     projector, transient, _c = _make_projector(tmp_path)
     transient._lines = [
         {"role": "user", "content": "hi"},
-        {"type": "subsession_start", "subsession_id": "sub1", "agent": "investigator"},
-        {"type": "subsession_end", "subsession_id": "sub1", "agent": "investigator"},
+        {"type": "subsession_start", "subsession_id": "sub1", "agent": "kodo_investigator"},
+        {"type": "subsession_end", "subsession_id": "sub1", "agent": "kodo_investigator"},
     ]
     transient._subsessions["sub1"] = [{"role": "assistant", "content": "found it"}]
 
@@ -702,8 +702,8 @@ async def test_full_history_shares_checkpoint_cache_across_main_and_subsessions(
                 }
             ],
         },
-        {"type": "subsession_start", "subsession_id": "sub1", "agent": "investigator"},
-        {"type": "subsession_end", "subsession_id": "sub1", "agent": "investigator"},
+        {"type": "subsession_start", "subsession_id": "sub1", "agent": "kodo_investigator"},
+        {"type": "subsession_end", "subsession_id": "sub1", "agent": "kodo_investigator"},
     ]
     transient._subsessions["sub1"] = [
         {

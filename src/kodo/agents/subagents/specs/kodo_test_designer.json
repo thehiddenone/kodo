@@ -1,0 +1,29 @@
+{
+  "name": "kodo_test_designer",
+  "notes": "SubAgentSpec for `test_designer` (stage 5 author, critic = test_design_critic).",
+  "input_schema": {
+    "shape": "pipeline_input",
+    "input_paths": "Must include this component's Functional Design, the requirements, and the Tech Stack.",
+    "require_responsibility": true
+  },
+  "output_schema": {
+    "shape": "author_output"
+  },
+  "produces": {
+    "test_plan": "paths"
+  },
+  "consumes": [
+    {
+      "role": "functional_design",
+      "scope": "self"
+    },
+    {
+      "role": "requirements",
+      "scope": "global"
+    },
+    {
+      "role": "tech_stack",
+      "scope": "global"
+    }
+  ]
+}

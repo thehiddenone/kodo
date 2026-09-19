@@ -33,7 +33,7 @@ SCENARIO = Scenario(
     # would exercise it. The judge scores via the submit_evaluation tool.
     modes=Modes(
         autonomous=False,
-        agent="problem_solver",
+        agent="kodo_problem_solver",
         edit_control="allow_all",
         command_control="permissive",
     ),

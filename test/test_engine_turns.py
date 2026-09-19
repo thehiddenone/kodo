@@ -228,8 +228,8 @@ async def test_run_guide_with_input_delegates() -> None:
         calls.append((agent_name, text, attachments))
 
     engine._run_top_agent = _run_top_agent
-    await engine._run_top_agent("guide", "hello", ["a.png"])
-    assert calls == [("guide", "hello", ["a.png"])]
+    await engine._run_top_agent("kodo_guide", "hello", ["a.png"])
+    assert calls == [("kodo_guide", "hello", ["a.png"])]
 
 
 async def test_run_problem_solver_with_input_delegates() -> None:
@@ -240,8 +240,8 @@ async def test_run_problem_solver_with_input_delegates() -> None:
         calls.append((agent_name, text, attachments))
 
     engine._run_top_agent = _run_top_agent
-    await engine._run_top_agent("problem_solver", "fix it")
-    assert calls == [("problem_solver", "fix it", None)]
+    await engine._run_top_agent("kodo_problem_solver", "fix it")
+    assert calls == [("kodo_problem_solver", "fix it", None)]
 
 
 async def test_run_judge_with_input_delegates() -> None:
@@ -252,8 +252,8 @@ async def test_run_judge_with_input_delegates() -> None:
         calls.append((agent_name, text, attachments))
 
     engine._run_top_agent = _run_top_agent
-    await engine._run_top_agent("judge", "score it")
-    assert calls == [("judge", "score it", None)]
+    await engine._run_top_agent("kodo_judge", "score it")
+    assert calls == [("kodo_judge", "score it", None)]
 
 
 # ---------------------------------------------------------------------------
@@ -318,13 +318,13 @@ async def test_store_attachments_storage_failure_reports_error(tmp_path: Path) -
 
 def test_persist_main_messages_appends_each_message() -> None:
     engine = _base_engine()
-    persist = engine._persist_main_messages("guide")
+    persist = engine._persist_main_messages("kodo_guide")
 
     persist([Message(role="user", content="hi"), Message(role="assistant", content="hello")])
 
     assert engine._transient.appended == [
-        ("user", "hi", "guide", None),
-        ("assistant", "hello", "guide", None),
+        ("user", "hi", "kodo_guide", None),
+        ("assistant", "hello", "kodo_guide", None),
     ]
 
 
@@ -345,7 +345,7 @@ def _agent_turn_kwargs(**overrides: object) -> dict[str, object]:
         messages=[Message(role="user", content="go")],
         tools=[],
         stream_id="stream-1",
-        agent_name="guide",
+        agent_name="kodo_guide",
     )
     base.update(overrides)
     return base
@@ -372,7 +372,7 @@ async def test_run_agent_turn_no_tool_calls_text_only() -> None:
     assert messages[-1].content == "hello world"
     assert files == []
     assert engine._emitters.usage_calls[0][1] == "model-x"
-    assert engine._emitters.usage_calls[0][3] == "guide"
+    assert engine._emitters.usage_calls[0][3] == "kodo_guide"
 
 
 async def test_run_agent_turn_no_text_defaults_to_placeholder() -> None:
@@ -556,7 +556,7 @@ async def test_run_agent_turn_flush_before_dispatch_persists_before_tool_runs() 
     def persist(batch: list[Message]) -> None:
         persisted_batches.append(batch)
         for m in batch:
-            engine._transient.appended.append((m.role, m.content, "guide", None))
+            engine._transient.appended.append((m.role, m.content, "kodo_guide", None))
 
     await engine._run_agent_turn(
         **_agent_turn_kwargs(
@@ -767,7 +767,7 @@ async def test_dispatch_tool_calls_sends_prep_event_for_normal_tool(tmp_path: Pa
         tool_dispatch,
         {"run_command": "Run a command"},
         _tool_logger(tmp_path),
-        "guide",
+        "kodo_guide",
     )
 
     prep_events = [e for e in engine._sink.sent if e.payload.get("type") == "agent.tool_call_prep"]
@@ -788,7 +788,7 @@ async def test_dispatch_tool_calls_suppresses_prep_event_for_ask_user(tmp_path: 
         tool_dispatch,
         {},
         _tool_logger(tmp_path),
-        "guide",
+        "kodo_guide",
     )
 
     prep_events = [e for e in engine._sink.sent if e.payload.get("type") == "agent.tool_call_prep"]
@@ -806,7 +806,7 @@ async def test_dispatch_tool_calls_web_search_defaults_timeout(tmp_path: Path) -
         tool_dispatch,
         {},
         _tool_logger(tmp_path),
-        "guide",
+        "kodo_guide",
     )
 
     from kodo.runtime._engine._subagents import _DEFAULT_WEB_SEARCH_TIMEOUT_S
@@ -827,7 +827,7 @@ async def test_dispatch_tool_calls_passes_recovered_flag(tmp_path: Path) -> None
         tool_dispatch,
         {},
         _tool_logger(tmp_path),
-        "guide",
+        "kodo_guide",
         recovered_ids={"tu_1"},
     )
 
@@ -855,7 +855,7 @@ async def test_dispatch_tool_calls_turns_a_handler_crash_into_a_tool_result(
         tool_dispatch,
         {},
         _tool_logger(tmp_path),
-        "guide",
+        "kodo_guide",
     )
 
     assert len(results) == 1
@@ -890,7 +890,7 @@ async def test_dispatch_tool_calls_failure_boundary_is_per_call(tmp_path: Path) 
         tool_dispatch,
         {},
         _tool_logger(tmp_path),
-        "guide",
+        "kodo_guide",
     )
 
     assert dispatched == ["tu_1", "tu_2"]
@@ -919,7 +919,7 @@ async def test_dispatch_tool_calls_checkpoint_commit_crash_becomes_a_tool_result
         tool_dispatch,
         {},
         _tool_logger(tmp_path),
-        "guide",
+        "kodo_guide",
     )
 
     assert "error" in json.loads(str(results[0]["content"]))
@@ -951,7 +951,7 @@ async def test_dispatch_tool_calls_reraises_session_level_failures(
             tool_dispatch,
             {},
             _tool_logger(tmp_path),
-            "guide",
+            "kodo_guide",
         )
 
 
@@ -968,7 +968,7 @@ async def test_dispatch_tool_calls_uses_checkpoint_coordinator(tmp_path: Path) -
         tool_dispatch,
         {},
         _tool_logger(tmp_path),
-        "guide",
+        "kodo_guide",
     )
 
     assert engine._checkpoints.prepared == [("edit_file", {"path": "a.txt"})]
@@ -1081,11 +1081,11 @@ async def test_finalize_tool_result_records_guided_revision_for_guided_state_too
         {"operation": "delete_file", "path": "a.txt"},
         json.dumps(output),
         checkpoint=ref,
-        agent_name="architect",
+        agent_name="kodo_architect",
     )
 
     assert engine._checkpoints.guided_revisions[0][0] == "filesystem"
-    assert engine._checkpoints.guided_revisions[0][3] == "architect"
+    assert engine._checkpoints.guided_revisions[0][3] == "kodo_architect"
 
 
 async def test_finalize_tool_result_noncompliant_output_emits_incompliant_event() -> None:
@@ -1120,7 +1120,7 @@ def _engine_with_toolchain_builder_variant() -> WorkflowEngine:
 
     engine = _base_engine()
     variant = build_run_subagent_spec(
-        subagent_name="toolchain_builder",
+        subagent_name="kodo_toolchain_builder",
         display_name="Toolchain Builder",
         description="Sets up a project's build toolchain.",
         input_schema={"type": "object", "properties": {}, "required": []},
@@ -1147,9 +1147,9 @@ async def test_finalize_tool_result_run_subagent_fallback_stays_noncompliant() -
     result = await engine._finalize_tool_result(
         "tu_1",
         "run_subagent",
-        {"name": "toolchain_builder", "task_input": {}},
+        {"name": "kodo_toolchain_builder", "task_input": {}},
         json.dumps({"schema_compliance": False}),
-        agent_name="problem_solver",
+        agent_name="kodo_problem_solver",
     )
 
     parsed = json.loads(result)
@@ -1168,9 +1168,9 @@ async def test_finalize_tool_result_run_subagent_real_result_stays_compliant() -
     result = await engine._finalize_tool_result(
         "tu_1",
         "run_subagent",
-        {"name": "toolchain_builder", "task_input": {}},
+        {"name": "kodo_toolchain_builder", "task_input": {}},
         json.dumps({"mode_used": "bootstrap", "summary": "done", "schema_compliance": True}),
-        agent_name="problem_solver",
+        agent_name="kodo_problem_solver",
     )
 
     parsed = json.loads(result)
@@ -1191,7 +1191,7 @@ async def test_finalize_tool_result_run_subagent_unknown_target_falls_back_to_ca
         "run_subagent",
         {"name": "some_other_agent", "task_input": {}},
         json.dumps({"schema_compliance": False}),
-        agent_name="problem_solver",
+        agent_name="kodo_problem_solver",
     )
 
     # No crash, and — same pre-existing (imperfect) behavior for a target
@@ -1220,7 +1220,7 @@ def test_make_dispatcher_builds_real_tool_dispatcher() -> None:
     engine._root_paths = lambda: ()
     engine._util_paths = lambda: {}
 
-    dispatcher = engine._make_dispatcher("guide", "session-1")
+    dispatcher = engine._make_dispatcher("kodo_guide", "session-1")
 
     assert isinstance(dispatcher, ToolDispatcher)
     assert dispatcher.stop_requested is False
@@ -1238,13 +1238,13 @@ def test_make_dispatcher_resolves_project_root_from_current_project() -> None:
     engine._gate = SimpleNamespace()
     engine._security = None
     engine._session = SessionState(session_id="s1")
-    engine._session.effective_top_agent = "guide"
+    engine._session.effective_top_agent = "kodo_guide"
     engine._services = SimpleNamespace()
     engine._current_project = {"root": "/proj", "name": "x"}
     engine._root_paths = lambda: ()
     engine._util_paths = lambda: {}
 
-    dispatcher = engine._make_dispatcher("investigator", "session-2", deadline=123.0)
+    dispatcher = engine._make_dispatcher("kodo_investigator", "session-2", deadline=123.0)
     assert isinstance(dispatcher, ToolDispatcher)
 
 
@@ -1298,13 +1298,13 @@ def _top_agent_engine(*, gateway: _FakeGateway | None = None) -> WorkflowEngine:
 async def test_run_top_agent_persists_prompt_and_runs_turn() -> None:
     engine = _top_agent_engine()
 
-    await engine._run_top_agent("guide", "hello there")
+    await engine._run_top_agent("kodo_guide", "hello there")
 
     assert engine._transient.appended[0][0] == "user"
     assert engine._session.phase == "awaiting_user"
     assert engine._session.agent is None
-    assert engine._emitters.started == ["guide"]
-    assert engine._emitters.finished == ["guide"]
+    assert engine._emitters.started == ["kodo_guide"]
+    assert engine._emitters.finished == ["kodo_guide"]
     assert engine._compactor.auto_compact_calls == 1
     assert engine._compactor.noted == ["key-medium"]
 
@@ -1318,7 +1318,7 @@ async def test_run_top_agent_phase_done_is_not_overridden() -> None:
 
     engine._run_agent_turn = _run_agent_turn
 
-    await engine._run_top_agent("guide", "wrap up")
+    await engine._run_top_agent("kodo_guide", "wrap up")
 
     assert engine._session.phase == "done"
 
@@ -1330,7 +1330,7 @@ async def test_run_top_agent_with_attachments_sends_user_attachments_event(
     src = tmp_path / "note.txt"
     src.write_text("content")
 
-    await engine._run_top_agent("guide", "check this", [str(src)])
+    await engine._run_top_agent("kodo_guide", "check this", [str(src)])
 
     attach_events = [e for e in engine._sink.sent if e.payload.get("type") == "user.attachments"]
     assert len(attach_events) == 1
@@ -1340,7 +1340,7 @@ async def test_run_top_agent_with_attachments_sends_user_attachments_event(
 async def test_run_top_agent_attachment_errors_are_emitted() -> None:
     engine = _top_agent_engine()
 
-    await engine._run_top_agent("guide", "check this", ["/nonexistent/path.txt"])
+    await engine._run_top_agent("kodo_guide", "check this", ["/nonexistent/path.txt"])
 
     assert len(engine._emitters.errors) == 1
 
@@ -1348,6 +1348,6 @@ async def test_run_top_agent_attachment_errors_are_emitted() -> None:
 async def test_run_top_agent_blank_text_and_no_attachments_skips_message() -> None:
     engine = _top_agent_engine()
 
-    await engine._run_top_agent("guide", "")
+    await engine._run_top_agent("kodo_guide", "")
 
     assert engine._transient.appended == []

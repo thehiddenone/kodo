@@ -35,7 +35,7 @@ SCENARIO = Scenario(
     roots=[RootSpec(name="tictactoe")],
     modes=Modes(
         autonomous=False,
-        agent="problem_solver",
+        agent="kodo_problem_solver",
         edit_control="allow_all",
         command_control="permissive",
     ),

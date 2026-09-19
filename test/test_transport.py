@@ -105,10 +105,10 @@ def test_envelope_make_event_sets_type_in_payload() -> None:
     when the result is inspected,
     then payload['type'] equals the event_type.
     """
-    env = Envelope.make_event("agent.started", {"agent": "coder"})
+    env = Envelope.make_event("agent.started", {"agent": "kodo_coder"})
     assert env.kind == "event"
     assert env.payload["type"] == "agent.started"
-    assert env.payload["agent"] == "coder"
+    assert env.payload["agent"] == "kodo_coder"
 
 
 def test_envelope_make_stream_chunk_carries_text() -> None:

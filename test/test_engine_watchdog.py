@@ -402,7 +402,7 @@ async def test_on_stall_no_flags_is_a_pure_noop() -> None:
     engine = _watchdog_engine()
     del engine._registry  # proves display_name is never resolved on this path
     handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(
@@ -420,7 +420,7 @@ async def test_on_stall_settings_off_suppresses_a_real_stall() -> None:
         settings={"stuck_detection": {"active": "off"}},
     )
     handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -432,7 +432,7 @@ async def test_on_stall_settings_off_suppresses_a_real_stall() -> None:
 async def test_on_stall_local_only_ignores_cloud_residence() -> None:
     engine = _watchdog_engine(autonomous=True)  # default active="local_only"
     handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_CLOUD_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_CLOUD_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -443,7 +443,7 @@ async def test_on_stall_local_only_ignores_cloud_residence() -> None:
 async def test_on_stall_autonomous_nudges_immediately_and_persists() -> None:
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -456,7 +456,7 @@ async def test_on_stall_autonomous_nudges_immediately_and_persists() -> None:
     # specially instead of as a fake user-typed bubble.
     assert len(engine._transient.appended) == 1
     role, content, top_agent, kind, detail = engine._transient.appended[0]
-    assert (role, top_agent, kind) == ("user", "problem_solver", "nudge")
+    assert (role, top_agent, kind) == ("user", "kodo_problem_solver", "nudge")
     assert detail is not None
     assert detail["mode"] == "auto"
     assert detail["source"] == "stall"
@@ -481,7 +481,7 @@ async def test_on_stall_interactive_auto_unstuck_also_nudges_immediately() -> No
         },
     )
     handler = engine._make_stall_handler(
-        agent_name="guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(TurnSignal(text="", thinking_text="", stop_reason="max_tokens"))
@@ -498,7 +498,7 @@ async def test_on_stall_interactive_entry_turn_schedules_deferred_alarm() -> Non
     gate early — cancelled immediately after, so this stays fast."""
     engine = _watchdog_engine(autonomous=False, gate_answers=["unstick"])
     handler = engine._make_stall_handler(
-        agent_name="guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -522,7 +522,7 @@ async def test_on_stall_interactive_entry_turn_alarm_fires_and_unsticks(monkeypa
     monkeypatch.setattr(_watchdog, "_ENTRY_TURN_ALARM_DELAY_S", 0.01)
     engine = _watchdog_engine(autonomous=False, gate_answers=["unstick"])
     handler = engine._make_stall_handler(
-        agent_name="guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     decision = await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -547,7 +547,7 @@ async def test_on_stall_interactive_entry_turn_alarm_dismissed_queues_nothing(mo
     monkeypatch.setattr(_watchdog, "_ENTRY_TURN_ALARM_DELAY_S", 0.01)
     engine = _watchdog_engine(autonomous=False, gate_answers=["dismiss"])
     handler = engine._make_stall_handler(
-        agent_name="guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -568,7 +568,7 @@ async def test_on_stall_entry_turn_alarm_honors_a_new_turn_during_the_grace_peri
     monkeypatch.setattr(_watchdog, "_ENTRY_TURN_ALARM_DELAY_S", 0.01)
     engine = _watchdog_engine(autonomous=False, gate_answers=["unstick"])
     handler = engine._make_stall_handler(
-        agent_name="guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -594,7 +594,7 @@ async def test_on_stall_entry_turn_alarm_honors_phase_no_longer_idle(monkeypatch
     monkeypatch.setattr(_watchdog, "_ENTRY_TURN_ALARM_DELAY_S", 0.01)
     engine = _watchdog_engine(autonomous=False, gate_answers=["unstick"])
     handler = engine._make_stall_handler(
-        agent_name="guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_guide", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     await handler(TurnSignal(text="", thinking_text="", stop_reason="end_turn"))
@@ -619,7 +619,7 @@ async def test_on_stall_subagent_scope_asks_inline_no_delay() -> None:
         },
     )
     handler = engine._make_stall_handler(
-        agent_name="investigator",
+        agent_name="kodo_investigator",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -644,7 +644,7 @@ async def test_on_stall_subagent_scope_dismiss_does_not_retry() -> None:
         settings={"stuck_detection": {"active": "local_only", "scope": "top_level_and_subagents"}},
     )
     handler = engine._make_stall_handler(
-        agent_name="investigator",
+        agent_name="kodo_investigator",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -663,7 +663,7 @@ async def test_on_stall_subagent_scope_included_by_default() -> None:
     that turn at all (doc/STUCK_DETECTION.md §2.2/§2.10)."""
     engine = _watchdog_engine(autonomous=True)  # default settings, no override
     handler = engine._make_stall_handler(
-        agent_name="investigator",
+        agent_name="kodo_investigator",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -684,7 +684,7 @@ async def test_on_stall_subagent_scope_excluded_when_scope_set_to_top_level() ->
         settings={"stuck_detection": {"active": "local_only", "scope": "top_level"}},
     )
     handler = engine._make_stall_handler(
-        agent_name="investigator",
+        agent_name="kodo_investigator",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -703,7 +703,7 @@ async def test_on_stall_entry_turn_streak_escalates_to_critical_after_one_nudge(
     genuine response clears the streak."""
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     signal = TurnSignal(text="", thinking_text="", stop_reason="end_turn")
 
@@ -720,7 +720,7 @@ async def test_on_stall_entry_turn_streak_clears_on_a_genuine_response() -> None
     non-stalled round in between clears the streak."""
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     stalled = TurnSignal(text="", thinking_text="", stop_reason="end_turn")
     healthy = TurnSignal(
@@ -747,7 +747,7 @@ async def test_on_stall_entry_turn_streak_clears_on_a_successful_tool_call_round
     stall went critical because nothing had cleared _stuck_streak)."""
     engine = _watchdog_engine(autonomous=True)
     stall_handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     progress_handler = engine._make_progress_handler(is_top_agent_turn=True)
     assert progress_handler is not None
@@ -778,7 +778,7 @@ async def test_on_stall_subagent_stall_count_cap_gives_up_after_max_consecutive_
         settings={"stuck_detection": {"active": "local_only", "scope": "top_level_and_subagents"}},
     )
     handler = engine._make_stall_handler(
-        agent_name="investigator",
+        agent_name="kodo_investigator",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -803,7 +803,7 @@ async def test_on_stall_missing_return_result_nudges_once_then_fails() -> None:
     engine = _watchdog_engine()  # default settings, autonomous=False
     dispatcher = _FakeDispatcher(returned_output=None)
     handler = engine._make_stall_handler(
-        agent_name="toolchain_builder",
+        agent_name="kodo_toolchain_builder",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -836,7 +836,7 @@ async def test_on_stall_missing_return_result_is_independent_of_stuck_detection_
     engine = _watchdog_engine(settings={"stuck_detection": {"active": "off"}})
     dispatcher = _FakeDispatcher(returned_output=None)
     handler = engine._make_stall_handler(
-        agent_name="toolchain_builder",
+        agent_name="kodo_toolchain_builder",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -856,7 +856,7 @@ async def test_on_stall_skips_missing_return_result_nudge_once_return_result_is_
     engine = _watchdog_engine()
     dispatcher = _FakeDispatcher(returned_output={"schema_compliance": True})
     handler = engine._make_stall_handler(
-        agent_name="toolchain_builder",
+        agent_name="kodo_toolchain_builder",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -882,7 +882,7 @@ async def test_on_stall_missing_return_result_also_gates_the_stall_count_cap() -
     )
     dispatcher = _FakeDispatcher(returned_output=None)
     handler = engine._make_stall_handler(
-        agent_name="investigator",
+        agent_name="kodo_investigator",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -909,7 +909,7 @@ async def test_on_stall_missing_return_result_also_gates_the_stall_count_cap() -
 def test_make_cyclic_thinking_handler_returns_none_when_settings_off() -> None:
     engine = _watchdog_engine(settings={"stuck_detection": {"active": "off"}})
     handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is None
 
@@ -917,7 +917,7 @@ def test_make_cyclic_thinking_handler_returns_none_when_settings_off() -> None:
 def test_make_cyclic_thinking_handler_returns_none_for_cloud_when_local_only() -> None:
     engine = _watchdog_engine()  # default active="local_only"
     handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_CLOUD_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_CLOUD_ROUTING, is_top_agent_turn=True
     )
     assert handler is None
 
@@ -927,7 +927,7 @@ def test_make_cyclic_thinking_handler_returns_callable_for_subagent_by_default()
     — changed 2026-08-31, see the matching stall-handler test above."""
     engine = _watchdog_engine(autonomous=True)  # default settings, no override
     handler = engine._make_cyclic_thinking_handler(
-        agent_name="investigator",
+        agent_name="kodo_investigator",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -941,7 +941,7 @@ def test_make_cyclic_thinking_handler_returns_none_for_subagent_when_scope_is_to
         settings={"stuck_detection": {"active": "local_only", "scope": "top_level"}},
     )
     handler = engine._make_cyclic_thinking_handler(
-        agent_name="investigator",
+        agent_name="kodo_investigator",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -952,7 +952,7 @@ def test_make_cyclic_thinking_handler_returns_none_for_subagent_when_scope_is_to
 def test_make_cyclic_thinking_handler_returns_callable_when_enabled() -> None:
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is not None
 
@@ -960,7 +960,7 @@ def test_make_cyclic_thinking_handler_returns_callable_when_enabled() -> None:
 async def test_cyclic_thinking_handler_entry_turn_strike_one_notices_and_sets_streak() -> None:
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is not None
 
@@ -983,7 +983,7 @@ async def test_cyclic_thinking_handler_entry_turn_strike_one_notices_and_sets_st
     assert (role, content, top_agent, kind) == (
         "user",
         decision.message.content,
-        "problem_solver",
+        "kodo_problem_solver",
         "nudge",
     )
     assert detail["source"] == "cyclic_thinking"
@@ -997,7 +997,7 @@ async def test_cyclic_thinking_handler_entry_turn_strike_one_notices_and_sets_st
 async def test_cyclic_thinking_handler_entry_turn_strike_two_goes_critical() -> None:
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is not None
 
@@ -1017,10 +1017,10 @@ async def test_cyclic_streak_is_dedicated_from_ordinary_stuck_streak() -> None:
     either escalation's two-strike cap -- each gets its own streak."""
     engine = _watchdog_engine(autonomous=True)
     stall_handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     cyclic_handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert cyclic_handler is not None
 
@@ -1040,10 +1040,10 @@ async def test_cyclic_streak_is_dedicated_from_ordinary_stuck_streak() -> None:
 async def test_cyclic_streak_clears_on_a_genuine_response() -> None:
     engine = _watchdog_engine(autonomous=True)
     cyclic_handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     stall_handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert cyclic_handler is not None
 
@@ -1061,7 +1061,7 @@ async def test_cyclic_streak_clears_on_a_genuine_response() -> None:
 async def test_cyclic_streak_clears_on_a_successful_tool_call_round() -> None:
     engine = _watchdog_engine(autonomous=True)
     cyclic_handler = engine._make_cyclic_thinking_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     progress_handler = engine._make_progress_handler(is_top_agent_turn=True)
     assert cyclic_handler is not None
@@ -1083,7 +1083,7 @@ async def test_cyclic_thinking_handler_subagent_scope_capped_then_silent() -> No
         settings={"stuck_detection": {"active": "local_only", "scope": "top_level_and_subagents"}},
     )
     handler = engine._make_cyclic_thinking_handler(
-        agent_name="investigator",
+        agent_name="kodo_investigator",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -1109,7 +1109,7 @@ def test_make_think_in_tool_call_handler_always_returns_a_callable() -> None:
     protocol violation, not a stall heuristic."""
     engine = _watchdog_engine(settings={"stuck_detection": {"active": "off"}})
     handler = engine._make_think_in_tool_call_handler(
-        agent_name="problem_solver", is_top_agent_turn=True
+        agent_name="kodo_problem_solver", is_top_agent_turn=True
     )
     assert handler is not None
 
@@ -1117,7 +1117,7 @@ def test_make_think_in_tool_call_handler_always_returns_a_callable() -> None:
 async def test_think_in_tool_call_handler_entry_turn_strike_one_nudges_and_names_the_tool() -> None:
     engine = _watchdog_engine()
     handler = engine._make_think_in_tool_call_handler(
-        agent_name="problem_solver", is_top_agent_turn=True
+        agent_name="kodo_problem_solver", is_top_agent_turn=True
     )
 
     decision = await handler("run_subagent")
@@ -1129,7 +1129,7 @@ async def test_think_in_tool_call_handler_entry_turn_strike_one_nudges_and_names
     assert "not allowed to think inside a tool call" in decision.message.content
     assert engine._think_tag_streak is True
     role, content, top_agent, kind, detail = engine._transient.appended[0]
-    assert (role, top_agent, kind) == ("user", "problem_solver", "nudge")
+    assert (role, top_agent, kind) == ("user", "kodo_problem_solver", "nudge")
     assert detail["source"] == "think_in_tool_call"
     assert "run_subagent" in detail["ui_text"]
 
@@ -1137,7 +1137,7 @@ async def test_think_in_tool_call_handler_entry_turn_strike_one_nudges_and_names
 async def test_think_in_tool_call_handler_entry_turn_strike_two_goes_critical() -> None:
     engine = _watchdog_engine()
     handler = engine._make_think_in_tool_call_handler(
-        agent_name="problem_solver", is_top_agent_turn=True
+        agent_name="kodo_problem_solver", is_top_agent_turn=True
     )
 
     first = await handler("run_subagent")
@@ -1155,10 +1155,10 @@ async def test_think_in_tool_call_streak_is_dedicated_from_the_others() -> None:
     to trip an unrelated escalation."""
     engine = _watchdog_engine(autonomous=True)
     stall_handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     think_tag_handler = engine._make_think_in_tool_call_handler(
-        agent_name="problem_solver", is_top_agent_turn=True
+        agent_name="kodo_problem_solver", is_top_agent_turn=True
     )
 
     stall_decision = await stall_handler(
@@ -1177,10 +1177,10 @@ async def test_think_in_tool_call_streak_is_dedicated_from_the_others() -> None:
 async def test_think_in_tool_call_streak_clears_on_a_genuine_response() -> None:
     engine = _watchdog_engine(autonomous=True)
     think_tag_handler = engine._make_think_in_tool_call_handler(
-        agent_name="problem_solver", is_top_agent_turn=True
+        agent_name="kodo_problem_solver", is_top_agent_turn=True
     )
     stall_handler = engine._make_stall_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
 
     await think_tag_handler("run_subagent")
@@ -1197,7 +1197,7 @@ async def test_think_in_tool_call_streak_clears_on_a_genuine_response() -> None:
 async def test_think_in_tool_call_handler_subagent_scope_capped_then_silent() -> None:
     engine = _watchdog_engine()
     handler = engine._make_think_in_tool_call_handler(
-        agent_name="investigator", is_top_agent_turn=False, subsession_id="sub-1"
+        agent_name="kodo_investigator", is_top_agent_turn=False, subsession_id="sub-1"
     )
 
     decisions = [await handler("run_command") for _ in range(_MAX_CONSECUTIVE_NUDGES + 1)]
@@ -1216,7 +1216,7 @@ async def test_think_in_tool_call_handler_subagent_scope_capped_then_silent() ->
 def test_make_tool_call_cyclic_handler_returns_none_when_settings_off() -> None:
     engine = _watchdog_engine(settings={"stuck_detection": {"active": "off"}})
     handler = engine._make_tool_call_cyclic_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is None
 
@@ -1224,7 +1224,7 @@ def test_make_tool_call_cyclic_handler_returns_none_when_settings_off() -> None:
 def test_make_tool_call_cyclic_handler_returns_none_for_cloud_when_local_only() -> None:
     engine = _watchdog_engine()  # default active="local_only"
     handler = engine._make_tool_call_cyclic_handler(
-        agent_name="problem_solver", routing=_CLOUD_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_CLOUD_ROUTING, is_top_agent_turn=True
     )
     assert handler is None
 
@@ -1236,7 +1236,7 @@ def test_make_tool_call_cyclic_handler_returns_callable_for_subagent_by_default(
     elements (doc/STUCK_DETECTION.md §2.10)."""
     engine = _watchdog_engine(autonomous=True)  # default settings, no override
     handler = engine._make_tool_call_cyclic_handler(
-        agent_name="investigator",
+        agent_name="kodo_investigator",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -1247,7 +1247,7 @@ def test_make_tool_call_cyclic_handler_returns_callable_for_subagent_by_default(
 async def test_tool_call_cyclic_handler_entry_turn_strike_one_notices_and_sets_streak() -> None:
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_tool_call_cyclic_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is not None
 
@@ -1264,7 +1264,7 @@ async def test_tool_call_cyclic_handler_entry_turn_strike_one_notices_and_sets_s
     assert (role, content, top_agent, kind) == (
         "user",
         decision.message.content,
-        "problem_solver",
+        "kodo_problem_solver",
         "nudge",
     )
     assert detail["source"] == "tool_call_cyclic"
@@ -1277,7 +1277,7 @@ async def test_tool_call_cyclic_handler_entry_turn_strike_one_notices_and_sets_s
 async def test_tool_call_cyclic_handler_entry_turn_strike_two_goes_critical() -> None:
     engine = _watchdog_engine(autonomous=True)
     handler = engine._make_tool_call_cyclic_handler(
-        agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+        agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
     )
     assert handler is not None
 
@@ -1297,7 +1297,7 @@ async def test_tool_call_cyclic_handler_subagent_scope_capped_then_silent() -> N
         settings={"stuck_detection": {"active": "local_only", "scope": "top_level_and_subagents"}},
     )
     handler = engine._make_tool_call_cyclic_handler(
-        agent_name="investigator",
+        agent_name="kodo_investigator",
         routing=_LOCAL_ROUTING,
         is_top_agent_turn=False,
         subsession_id="sub-1",
@@ -1326,9 +1326,9 @@ def _agent_turn_kwargs(engine: WorkflowEngine, **overrides: object) -> dict[str,
         tools=[],
         tool_dispatch=None,
         stream_id="stream-1",
-        agent_name="problem_solver",
+        agent_name="kodo_problem_solver",
         on_stall=engine._make_stall_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+            agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
         on_tool_calls=engine._make_progress_handler(is_top_agent_turn=True),
     )
@@ -1534,7 +1534,7 @@ async def test_run_agent_turn_end_to_end_cyclic_thinking_aborts_and_recovers() -
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_cyclic_thinking=engine._make_cyclic_thinking_handler(
-                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+                agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
             ),
         )
     )
@@ -1567,7 +1567,7 @@ async def test_run_agent_turn_end_to_end_second_cyclic_hit_ends_turn_critical() 
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_cyclic_thinking=engine._make_cyclic_thinking_handler(
-                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+                agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
             ),
         )
     )
@@ -1604,7 +1604,7 @@ async def test_run_agent_turn_ordinary_stall_unaffected_by_cyclic_thinking_wirin
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_cyclic_thinking=engine._make_cyclic_thinking_handler(
-                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+                agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
             ),
         )
     )
@@ -1659,7 +1659,7 @@ async def test_run_agent_turn_end_to_end_think_in_tool_call_aborts_and_recovers(
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_think_in_tool_call=engine._make_think_in_tool_call_handler(
-                agent_name="problem_solver", is_top_agent_turn=True
+                agent_name="kodo_problem_solver", is_top_agent_turn=True
             ),
         )
     )
@@ -1693,7 +1693,7 @@ async def test_run_agent_turn_end_to_end_second_think_in_tool_call_hit_ends_turn
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_think_in_tool_call=engine._make_think_in_tool_call_handler(
-                agent_name="problem_solver", is_top_agent_turn=True
+                agent_name="kodo_problem_solver", is_top_agent_turn=True
             ),
         )
     )
@@ -1733,7 +1733,7 @@ async def test_run_agent_turn_end_to_end_think_in_tool_call_fires_with_stuck_det
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_think_in_tool_call=engine._make_think_in_tool_call_handler(
-                agent_name="problem_solver", is_top_agent_turn=True
+                agent_name="kodo_problem_solver", is_top_agent_turn=True
             ),
         )
     )
@@ -1779,7 +1779,7 @@ async def test_run_agent_turn_end_to_end_tool_call_cyclic_aborts_and_recovers() 
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_tool_call_cyclic=engine._make_tool_call_cyclic_handler(
-                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+                agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
             ),
         )
     )
@@ -1815,10 +1815,10 @@ async def test_run_agent_turn_end_to_end_think_tag_takes_priority_over_repetitio
             llm=fake_llm,
             tool_dispatch=tool_dispatch,
             on_think_in_tool_call=engine._make_think_in_tool_call_handler(
-                agent_name="problem_solver", is_top_agent_turn=True
+                agent_name="kodo_problem_solver", is_top_agent_turn=True
             ),
             on_tool_call_cyclic=engine._make_tool_call_cyclic_handler(
-                agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+                agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
             ),
         )
     )
@@ -1903,17 +1903,17 @@ async def test_repeated_tool_call_subagent_loop_is_caught_and_bounded() -> None:
         tools=[],
         tool_dispatch=tool_dispatch,
         stream_id="stream-1",
-        agent_name="requirements_critic",
+        agent_name="kodo_requirements_critic",
         subsession_model_key=None,
         on_stall=engine._make_stall_handler(
-            agent_name="requirements_critic",
+            agent_name="kodo_requirements_critic",
             routing=_LOCAL_ROUTING,
             is_top_agent_turn=False,
             subsession_id="sub-1",
             dispatcher=_FakeDispatcher(),
         ),
         on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
-            agent_name="requirements_critic",
+            agent_name="kodo_requirements_critic",
             routing=_LOCAL_ROUTING,
             is_top_agent_turn=False,
             subsession_id="sub-1",
@@ -1958,13 +1958,13 @@ async def test_repeated_tool_call_top_agent_loop_nudges_then_goes_critical() -> 
         tools=[],
         tool_dispatch=tool_dispatch,
         stream_id="stream-1",
-        agent_name="problem_solver",
+        agent_name="kodo_problem_solver",
         on_stall=engine._make_stall_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+            agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
         on_tool_calls=engine._make_progress_handler(is_top_agent_turn=True),
         on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+            agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
     )
 
@@ -2018,10 +2018,10 @@ async def test_repeated_tool_call_same_call_different_result_is_not_a_loop() -> 
         tools=[],
         tool_dispatch=tool_dispatch,
         stream_id="stream-1",
-        agent_name="problem_solver",
+        agent_name="kodo_problem_solver",
         on_tool_calls=engine._make_progress_handler(is_top_agent_turn=True),
         on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+            agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
     )
 
@@ -2065,7 +2065,7 @@ def test_make_repeated_tool_call_handler_returns_none_when_settings_off() -> Non
     engine = _watchdog_engine(settings={"stuck_detection": {"active": "off"}})
     assert (
         engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+            agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         )
         is None
     )
@@ -2075,7 +2075,7 @@ def test_make_repeated_tool_call_handler_returns_none_for_cloud_when_local_only(
     engine = _watchdog_engine()
     assert (
         engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_CLOUD_ROUTING, is_top_agent_turn=True
+            agent_name="kodo_problem_solver", routing=_CLOUD_ROUTING, is_top_agent_turn=True
         )
         is None
     )
@@ -2087,7 +2087,7 @@ def test_make_repeated_tool_call_handler_covers_subagents_by_default() -> None:
     engine = _watchdog_engine()
     assert (
         engine._make_repeated_tool_call_handler(
-            agent_name="requirements_critic",
+            agent_name="kodo_requirements_critic",
             routing=_LOCAL_ROUTING,
             is_top_agent_turn=False,
             subsession_id="sub-1",
@@ -2102,7 +2102,7 @@ def test_make_repeated_tool_call_handler_excluded_when_scope_is_top_level() -> N
     )
     assert (
         engine._make_repeated_tool_call_handler(
-            agent_name="requirements_critic",
+            agent_name="kodo_requirements_critic",
             routing=_LOCAL_ROUTING,
             is_top_agent_turn=False,
             subsession_id="sub-1",
@@ -2134,10 +2134,10 @@ async def test_repeated_tool_call_round_does_not_count_as_progress() -> None:
         tools=[],
         tool_dispatch=tool_dispatch,
         stream_id="stream-1",
-        agent_name="problem_solver",
+        agent_name="kodo_problem_solver",
         on_tool_calls=lambda: progress_rounds.append(len(gateway.calls)),
         on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+            agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
     )
 
@@ -2178,10 +2178,10 @@ async def test_progress_handler_still_fires_every_round_without_the_detector() -
         tools=[],
         tool_dispatch=tool_dispatch,
         stream_id="stream-1",
-        agent_name="problem_solver",
+        agent_name="kodo_problem_solver",
         on_tool_calls=lambda: progress_calls.append(1),
         on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+            agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
     )
 
@@ -2216,10 +2216,10 @@ async def test_repeated_tool_call_signature_uses_the_normalized_llm_visible_resu
         tools=[],
         tool_dispatch=tool_dispatch,
         stream_id="stream-1",
-        agent_name="problem_solver",
+        agent_name="kodo_problem_solver",
         on_tool_calls=engine._make_progress_handler(is_top_agent_turn=True),
         on_repeated_tool_calls=engine._make_repeated_tool_call_handler(
-            agent_name="problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
+            agent_name="kodo_problem_solver", routing=_LOCAL_ROUTING, is_top_agent_turn=True
         ),
     )
 

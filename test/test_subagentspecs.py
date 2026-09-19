@@ -34,7 +34,7 @@ _AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents"
 #: Where the sub-agent prompts themselves live, one level down.
 _SUBAGENTS_DIR = _AGENTS_DIR / SUBAGENTS_SUBDIR
 # Entry agents the user talks to directly; they have no caller and no spec.
-_ENTRY_AGENTS = {"guide", "problem_solver"}
+_ENTRY_AGENTS = {"kodo_guide", "kodo_problem_solver"}
 
 
 def _pipeline_author_names() -> set[str]:
@@ -49,7 +49,7 @@ def _pipeline_author_names() -> set[str]:
         agent.name
         for agent in registry.all_agents()
         if agent.critic and agent.name in _SPECS_BY_NAME
-    } | {"narrative_author"}
+    } | {"kodo_narrative_author"}
 
 
 _SPECS_BY_NAME = {s.name: s for s in ALL_SUBAGENTS}
@@ -92,7 +92,7 @@ def test_schemas_are_well_formed(spec: SubAgentSpec) -> None:
 
 def test_toolchain_builder_requires_project_path() -> None:
     """``project_path`` must be required so the agent never falls back to caller cwd."""
-    spec = _SPECS_BY_NAME["toolchain_builder"]
+    spec = _SPECS_BY_NAME["kodo_toolchain_builder"]
     assert "project_path" in spec.input_schema["properties"]
     assert "project_path" in spec.input_schema["required"]
 
@@ -236,7 +236,7 @@ def test_test_coder_output_is_solo_author_shape() -> None:
     Behavioral review of the Test Plan moved to ``test_design_critic``, so
     ``test_coder`` returns only the author shape (the test code + stubs it wrote).
     """
-    spec = _SPECS_BY_NAME["test_coder"]
+    spec = _SPECS_BY_NAME["kodo_test_coder"]
     assert spec.output_schema.get("oneOf") is None
     assert spec.output_schema.get("type") == "object"
     assert "paths" in spec.output_schema["properties"]  # type: ignore[index]
@@ -244,7 +244,7 @@ def test_test_coder_output_is_solo_author_shape() -> None:
 
 def test_test_coder_normalizes_author_output() -> None:
     """normalize_output accepts the solo author payload for test_coder."""
-    schema = _SPECS_BY_NAME["test_coder"].output_schema
+    schema = _SPECS_BY_NAME["kodo_test_coder"].output_schema
     _, author_ok = normalize_output(schema, {"paths": ["src/a.py"], "summary": "s"})
     assert author_ok
 
@@ -252,7 +252,7 @@ def test_test_coder_normalizes_author_output() -> None:
 def test_test_design_critic_vocabulary_leads_with_behavioral_kinds() -> None:
     """The behavioral kinds are this critic's whole reason to exist, so they must
     survive the move of the catalogue from schema enum to prompt prose."""
-    body = (_SUBAGENTS_DIR / "subagent_test_design_critic.md").read_text(encoding="utf-8")
+    body = (_SUBAGENTS_DIR / "subagent_kodo_test_design_critic.md").read_text(encoding="utf-8")
     vocabulary = body.split("### Concern vocabulary", 1)[1]
     assert "non_behavioral_test" in vocabulary
     assert "over_specified_test" in vocabulary
@@ -271,7 +271,7 @@ def test_return_result_with_engine_owned_compliance_key_stays_compliant() -> Non
     non-compliant — flagging the whole sub-agent run as failed. This mirrors the
     real toolchain-setup payload that exhibited the bug.
     """
-    spec = _SPECS_BY_NAME["toolchain_builder"]
+    spec = _SPECS_BY_NAME["kodo_toolchain_builder"]
     payload = {
         "scripts_created": ["scripts/build.sh"],
         "development_md_path": "DEVELOPMENT.md",
@@ -292,7 +292,7 @@ def test_engine_owned_compliance_key_does_not_mask_a_real_violation() -> None:
     A genuinely undeclared field is still dropped and still marks the result
     non-compliant even when ``schema_compliance`` rides along in the input.
     """
-    spec = _SPECS_BY_NAME["toolchain_builder"]
+    spec = _SPECS_BY_NAME["kodo_toolchain_builder"]
     payload = {
         "scripts_created": ["scripts/build.sh"],
         "development_md_path": "DEVELOPMENT.md",
@@ -312,7 +312,7 @@ def test_engine_owned_compliance_key_does_not_mask_a_real_violation() -> None:
 # "Conversation transcript to compact: …" user message, so the Input Parameters
 # note would describe a first message it never receives. It documents its real
 # input itself, in its own `## Your Input` section.
-_NO_TASK_INPUT_NOTE = {"compactor"}
+_NO_TASK_INPUT_NOTE = {"kodo_compactor"}
 
 
 def test_registry_auto_grants_return_result_and_input_parameters_note() -> None:
@@ -341,12 +341,12 @@ def test_guide_prompt_does_not_describe_its_subagents() -> None:
     it — never in the prompt. The ``{PLACEHOLDER:SUBAGENTS}`` roster that used to
     restate it there is gone; this pins that it stays gone."""
     registry = AgentRegistry(_AGENTS_DIR)
-    prompt = registry.get("guide").system_prompt
+    prompt = registry.get("kodo_guide").system_prompt
     assert "PLACEHOLDER" not in prompt
     assert "| Sub-agent |" not in prompt  # the roster table's header
     # The real property: no callee's own description is restated in the prompt.
     # It reaches the guide on the tool, and only there.
-    for name in registry.allowed_subagents("guide"):
+    for name in registry.allowed_subagents("kodo_guide"):
         purpose = registry.get(name).purpose
         if purpose:
             assert purpose.splitlines()[0] not in prompt, name
@@ -355,9 +355,9 @@ def test_guide_prompt_does_not_describe_its_subagents() -> None:
 def test_callee_schemas_reach_the_guide_through_its_tools() -> None:
     """The other half: what left the roster must be on the tools themselves."""
     registry = AgentRegistry(_AGENTS_DIR)
-    specs = {s.name: s for s in registry.run_subagent_specs("guide")}
+    specs = {s.name: s for s in registry.run_subagent_specs("kodo_guide")}
 
-    architect = specs["run_subagent_architect"]
+    architect = specs["run_subagent_kodo_architect"]
     # The caller says what to do; the engine works out which files that means.
     for engine_owned in ENGINE_OWNED_TASK_FIELDS:
         assert engine_owned not in architect.input_schema["properties"]  # type: ignore[index]
@@ -375,7 +375,7 @@ def test_callee_schemas_reach_the_guide_through_its_tools() -> None:
     # turns an intentional flag change into a spurious test failure.
     unreviewed = [
         name
-        for name in registry.allowed_subagents("guide")
+        for name in registry.allowed_subagents("kodo_guide")
         if f"run_subagent_{name}" in specs
         and not registry.get(name).critic
         and not registry.get(name).user_review
@@ -390,7 +390,7 @@ def test_callee_schemas_reach_the_guide_through_its_tools() -> None:
     # reports through the same `review` block and takes the same budget.
     gate_only = [
         name
-        for name in registry.allowed_subagents("guide")
+        for name in registry.allowed_subagents("kodo_guide")
         if f"run_subagent_{name}" in specs
         and registry.get(name).user_review
         and not registry.get(name).critic
@@ -405,7 +405,7 @@ def test_return_result_is_bound_to_each_agents_own_output_schema() -> None:
     """A sub-agent reads the shape it must produce off ``return_result``'s
     ``result`` parameter — the authoritative copy — rather than from prose."""
     registry = AgentRegistry(_AGENTS_DIR)
-    (spec,) = registry.return_result_specs("architect")
+    (spec,) = registry.return_result_specs("kodo_architect")
     result = spec.input_schema["properties"]["result"]  # type: ignore[index]
     assert "paths" in result["properties"]
     assert "end_to_end_testable" in result["properties"]
@@ -413,7 +413,7 @@ def test_return_result_is_bound_to_each_agents_own_output_schema() -> None:
     assert "schema_compliance" in result["properties"]
 
     # Entry agents never return a result to anybody, so they get no such tool.
-    assert registry.return_result_specs("guide") == []
+    assert registry.return_result_specs("kodo_guide") == []
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +487,7 @@ def test_code_critic_asks_for_nothing_its_contract_excludes() -> None:
     """It judges code AS code — the design, requirements and test plan its coder
     was handed are explicitly out of scope, and a declaration that does not ask
     for them needs no per-agent opt-out flag."""
-    roles = {need.role for need in _SPECS_BY_NAME["code_critic"].consumes}
+    roles = {need.role for need in _SPECS_BY_NAME["kodo_code_critic"].consumes}
     assert roles == {ROLE_CODE, ROLE_TECH_STACK}
 
 
@@ -511,7 +511,7 @@ def _tools_by_agent() -> dict[str, ToolSpec]:
     registry = AgentRegistry(_AGENTS_DIR)
     return {
         name: tool
-        for caller in ("guide", "problem_solver")
+        for caller in ("kodo_guide", "kodo_problem_solver")
         for name in registry.allowed_subagents(caller)
         for tool in registry.run_subagent_specs(caller)
         if tool.name == f"run_subagent_{name}"
@@ -630,7 +630,7 @@ def test_no_generated_tool_offers_a_responsibility_code_to_a_product_level_stage
     registry = AgentRegistry(_AGENTS_DIR)
     per_component = _per_component_specs()
     seen = set()
-    for caller in ("guide", "problem_solver"):
+    for caller in ("kodo_guide", "kodo_problem_solver"):
         for tool in registry.run_subagent_specs(caller):
             target = tool.name[len("run_subagent_") :]
             offered = RESPONSIBILITY_CODE_KEY in tool.input_schema["properties"]  # type: ignore[operator]

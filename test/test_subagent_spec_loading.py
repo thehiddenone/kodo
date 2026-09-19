@@ -134,11 +134,11 @@ def test_shapes_are_shared_not_copied() -> None:
     """
     by_name = {s.name: s for s in ALL_SUBAGENTS}
     # ``architect_critic`` names critic_output with no arguments.
-    assert by_name["architect_critic"].output_schema == critic_output()
+    assert by_name["kodo_architect_critic"].output_schema == critic_output()
     # ``coder`` names author_output with no extras, and pipeline_input per component.
-    assert by_name["coder"].output_schema == author_output()
-    assert by_name["coder"].input_schema == pipeline_input(
-        input_paths=_input_paths_description(by_name["coder"]),
+    assert by_name["kodo_coder"].output_schema == author_output()
+    assert by_name["kodo_coder"].input_schema == pipeline_input(
+        input_paths=_input_paths_description(by_name["kodo_coder"]),
         require_responsibility=True,
     )
 

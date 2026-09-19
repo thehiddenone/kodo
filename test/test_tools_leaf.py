@@ -1126,7 +1126,7 @@ async def test_requires_project_tool_dispatches_normally_with_workspace(tmp_path
     )
     (tmp_path / "specs").mkdir()
     (tmp_path / "specs" / "a.md").write_text("x", encoding="utf-8")
-    dispatcher = _make_dispatcher(tmp_path, has_workspace=True, agent_name="guide")
+    dispatcher = _make_dispatcher(tmp_path, has_workspace=True, agent_name="kodo_guide")
     result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
     assert "error" not in result
 
@@ -1153,7 +1153,7 @@ async def test_requires_project_gate_reads_has_workspace_live_within_one_turn(
         gate=_make_gate(),
         session=SessionState(),
         services=services,
-        agent_name="guide",
+        agent_name="kodo_guide",
         session_id="sess-test",
     )
 

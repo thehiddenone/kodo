@@ -204,7 +204,7 @@ async def test_list_reports_the_sessions_top_agent(manager_factory) -> None:  # 
     assert entry["taken"] is True
     # The picker row carries the resolved name *and* its label, so the client
     # renders it without a mapping of its own.
-    assert entry["agent"] == "problem_solver"
+    assert entry["agent"] == "kodo_problem_solver"
     assert entry["agent_label"] == "Problem Solver"
     assert entry["workspace"] is None  # no workspace.folders ever pushed
     # A freshly created session reports timestamps, seeded equal at creation.

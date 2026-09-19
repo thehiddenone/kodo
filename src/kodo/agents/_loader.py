@@ -112,6 +112,16 @@ class SubAgent:
             Which artifacts are worth a human's attention is a property of the
             artifact, not of whether someone happened to pair a critic with its
             author — which is what decided it before this flag existed.
+        version: The agent's own version string, from frontmatter ``version:``.
+            Free-form and never compared — it exists so an install can show the
+            user what they already have beside what they are about to get, and
+            let them decide (doc/USER_AGENTS.md §4). Empty when the frontmatter
+            omits it, which is the normal case for a **built-in** agent: the
+            registry stamps every packaged agent with :data:`kodo.__version__`
+            after load, because a built-in ships with Kōdo and has no version
+            of its own to declare. A *user* agent that omits it is shown as
+            ``"(unversioned)"`` in that comparison rather than being rejected —
+            a missing version is a reason to look, not a reason to refuse.
         is_top_level: ``True`` when this agent was loaded from an
             ``agent_<name>.md`` file rather than a ``subagent_<name>.md`` one —
             i.e. it is a **top-level agent**, the kind a user selects and talks
@@ -156,6 +166,7 @@ class SubAgent:
     standalone: bool = False
     user_review: bool = False
     planner: bool = False
+    version: str = ""
     is_top_level: bool = False
 
     @property
@@ -265,6 +276,7 @@ def load_agent(path: Path) -> SubAgent:
         standalone=standalone,
         user_review=user_review,
         planner=planner,
+        version=_scalar(fm_dict.get("version")),
         is_top_level=is_top_level,
     )
 

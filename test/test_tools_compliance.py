@@ -556,11 +556,11 @@ async def test_get_findings_compliance(tmp_path: Path) -> None:
     # Scoped, with a real backlog behind it, in both list modes. The key is a
     # work product id, and ids are minted from each finding's own first location
     # rather than a per-log counter — so they are read back, never hardcoded.
-    work_product = "proj/architect"
+    work_product = "proj/kodo_architect"
     apply_findings(
         findings_dir,
         work_product,
-        reviewer="architect_critic",
+        reviewer="kodo_architect_critic",
         updates=[
             {
                 "kind": "gap",
@@ -574,13 +574,13 @@ async def test_get_findings_compliance(tmp_path: Path) -> None:
             },
         ],
         project="proj",
-        agent="architect",
+        agent="kodo_architect",
     )
     first_id, second_id = [f["id"] for f in read_findings(findings_dir, work_product)]
     apply_findings(
         findings_dir,
         work_product,
-        reviewer="architect_critic",
+        reviewer="kodo_architect_critic",
         updates=[{"id": first_id, "state": "fixed"}],
     )
     scoped = _make_dispatcher(
@@ -617,7 +617,7 @@ async def test_get_plan_compliance(tmp_path: Path) -> None:
     # bare id. Neither is ever given a list of task bodies.
     create_plan(
         plan_dir,
-        created_by="planner",
+        created_by="kodo_planner",
         context="the parser lives in src/parse.py",
         tasks=[
             {"title": "Extract the parser", "instructions": "move it", "acceptance": "tests pass"},
@@ -653,7 +653,7 @@ async def test_plan_step_forward_compliance(tmp_path: Path) -> None:
     assert "error" in no_plan  # type: ignore[operator]
     create_plan(
         plan_dir,
-        created_by="planner",
+        created_by="kodo_planner",
         context="ctx",
         tasks=[{"title": "Only task", "instructions": "do the thing", "acceptance": "it is done"}],
     )
@@ -693,7 +693,7 @@ async def test_plan_step_forward_abandon_compliance(tmp_path: Path) -> None:
     assert "error" in empty  # type: ignore[operator]
     create_plan(
         plan_dir,
-        created_by="planner",
+        created_by="kodo_planner",
         context="ctx",
         tasks=[{"title": "first"}, {"title": "second"}],
     )
@@ -789,7 +789,7 @@ async def test_toolchain_deps_missing_dependencies_md_returns_remediation(tmp_pa
         gate=_FakeGate(),
         session=session,
         services=_NoDepsMdServices(),
-        agent_name="coder",
+        agent_name="kodo_coder",
         session_id="sess-test",
     )
     parsed = _assert_compliant(
@@ -803,7 +803,7 @@ async def test_toolchain_deps_missing_dependencies_md_returns_remediation(tmp_pa
     assert parsed["success"] is False
     assert parsed["status"] == "dependencies_md_missing"
     # The caller gets an actionable sub-prompt naming the toolchain-setup route.
-    assert "toolchain_builder" in parsed["message"]
+    assert "kodo_toolchain_builder" in parsed["message"]
     assert "run_subagent" in parsed["message"]
 
 
@@ -878,20 +878,20 @@ async def test_ask_user_rejects_malformed_batches(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_run_subagent_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="guide")
+    d = _make_dispatcher(tmp_path, agent_name="kodo_guide")
     _assert_compliant(
         "run_subagent",
         await _dispatch(
             d,
             "run_subagent",
-            {"name": "narrative_author", "task_input": {"instructions": "go"}},
+            {"name": "kodo_narrative_author", "task_input": {"instructions": "go"}},
         ),
     )
 
 
 @pytest.mark.asyncio
 async def test_return_result_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="coder")
+    d = _make_dispatcher(tmp_path, agent_name="kodo_coder")
     _assert_compliant(
         "return_result",
         await _dispatch(
@@ -909,7 +909,7 @@ async def test_return_result_captures_normalized_output_and_stops(tmp_path: Path
         "properties": {"verdict": {"type": "string"}, "concerns": {"type": "array"}},
         "required": ["verdict", "concerns"],
     }
-    d = _make_dispatcher(tmp_path, agent_name="architect_critic", output_schema=schema)
+    d = _make_dispatcher(tmp_path, agent_name="kodo_architect_critic", output_schema=schema)
     await _dispatch(
         d,
         "return_result",
@@ -926,7 +926,7 @@ async def test_return_result_captures_normalized_output_and_stops(tmp_path: Path
 
 @pytest.mark.asyncio
 async def test_rollback_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="guide")
+    d = _make_dispatcher(tmp_path, agent_name="kodo_guide")
     _assert_compliant(
         "rollback", await _dispatch(d, "rollback", {"root": "proj", "target_sha": "abc123"})
     )
@@ -939,13 +939,13 @@ async def test_rollback_compliance(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_finalize_project_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="guide")
+    d = _make_dispatcher(tmp_path, agent_name="kodo_guide")
     _assert_compliant("finalize_project", await _dispatch(d, "finalize_project", {}))
 
 
 @pytest.mark.asyncio
 async def test_disable_autonomous_mode_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="guide")
+    d = _make_dispatcher(tmp_path, agent_name="kodo_guide")
     _assert_compliant(
         "disable_autonomous_mode",
         await _dispatch(d, "disable_autonomous_mode", {"reason": "loop"}),
@@ -954,7 +954,7 @@ async def test_disable_autonomous_mode_compliance(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_scaffold_new_project_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path, agent_name="guide")
+    d = _make_dispatcher(tmp_path, agent_name="kodo_guide")
     # No `path`: the create-new-project (name-based) branch.
     _assert_compliant(
         "scaffold_new_project",
@@ -992,7 +992,7 @@ async def test_web_search_compliance(tmp_path: Path) -> None:
     # WebSearchTool is a thin wrapper: it validates/clamps input and returns
     # whatever the web_search agent (via EngineServices.run_web_search_agent)
     # produced, verbatim.
-    d = _make_dispatcher(tmp_path, agent_name="investigator")
+    d = _make_dispatcher(tmp_path, agent_name="kodo_investigator")
     parsed = _assert_compliant(
         "web_search",
         await _dispatch(d, "web_search", {"query": "how to parse RFC 3339 in python"}),
@@ -1010,7 +1010,7 @@ async def test_web_search_compliance(tmp_path: Path) -> None:
         gate=_FakeGate(),
         session=session,
         services=_WebSearchAgentFailsServices(),
-        agent_name="investigator",
+        agent_name="kodo_investigator",
         session_id="sess-test",
     )
     failed = _assert_compliant(
@@ -1035,7 +1035,7 @@ async def test_read_webpage_compliance(tmp_path: Path, monkeypatch: pytest.Monke
             return None
 
     monkeypatch.setattr("kodo.tools._read_webpage.BrowserSession", _NoBrowserSession)
-    d = _make_dispatcher(tmp_path, agent_name="investigator")
+    d = _make_dispatcher(tmp_path, agent_name="kodo_investigator")
     _assert_compliant(
         "read_webpage",
         await _dispatch(d, "read_webpage", {"url": "https://example.com/docs"}),

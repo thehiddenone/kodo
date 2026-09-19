@@ -29,7 +29,7 @@ SCENARIO = Scenario(
     # toolchain_builder for Kotlin.
     modes=Modes(
         autonomous=False,
-        agent="problem_solver",
+        agent="kodo_problem_solver",
         edit_control="allow_all",
         command_control="permissive",
     ),

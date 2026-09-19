@@ -305,20 +305,22 @@ async def test_agent_set_accepts_a_non_selectable_agent(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
     sid = str((await _hello(ws)).payload["session_id"])
-    req = _make_request("agent.set", session_id=sid, name="judge")
+    req = _make_request("agent.set", session_id=sid, name="kodo_judge")
     await ws.send_str(req.to_json())
     resp = await _recv_response(ws, req.id)
     assert resp.payload["type"] == "agent.accepted"
 
 
-async def test_agent_set_resolves_a_legacy_workflow_value(
+async def test_agent_set_falls_back_when_the_name_is_unknown(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
-    """A session still speaking the old vocabulary keeps working.
+    """An unrecognized selection is answered with the default, not an error.
 
-    Uses ``"guided"`` rather than ``"problem_solving"`` on purpose: the latter
-    resolves to the agent a new session already starts on, so it could pass
-    without resolving anything.
+    Uses ``"guided"`` on purpose: it is the pre-``kodo_`` vocabulary, which is
+    exactly the unknown name a client or a stored setting is most likely to
+    still be carrying. ``agent.set`` is a *selection* path, where falling back
+    keeps the session usable; resuming a session is the path that reports the
+    missing agent instead.
     """
     sid = str((await _hello(ws)).payload["session_id"])
     req = _make_request("agent.set", session_id=sid, name="guided")
@@ -342,8 +344,8 @@ async def test_agent_set_resolves_a_legacy_workflow_value(
 
     assert accepted, "agent.set was never acknowledged"
     # The state event carries the *resolved* name, so a client that sent an
-    # alias sees the agent it actually got rather than the value it typed.
-    assert resolved == "guide"
+    # unknown value sees the agent it actually got rather than what it typed.
+    assert resolved == "kodo_problem_solver"
 
 
 async def test_default_agent_get_reports_selection_and_effect(
@@ -368,18 +370,18 @@ async def test_default_agent_set_changes_what_a_new_session_starts_on(
 ) -> None:
     """The user's pick beats the shipped default, and reaches hello.ack."""
     await _hello(ws)
-    req = _make_request("default_agent.set", name="guide")
+    req = _make_request("default_agent.set", name="kodo_guide")
     await ws.send_str(req.to_json())
     resp = await _recv_response(ws, req.id)
     assert resp.payload["ok"] is True
-    assert resp.payload["selected"] == "guide"
-    assert resp.payload["effective"] == "guide"
+    assert resp.payload["selected"] == "kodo_guide"
+    assert resp.payload["effective"] == "kodo_guide"
 
     # Read back over a fresh connection: the preference is persisted, and the
     # catalog a new session is handed now names it as the starting agent.
     req = _make_request("default_agent.get")
     await ws.send_str(req.to_json())
-    assert (await _recv_response(ws, req.id)).payload["effective"] == "guide"
+    assert (await _recv_response(ws, req.id)).payload["effective"] == "kodo_guide"
 
 
 async def test_default_agent_set_rejects_a_non_selectable_agent(
@@ -387,11 +389,11 @@ async def test_default_agent_set_rejects_a_non_selectable_agent(
 ) -> None:
     """A session must not be able to start on an agent with no interactive prompt."""
     await _hello(ws)
-    req = _make_request("default_agent.set", name="judge")
+    req = _make_request("default_agent.set", name="kodo_judge")
     await ws.send_str(req.to_json())
     resp = await _recv_response(ws, req.id)
     assert resp.payload["ok"] is False
-    assert "judge" in resp.payload["error"]
+    assert "kodo_judge" in resp.payload["error"]
 
     req = _make_request("default_agent.get")
     await ws.send_str(req.to_json())
@@ -402,7 +404,7 @@ async def test_default_agent_set_empty_clears_the_preference(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
     await _hello(ws)
-    for name in ("guide", ""):
+    for name in ("kodo_guide", ""):
         req = _make_request("default_agent.set", name=name)
         await ws.send_str(req.to_json())
         assert (await _recv_response(ws, req.id)).payload["ok"] is True
@@ -479,7 +481,7 @@ async def test_session_list_includes_open_session(ws: aiohttp.ClientWebSocketRes
     assert entry["taken"] is True
     # The picker row carries the resolved name *and* its label, so the client
     # renders it without a mapping of its own.
-    assert entry["agent"] == "problem_solver"
+    assert entry["agent"] == "kodo_problem_solver"
     assert entry["agent_label"] == "Problem Solver"
 
 

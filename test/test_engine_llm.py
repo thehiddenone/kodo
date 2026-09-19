@@ -684,17 +684,18 @@ def test_clear_llm_request_logs_removes_files_and_dirs(tmp_path: Path) -> None:
     ("selection", "expected"),
     [
         # Agent names, the vocabulary the selection is moving to...
-        ("problem_solver", "problem_solver"),
-        ("guide", "guide"),
-        ("judge", "judge"),
-        # ...and the legacy workflow-mode aliases a persisted session still holds.
-        ("problem_solving", "problem_solver"),
-        ("guided", "guide"),
+        ("kodo_problem_solver", "kodo_problem_solver"),
+        ("kodo_guide", "kodo_guide"),
+        ("kodo_judge", "kodo_judge"),
+        # ...while the pre-``kodo_`` vocabulary now resolves to nothing: the
+        # aliases went with the rename, so these are unknown names.
+        ("problem_solving", "kodo_problem_solver"),
+        ("guided", "kodo_problem_solver"),
         # Anything unrecognized resolves to the registry's declared default
         # (problem_solver) rather than failing: this runs on every prompt
         # and every resume.
-        ("anything_else", "problem_solver"),
-        ("", "problem_solver"),
+        ("anything_else", "kodo_problem_solver"),
+        ("", "kodo_problem_solver"),
     ],
 )
 def test_top_agent_name(selection: str, expected: str) -> None:
@@ -706,7 +707,7 @@ def test_top_agent_name(selection: str, expected: str) -> None:
 
 def test_top_agent_capability_reads_registry() -> None:
     engine = _make_engine()
-    engine._session.top_agent = "guide"
+    engine._session.top_agent = "kodo_guide"
     engine._registry = SimpleNamespace(
         get=lambda name: SimpleNamespace(capability="high"),
         resolve_top_agent=lambda value: value,
@@ -716,7 +717,7 @@ def test_top_agent_capability_reads_registry() -> None:
 
 def test_top_agent_capability_defaults_to_medium_on_error() -> None:
     engine = _make_engine()
-    engine._session.top_agent = "guide"
+    engine._session.top_agent = "kodo_guide"
 
     def _raise(name: str):
         raise RuntimeError("not registered")

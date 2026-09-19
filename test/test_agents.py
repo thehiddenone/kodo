@@ -682,9 +682,9 @@ def _tool_by_name(specs: list[ToolSpec], name: str) -> ToolSpec:
 # ``run_subagent_specs`` only mints a tool for a *schema-bearing* sub-agent, and
 # the specs are a real global registry — so these fixtures reuse real agent
 # names (with controlled bodies) rather than invented ones.
-_REAL_WORKFLOW_AGENT = "architect"  # workflow stage, reviewed by a critic
-_REAL_CRITIC_AGENT = "architect_critic"  # its critic — never invocable
-_REAL_STANDALONE_AGENT = "investigator"  # standalone specialist, no critic
+_REAL_WORKFLOW_AGENT = "kodo_architect"  # workflow stage, reviewed by a critic
+_REAL_CRITIC_AGENT = "kodo_architect_critic"  # its critic — never invocable
+_REAL_STANDALONE_AGENT = "kodo_investigator"  # standalone specialist, no critic
 
 
 def _write_callee_fixture(tmp_path: Path) -> None:
@@ -797,18 +797,18 @@ def test_shipped_guide_tools_carry_every_pipeline_pairing() -> None:
     tracks the frontmatter instead of duplicating it.
     """
     registry = AgentRegistry(_REAL_AGENTS_DIR)
-    specs = {s.name: s for s in registry.run_subagent_specs("guide")}
+    specs = {s.name: s for s in registry.run_subagent_specs("kodo_guide")}
     # narrative_author is the one pipeline stage with no critic.
-    assert "workflow stage" in specs["run_subagent_narrative_author"].description
+    assert "workflow stage" in specs["run_subagent_kodo_narrative_author"].description
     for author in (
-        "architect",
-        "requirements_author",
-        "functional_designer",
-        "test_designer",
-        "test_coder",
-        "coder",
-        "e2e_test_designer",
-        "e2e_test_coder",
+        "kodo_architect",
+        "kodo_requirements_author",
+        "kodo_functional_designer",
+        "kodo_test_designer",
+        "kodo_test_coder",
+        "kodo_coder",
+        "kodo_e2e_test_designer",
+        "kodo_e2e_test_coder",
     ):
         critic = registry.get(author).critic
         assert critic, f"{author} is expected to be a reviewed stage"
@@ -816,18 +816,19 @@ def test_shipped_guide_tools_carry_every_pipeline_pairing() -> None:
         assert f"`{critic}`" in description
         assert "workflow stage" in description
     # No critic is ever invocable in its own right.
-    for critic_name in ("architect_critic", "code_critic", "test_design_critic"):
+    for critic_name in ("kodo_architect_critic", "kodo_code_critic", "kodo_test_design_critic"):
         assert f"run_subagent_{critic_name}" not in specs
     # The toolchain agent and the shared investigator are the adjunct entries.
-    for name in ("toolchain_builder", "investigator"):
+    for name in ("kodo_toolchain_builder", "kodo_investigator"):
         assert "standalone specialist" in specs[f"run_subagent_{name}"].description
 
 
 def test_shipped_problem_solver_delegates_to_four_standalone_specialists() -> None:
     registry = AgentRegistry(_REAL_AGENTS_DIR)
-    specs = {s.name: s for s in registry.run_subagent_specs("problem_solver")}
+    specs = {s.name: s for s in registry.run_subagent_specs("kodo_problem_solver")}
     assert set(specs) == {
-        f"run_subagent_{n}" for n in ("investigator", "planner", "developer", "toolchain_builder")
+        f"run_subagent_{n}"
+        for n in ("kodo_investigator", "kodo_planner", "kodo_developer", "kodo_toolchain_builder")
     }
     for spec in specs.values():
         assert "standalone specialist" in spec.description
@@ -841,7 +842,7 @@ def test_real_judge_has_scoped_toolchain_build_tool() -> None:
     execution, editing, or sub-agent capability.
     """
     registry = AgentRegistry(_REAL_AGENTS_DIR)
-    agent = registry.get("judge")
+    agent = registry.get("kodo_judge")
     assert agent.tools == frozenset(
         {"read_file", "find_files", "find_text_in_files", "toolchain_build", "submit_evaluation"}
     )
@@ -1422,8 +1423,8 @@ def test_the_shipped_planner_satisfies_its_own_contract() -> None:
     against a copy of its frontmatter — so renaming its output fields fails here."""
     registry = AgentRegistry(_REAL_AGENTS_DIR)
     planners = [a.name for a in registry.all_agents() if a.planner]
-    assert planners == ["planner"], planners
-    spec = registry.spec_for("planner")
+    assert planners == ["kodo_planner"], planners
+    spec = registry.spec_for("kodo_planner")
     assert spec is not None
     properties = spec.output_schema["properties"]
     assert isinstance(properties, dict)

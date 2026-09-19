@@ -189,9 +189,9 @@ def test_session_name_reads_from_transient(tmp_path: Path) -> None:
 
 
 def test_agent_available_true_for_known_agent(tmp_path: Path) -> None:
-    registry = _FakeRegistry(known={"guide": SimpleNamespace(capability="medium")})
+    registry = _FakeRegistry(known={"kodo_guide": SimpleNamespace(capability="medium")})
     engine, _t, _s, _g = _make_engine(tmp_path, registry=registry)
-    assert engine._agent_available("guide") is True
+    assert engine._agent_available("kodo_guide") is True
 
 
 def test_agent_available_false_for_unknown_agent(tmp_path: Path) -> None:
@@ -221,7 +221,7 @@ async def test_start_resumed_session_restores_prefs_and_messages(tmp_path: Path)
     kodo_dir = tmp_path / "home"
     seed_transient = TransientStore(kodo_dir)
     seed_transient.attach_session("session-2", resumed=False)
-    seed_transient.append_message("user", "hello from before", top_agent="guide")
+    seed_transient.append_message("user", "hello from before", top_agent="kodo_guide")
     seed_transient.update(
         autonomous=True,
         top_agent="problem_solving",
@@ -237,7 +237,7 @@ async def test_start_resumed_session_restores_prefs_and_messages(tmp_path: Path)
         assert engine._session.autonomous is True
         # Seeded as a legacy workflow-mode value; resume resolves it to the
         # agent it names, which is the whole point of keeping the aliases.
-        assert engine._session.top_agent == "problem_solver"
+        assert engine._session.top_agent == "kodo_problem_solver"
         assert engine._session.edit_control == "allow_all"
         assert engine._session.command_control == "permissive"
         assert engine._compactor.context_tokens > 0
@@ -274,7 +274,7 @@ async def test_start_resumed_with_dangling_tool_use_sets_resume_pending(tmp_path
     seed_transient.append_message(
         "assistant",
         [{"type": "tool_use", "id": "tu_1", "name": "run_command", "input": {}}],
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
 
     engine, _transient, _s, _g = _make_engine(tmp_path)
@@ -563,7 +563,7 @@ async def test_stop_while_running_persists_interrupted_turn(tmp_path: Path) -> N
     try:
         await engine.start("s1", resumed=False)
         engine._session.phase = "running"
-        engine._session.agent = "guide"
+        engine._session.agent = "kodo_guide"
         engine._main_messages = [Message(role="user", content="go")]
 
         await engine.stop()
@@ -589,7 +589,7 @@ async def test_stop_while_in_subsession_closes_it_and_tags_correct_top_agent(
     try:
         await engine.start("s1", resumed=False)
         # Simulate: the guide's turn flushed a dangling run_subagent tool_use
-        # to disk (tagged top_agent="guide") before dispatch, then
+        # to disk (tagged top_agent="kodo_guide") before dispatch, then
         # _open_subsession/_drive_subsession took over -- overwriting
         # session.agent to the sub-agent's own name, exactly as the real
         # _drive_subsession does, and leaving active_subsession set (the
@@ -600,17 +600,17 @@ async def test_stop_while_in_subsession_closes_it_and_tags_correct_top_agent(
             content=[{"type": "tool_use", "id": "tu_1", "name": "run_subagent", "input": {}}],
         )
         engine._main_messages = [Message(role="user", content="go"), dangling]
-        transient.append_message("assistant", dangling.content, top_agent="guide")
+        transient.append_message("assistant", dangling.content, top_agent="kodo_guide")
         transient.update(
             active_subsession={
                 "subsession_id": "sub1",
-                "agent": "investigator",
+                "agent": "kodo_investigator",
                 "display_name": "Investigator",
                 "parent_display_name": "Guide",
             }
         )
         engine._session.phase = "running"
-        engine._session.agent = "investigator"
+        engine._session.agent = "kodo_investigator"
 
         await engine.stop()
 
@@ -622,9 +622,9 @@ async def test_stop_while_in_subsession_closes_it_and_tags_correct_top_agent(
         ]
         assert stopped_notices
         # Tagged with the true top-level entry agent recovered via
-        # _last_top_agent(), not "investigator" (session.agent's stale
+        # _last_top_agent(), not "kodo_investigator" (session.agent's stale
         # value while a subsession is active).
-        assert stopped_notices[-1]["top_agent"] == "guide"
+        assert stopped_notices[-1]["top_agent"] == "kodo_guide"
 
         ended = [env for env in sink.sent if env.payload.get("type") == "subsession.ended"]
         assert ended
@@ -665,16 +665,17 @@ async def test_handle_mode_set_updates_session_and_persists(tmp_path: Path) -> N
     ("mode", "expected"),
     [
         # Agent names round-trip.
-        ("problem_solver", "problem_solver"),
-        ("guide", "guide"),
-        ("judge", "judge"),
-        # Legacy workflow-mode values still select the right agent, and are
-        # stored *resolved* — a client that sent an alias sees what it got.
-        ("problem_solving", "problem_solver"),
-        ("guided", "guide"),
+        ("kodo_problem_solver", "kodo_problem_solver"),
+        ("kodo_guide", "kodo_guide"),
+        ("kodo_judge", "kodo_judge"),
+        # The pre-``kodo_`` vocabulary resolves to nothing now — aliases went
+        # with the rename — so an old value is simply unrecognized and lands on
+        # the default like any other unknown name.
+        ("problem_solving", "kodo_problem_solver"),
+        ("guided", "kodo_problem_solver"),
         # Anything unrecognized lands on the registry's declared default.
-        ("bogus", "problem_solver"),
-        ("", "problem_solver"),
+        ("bogus", "kodo_problem_solver"),
+        ("", "kodo_problem_solver"),
     ],
 )
 async def test_handle_agent_set_resolves_and_stores_the_agent_name(
@@ -1467,7 +1468,7 @@ async def test_run_rollback_resets_session_state(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _work_product(paths: list[str], agent: str = "architect") -> WorkProduct:
+def _work_product(paths: list[str], agent: str = "kodo_architect") -> WorkProduct:
     return WorkProduct(
         id=f"proj/{agent}",
         project="proj",
@@ -1478,7 +1479,7 @@ def _work_product(paths: list[str], agent: str = "architect") -> WorkProduct:
 
 
 def _author(
-    name: str = "architect", *, user_review: bool = True, critic: str = "architect_critic"
+    name: str = "kodo_architect", *, user_review: bool = True, critic: str = "kodo_architect_critic"
 ) -> SubAgent:
     """A minimal loaded author, for the frontmatter flags finalize reads.
 
@@ -1523,10 +1524,10 @@ def _seed_tracked_doc(project_root: Path, rel_path: str) -> Path:
         doc,
         project_root,
         commit_hash="sha-1",
-        author="architect",
+        author="kodo_architect",
         tool="filesystem",
         summary="create",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
     return doc
 
@@ -1712,7 +1713,7 @@ async def test_approval_closes_the_backlog_when_the_author_has_no_critic(
         "an earlier objection",
         path="proj/specs/a.md",
         project="proj",
-        agent="architect",
+        agent="kodo_architect",
     )
 
     await engine._finalize_work_product(work_product)
@@ -1745,7 +1746,7 @@ async def test_approval_leaves_the_backlog_alone_when_a_critic_exists(
         "an earlier objection",
         path="proj/specs/a.md",
         project="proj",
-        agent="architect",
+        agent="kodo_architect",
     )
 
     await engine._finalize_work_product(work_product)

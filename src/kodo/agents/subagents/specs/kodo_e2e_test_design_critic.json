@@ -1,0 +1,41 @@
+{
+  "name": "kodo_e2e_test_design_critic",
+  "notes": "SubAgentSpec for `e2e_test_design_critic` (stage 8 critic).",
+  "input_schema": {
+    "shape": "pipeline_input",
+    "input_paths": "The End-to-End Test Plan under review, plus the architecture, requirements, Narrative, Tech Stack, Design Plan, and all Functional Designs."
+  },
+  "output_schema": {
+    "shape": "critic_output"
+  },
+  "consumes": [
+    {
+      "role": "e2e_test_plan",
+      "scope": "under_review"
+    },
+    {
+      "role": "architecture",
+      "scope": "global"
+    },
+    {
+      "role": "requirements",
+      "scope": "global"
+    },
+    {
+      "role": "narrative",
+      "scope": "global"
+    },
+    {
+      "role": "tech_stack",
+      "scope": "global"
+    },
+    {
+      "role": "design_plan",
+      "scope": "global"
+    },
+    {
+      "role": "functional_design",
+      "scope": "all"
+    }
+  ]
+}

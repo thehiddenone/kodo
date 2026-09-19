@@ -109,7 +109,7 @@ def test_render_transcript_labels_tool_results_separately() -> None:
 
     The engine appends them as ``role="user"`` messages, but the compactor
     preserves ``## USER`` blocks verbatim and treats them as turn boundaries
-    (subagent_compactor.md) — so only a real user prompt may carry that header.
+    (subagent_kodo_compactor.md) — so only a real user prompt may carry that header.
     """
     messages = [
         Message(role="user", content="do the thing"),

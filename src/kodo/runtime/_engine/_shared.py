@@ -30,20 +30,20 @@ from kodo.toolspecs import ALL_TOOLS
 # The per-mode constants that used to sit here (``_PROBLEM_SOLVER_AGENT_NAME``,
 # ``_JUDGE_AGENT_NAME``) are gone: which agent backs which selection is data in
 # the registry now, not a name the engine knows (doc/TOP_AGENT_PLAN.md §4.1).
-_FALLBACK_AGENT_NAME = "guide"
-_COMPACTOR_AGENT_NAME = "compactor"
+_FALLBACK_AGENT_NAME = "kodo_guide"
+_COMPACTOR_AGENT_NAME = "kodo_compactor"
 # Dependency-management sub-agent behind the ``toolchain_deps`` tool. Spawned only
 # through the tool's dedicated ungated service (``_run_dependency_manager``), so
 # it is intentionally *not* in ``_DIRECT_ONLY_AGENTS`` (which would make
 # ``_spawn_subagent`` short-circuit it) nor in any agent's ``subagents:`` list.
-_DEPSMGR_AGENT_NAME = "toolchain_depsmgr"
+_DEPSMGR_AGENT_NAME = "kodo_toolchain_depsmgr"
 # The agent behind the ``web_search`` tool (doc/WEB_SEARCH.md): drives its own
 # discovery/read/synthesis loop via query_search_engine/read_webpage plus the
 # pacing tools. Driven only through the tool's dedicated ungated service
 # (``_run_web_search_agent``) as a *silent, multi-round tool-calling* turn —
 # never as a subsession, since ``web_search`` is typically called from a
 # sub-agent (the investigator) and subsessions do not nest.
-_WEB_SEARCH_AGENT_NAME = "web_search"
+_WEB_SEARCH_AGENT_NAME = "kodo_web_search"
 
 # Sub-agents that the engine drives directly and that must never be reachable
 # through the ``run_subagent`` tool (the Guide/Problem Solver cannot

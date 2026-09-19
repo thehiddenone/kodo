@@ -1,0 +1,75 @@
+{
+  "name": "kodo_web_search",
+  "notes": "SubAgentSpec for `web_search` (engine-driven; drives its own research loop).\n\nBehind the `web_search` tool (doc/WEB_SEARCH.md): unlike the retired\n`web_summarizer` (a single silent synthesis pass over pre-gathered text),\nthis agent drives the entire discovery → read → synthesize loop itself via\n`query_search_engine`/`read_webpage` plus the pacing tools\n(`get_web_search_state`/`update_web_search_state`/`wait`/\n`remaining_time`). Spawned only through the engine's ungated\n`run_web_search_agent` service (holding the `web_search` tool is the\nauthorization) as a silent, non-nesting tool-loop turn — never through\n`run_subagent`.",
+  "input_schema": {
+    "shape": "raw",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Free-text web search query."
+        },
+        "max_themes": {
+          "type": "integer",
+          "description": "Upper bound on the number of themes to produce.",
+          "exclusiveMinimum": 0
+        },
+        "timeout": {
+          "type": "number",
+          "description": "Total seconds this run has before it must wrap up (already clamped by the tool to at most 600). Check remaining_time periodically rather than tracking this yourself."
+        }
+      },
+      "required": [
+        "query",
+        "max_themes",
+        "timeout"
+      ]
+    }
+  },
+  "output_schema": {
+    "shape": "raw",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "themes": {
+          "type": "array",
+          "description": "Themed groups of findings, each a distinct angle on the query — ideally an independent option/approach to choose from. Empty when the search could not be completed (see note).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "summary": {
+                "type": "string",
+                "description": "One-sentence description of the theme."
+              },
+              "details": {
+                "type": "string",
+                "description": "What the sources say about this theme — the core idea, perspective, or solution variant, synthesized across sources."
+              },
+              "links": {
+                "type": "array",
+                "description": "Source URLs this theme was drawn from.",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "summary",
+              "details",
+              "links"
+            ]
+          }
+        },
+        "note": {
+          "type": "string",
+          "description": "What was searched, what was skipped or blocked, and any degradation — an empty themes list with an explanatory note means the search could not be completed, not that the web has no answer."
+        }
+      },
+      "required": [
+        "themes",
+        "note"
+      ]
+    }
+  }
+}

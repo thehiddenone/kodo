@@ -270,7 +270,7 @@ def _make_tool(tmp_path: Path, services: object) -> WebSearchTool:
         gate=MagicMock(),
         session=SessionState(),
         services=services,  # type: ignore[arg-type]
-        agent_name="investigator",
+        agent_name="kodo_investigator",
         session_id="sess-test",
     )
     return WebSearchTool(context)

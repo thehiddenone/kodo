@@ -1,0 +1,37 @@
+{
+  "name": "kodo_functional_design_critic",
+  "notes": "SubAgentSpec for `functional_design_critic` (stage 4 critic).",
+  "input_schema": {
+    "shape": "pipeline_input",
+    "input_paths": "The Functional Design under review, the Design Plan, the upstream documents, and any locked peer Functional Designs for interface-consistency checks."
+  },
+  "output_schema": {
+    "shape": "critic_output"
+  },
+  "consumes": [
+    {
+      "role": "functional_design",
+      "scope": "under_review"
+    },
+    {
+      "role": "design_plan",
+      "scope": "global"
+    },
+    {
+      "role": "architecture",
+      "scope": "global"
+    },
+    {
+      "role": "requirements",
+      "scope": "global"
+    },
+    {
+      "role": "narrative",
+      "scope": "global"
+    },
+    {
+      "role": "tech_stack",
+      "scope": "global"
+    }
+  ]
+}

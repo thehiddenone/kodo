@@ -83,7 +83,7 @@ SCENARIO = Scenario(
     # Problem Solver plan and spawn toolchain_builder/developer.
     modes=Modes(
         autonomous=False,
-        agent="problem_solver",
+        agent="kodo_problem_solver",
         edit_control="allow_all",
         command_control="permissive",
     ),

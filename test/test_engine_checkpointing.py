@@ -387,7 +387,7 @@ async def test_record_guided_revision_noop_without_current_project(tmp_path: Pat
     ref = CheckpointRef(root=str(tmp_path), sha="deadbeef", parent="parent-sha")
 
     # Should not raise even though there's no project bound.
-    await coordinator.record_guided_revision("edit_file", {"path": "specs/a.md"}, ref, "guide")
+    await coordinator.record_guided_revision("edit_file", {"path": "specs/a.md"}, ref, "kodo_guide")
 
 
 async def test_record_guided_revision_noop_for_untracked_path(tmp_path: Path) -> None:
@@ -396,7 +396,7 @@ async def test_record_guided_revision_noop_for_untracked_path(tmp_path: Path) ->
     )
     ref = CheckpointRef(root=str(tmp_path), sha="deadbeef", parent="parent-sha")
 
-    await coordinator.record_guided_revision("edit_file", {"path": "outside.md"}, ref, "guide")
+    await coordinator.record_guided_revision("edit_file", {"path": "outside.md"}, ref, "kodo_guide")
 
     assert not (tmp_path / ".kodo" / "guided_dev_state").exists()
 
@@ -409,7 +409,7 @@ async def test_record_guided_revision_writes_for_tracked_path(tmp_path: Path) ->
     )
     ref = CheckpointRef(root=str(tmp_path), sha="deadbeef", parent="parent-sha")
 
-    await coordinator.record_guided_revision("edit_file", {"path": "specs/a.md"}, ref, "guide")
+    await coordinator.record_guided_revision("edit_file", {"path": "specs/a.md"}, ref, "kodo_guide")
 
     jsonl = tmp_path / ".kodo" / "guided_dev_state" / "specs" / "a.md.jsonl"
     assert jsonl.exists()

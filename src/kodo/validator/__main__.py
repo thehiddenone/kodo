@@ -249,7 +249,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--agent",
-        default="problem_solver",
+        default="kodo_problem_solver",
         # Deliberately unconstrained: which top-level agents exist is the
         # registry's answer, and pinning a `choices` list here would need
         # editing every time one is added. An unknown name resolves to the

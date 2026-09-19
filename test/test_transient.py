@@ -118,7 +118,7 @@ def test_append_message_persists_attachment_links_not_content(store: TransientSt
     store.append_message(
         "user",
         "clean prompt",
-        top_agent="guide",
+        top_agent="kodo_guide",
         attachments=[{"id": attachment_id, "name": "f.py", "stored": rel}],
     )
     lines = store.read_session_lines()

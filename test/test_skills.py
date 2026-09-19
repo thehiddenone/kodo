@@ -320,7 +320,7 @@ def test_catalog_with_no_skills_says_so_explicitly() -> None:
 class _Context:
     """The two ``ToolContext`` fields ``UseSkillTool`` actually reads."""
 
-    agent_name = "problem_solver"
+    agent_name = "kodo_problem_solver"
     session_id = "test-session"
 
 

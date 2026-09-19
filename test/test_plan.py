@@ -43,7 +43,7 @@ def _statuses(plan_dir: Path) -> list[str]:
     return [task["status"] for task in plan["tasks"]]
 
 
-def _make(plan_dir: Path, tasks: object = None, *, by: str = "planner", context: str = "ctx"):
+def _make(plan_dir: Path, tasks: object = None, *, by: str = "kodo_planner", context: str = "ctx"):
     return create_plan(plan_dir, created_by=by, context=context, tasks=tasks or _THREE)
 
 
@@ -65,7 +65,7 @@ def test_creation_leaves_every_task_not_started(tmp_path: Path) -> None:
     assert [t["status"] for t in plan["tasks"]] == [STATUS_NOT_STARTED] * 3
     assert plan["current_task"] is None
     assert plan["complete"] is False
-    assert plan["created_by"] == "planner"
+    assert plan["created_by"] == "kodo_planner"
     assert plan["context"] == "ctx"
 
 
@@ -86,7 +86,7 @@ def test_the_stored_task_keeps_the_planners_body(tmp_path: Path) -> None:
         [
             {
                 "title": "a",
-                "subagent": "developer",
+                "subagent": "kodo_developer",
                 "instructions": "long",
                 "acceptance": "x",
                 "files": ["src/a.py"],
@@ -155,11 +155,11 @@ def test_files_that_are_not_a_list_degrade_to_empty(tmp_path: Path) -> None:
 def test_empty_and_unusable_task_lists_create_no_plan(tmp_path: Path) -> None:
     """A planner that found nothing to sequence leaves the session with no plan —
     so a later planner call can still create the first one without a conflict."""
-    assert create_plan(tmp_path, created_by="planner", context="c", tasks=[]) is None
-    assert create_plan(tmp_path, created_by="planner", context="c", tasks=None) is None
-    assert create_plan(tmp_path, created_by="planner", context="c", tasks="nope") is None
+    assert create_plan(tmp_path, created_by="kodo_planner", context="c", tasks=[]) is None
+    assert create_plan(tmp_path, created_by="kodo_planner", context="c", tasks=None) is None
+    assert create_plan(tmp_path, created_by="kodo_planner", context="c", tasks="nope") is None
     # Elements with no usable title are dropped, not kept as blank rows.
-    assert create_plan(tmp_path, created_by="planner", context="c", tasks=[{}, "x", 5]) is None
+    assert create_plan(tmp_path, created_by="kodo_planner", context="c", tasks=[{}, "x", 5]) is None
     assert read_plan(tmp_path) is None
 
 
@@ -272,7 +272,7 @@ def test_an_unusable_replacement_does_not_disturb_a_complete_plan(tmp_path: Path
     _make(tmp_path, [{"title": "only"}])
     step_plan(tmp_path)
     step_plan(tmp_path)
-    assert create_plan(tmp_path, created_by="planner", context="c", tasks=[]) is None
+    assert create_plan(tmp_path, created_by="kodo_planner", context="c", tasks=[]) is None
     plan = read_plan(tmp_path)
     assert plan is not None
     assert plan["complete"] is True
@@ -413,14 +413,14 @@ def test_closed_is_the_supersede_precondition() -> None:
 _WITH_BODIES = [
     {
         "title": "Toolchain setup",
-        "subagent": "toolchain_builder",
+        "subagent": "kodo_toolchain_builder",
         "instructions": "bootstrap the build",
         "files": ["requirements.txt"],
         "acceptance": "the build runs",
     },
     {
         "title": "Extract parser",
-        "subagent": "developer",
+        "subagent": "kodo_developer",
         "instructions": "move it into src/parse.py",
         "files": ["src/parse.py"],
         "acceptance": "tests pass",
@@ -441,7 +441,7 @@ def test_the_model_is_given_the_current_task_in_full(tmp_path: Path) -> None:
     assert current["id"] == 1
     assert current["instructions"] == "bootstrap the build"
     assert current["acceptance"] == "the build runs"
-    assert current["subagent"] == "toolchain_builder"
+    assert current["subagent"] == "kodo_toolchain_builder"
     assert current["files"] == ["requirements.txt"]
 
 

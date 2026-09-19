@@ -24,8 +24,7 @@ One ``<name>.json`` beside the ``agent_<name>.md`` it describes::
       "description": "One generalist agent tackles your request end to end.",
       "rank": 10,
       "selectable": true,
-      "default": false,
-      "aliases": ["problem_solving"]
+      "default": false
     }
 
 ``name`` must equal the filename stem, and an ``agent_<name>.md`` must exist for
@@ -101,10 +100,6 @@ class TopAgent:
             meaning in an interactive session. A non-selectable agent is still
             fully registered and still runs; it is simply absent from the
             catalog the client renders.
-        aliases: Legacy values that resolve to this agent. These exist only so
-            sessions persisted under the old workflow-mode vocabulary
-            (``"guided"``, ``"problem_solving"``) still resume onto the right
-            agent; they are accepted on every read path and never emitted.
         default: Whether an unrecognized selection falls back to this agent.
             Exactly one of a registry's top-level agents declares it.
         notes: Engineer-facing rationale for why this entry looks the way it
@@ -119,7 +114,6 @@ class TopAgent:
     description: str
     rank: int
     selectable: bool = True
-    aliases: tuple[str, ...] = ()
     default: bool = False
     notes: str = ""
 
@@ -127,9 +121,7 @@ class TopAgent:
 #: Extension of a top-level agent's config file. The glob that finds them.
 TOP_AGENT_SUFFIX = ".json"
 
-_KEYS = frozenset(
-    {"name", "notes", "label", "description", "rank", "selectable", "default", "aliases"}
-)
+_KEYS = frozenset({"name", "notes", "label", "description", "rank", "selectable", "default"})
 
 
 class TopAgentLoadError(Exception):
@@ -193,19 +185,12 @@ def load_top_agent(path: Path) -> TopAgent:
     if not isinstance(default, bool):
         raise TopAgentLoadError(f"{path}: 'default' must be true or false, got {default!r}")
 
-    raw_aliases = raw.get("aliases", [])
-    if not isinstance(raw_aliases, list) or any(
-        not isinstance(a, str) or not a for a in raw_aliases
-    ):
-        raise TopAgentLoadError(f"{path}: 'aliases' must be a list of non-empty strings")
-
     return TopAgent(
         name=name,
         label=label,
         description=description,
         rank=rank,
         selectable=selectable,
-        aliases=tuple(raw_aliases),
         default=default,
         notes=notes,
     )
@@ -220,8 +205,10 @@ def load_top_agents(directory: Path) -> tuple[TopAgent, ...]:
     down are never mistaken for one.
 
     Two files cannot collide on a name, because a name *is* its filename stem.
-    Collisions between a name and another entry's *alias* are cross-entry
-    knowledge and are checked by the registry, which holds the whole set.
+    Collisions between the built-in names and a user-installed agent's are
+    cross-root knowledge and are checked by the registry, which holds both
+    roots: every built-in name carries the reserved ``kodo_`` prefix, which a
+    user file may not use.
 
     Args:
         directory: Directory holding the ``<name>.json`` config files.

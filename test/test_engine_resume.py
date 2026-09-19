@@ -117,56 +117,63 @@ def _engine_with_lines(lines: list[dict[str, object]]) -> WorkflowEngine:
 
 def test_last_top_agent_defaults_to_the_registry_default_when_no_lines() -> None:
     engine = _engine_with_lines([])
-    assert engine._last_top_agent() == "problem_solver"
+    assert engine._last_top_agent() == "kodo_problem_solver"
 
 
 def test_last_top_agent_reads_tag_from_most_recent_role_line() -> None:
     engine = _engine_with_lines(
         [
-            {"role": "user", "content": "hi", "top_agent": "guide"},
-            {"role": "assistant", "content": "ok", "top_agent": "problem_solver"},
+            {"role": "user", "content": "hi", "top_agent": "kodo_guide"},
+            {"role": "assistant", "content": "ok", "top_agent": "kodo_problem_solver"},
         ]
     )
-    assert engine._last_top_agent() == "problem_solver"
+    assert engine._last_top_agent() == "kodo_problem_solver"
 
 
 def test_last_top_agent_falls_back_when_tag_missing() -> None:
     engine = _engine_with_lines([{"role": "assistant", "content": "ok"}])
-    assert engine._last_top_agent() == "problem_solver"
+    assert engine._last_top_agent() == "kodo_problem_solver"
 
 
 def test_last_top_agent_reads_the_pre_rename_tag() -> None:
     """A session written before the rename tagged its lines ``entry_agent``."""
-    engine = _engine_with_lines([{"role": "assistant", "content": "ok", "entry_agent": "guide"}])
-    assert engine._last_top_agent() == "guide"
+    engine = _engine_with_lines([{"role": "assistant", "content": "ok", "entry_agent": "kodo_guide"}])
+    assert engine._last_top_agent() == "kodo_guide"
 
 
-def test_last_top_agent_resolves_a_legacy_value_in_the_pre_rename_tag() -> None:
-    """Older still: the old key *and* the old workflow-mode vocabulary."""
+def test_last_top_agent_does_not_resolve_the_pre_rename_vocabulary() -> None:
+    """The old key is still read; the old *vocabulary* no longer resolves.
+
+    ``entry_agent`` remains an accepted tag, so a pre-rename transcript is not
+    unreadable — but ``"guided"`` names no agent any more, and the aliases that
+    used to map it are gone. It therefore behaves like any other unknown name
+    and falls back, which is what lets the resume path tell the user their
+    session's agent is missing instead of silently running a different one.
+    """
     engine = _engine_with_lines([{"role": "assistant", "content": "ok", "entry_agent": "guided"}])
-    assert engine._last_top_agent() == "guide"
+    assert engine._last_top_agent() == "kodo_problem_solver"
 
 
 def test_last_top_agent_prefers_the_current_tag_over_the_legacy_one() -> None:
     engine = _engine_with_lines(
-        [{"role": "assistant", "content": "ok", "top_agent": "judge", "entry_agent": "guided"}]
+        [{"role": "assistant", "content": "ok", "top_agent": "kodo_judge", "entry_agent": "guided"}]
     )
-    assert engine._last_top_agent() == "judge"
+    assert engine._last_top_agent() == "kodo_judge"
 
 
 def test_last_top_agent_falls_back_when_tag_names_an_unknown_agent() -> None:
     engine = _engine_with_lines([{"role": "assistant", "content": "ok", "top_agent": "long_gone"}])
-    assert engine._last_top_agent() == "problem_solver"
+    assert engine._last_top_agent() == "kodo_problem_solver"
 
 
 def test_last_top_agent_skips_marker_only_lines() -> None:
     engine = _engine_with_lines(
         [
-            {"role": "assistant", "content": "ok", "top_agent": "problem_solver"},
+            {"role": "assistant", "content": "ok", "top_agent": "kodo_problem_solver"},
             {"type": "subsession_start", "subsession_id": "s1"},
         ]
     )
-    assert engine._last_top_agent() == "problem_solver"
+    assert engine._last_top_agent() == "kodo_problem_solver"
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +188,7 @@ def test_build_replay_ledger_empty_when_no_markers() -> None:
 
 def test_build_replay_ledger_ignores_markers_before_last_assistant_message() -> None:
     lines = [
-        {"type": "subsession_start", "subsession_id": "stale", "agent": "investigator"},
+        {"type": "subsession_start", "subsession_id": "stale", "agent": "kodo_investigator"},
         {"role": "assistant", "content": "ok"},
     ]
     engine = _engine_with_lines(lines)
@@ -191,7 +198,7 @@ def test_build_replay_ledger_ignores_markers_before_last_assistant_message() -> 
 def test_build_replay_ledger_marks_completed_when_end_present() -> None:
     lines = [
         {"role": "assistant", "content": [{"type": "tool_use"}]},
-        {"type": "subsession_start", "subsession_id": "s1", "agent": "investigator"},
+        {"type": "subsession_start", "subsession_id": "s1", "agent": "kodo_investigator"},
         {"type": "subsession_end", "subsession_id": "s1", "result": {"summary": "done"}},
     ]
     engine = _engine_with_lines(lines)
@@ -199,7 +206,7 @@ def test_build_replay_ledger_marks_completed_when_end_present() -> None:
     assert ledger == [
         {
             "subsession_id": "s1",
-            "agent": "investigator",
+            "agent": "kodo_investigator",
             "completed": True,
             "result": {"summary": "done"},
         }
@@ -209,19 +216,19 @@ def test_build_replay_ledger_marks_completed_when_end_present() -> None:
 def test_build_replay_ledger_marks_active_when_no_end() -> None:
     lines = [
         {"role": "assistant", "content": [{"type": "tool_use"}]},
-        {"type": "subsession_start", "subsession_id": "s1", "agent": "investigator"},
+        {"type": "subsession_start", "subsession_id": "s1", "agent": "kodo_investigator"},
     ]
     engine = _engine_with_lines(lines)
     ledger = engine._build_replay_ledger()
     assert ledger == [
-        {"subsession_id": "s1", "agent": "investigator", "completed": False, "result": {}}
+        {"subsession_id": "s1", "agent": "kodo_investigator", "completed": False, "result": {}}
     ]
 
 
 def test_build_replay_ledger_preserves_list_result_shape() -> None:
     lines = [
         {"role": "assistant", "content": [{"type": "tool_use"}]},
-        {"type": "subsession_start", "subsession_id": "s1", "agent": "investigator"},
+        {"type": "subsession_start", "subsession_id": "s1", "agent": "kodo_investigator"},
         {"type": "subsession_end", "subsession_id": "s1", "result": ["a", "b"]},
     ]
     engine = _engine_with_lines(lines)
@@ -232,9 +239,9 @@ def test_build_replay_ledger_preserves_list_result_shape() -> None:
 def test_build_replay_ledger_multiple_subsessions_in_order() -> None:
     lines = [
         {"role": "assistant", "content": [{"type": "tool_use"}]},
-        {"type": "subsession_start", "subsession_id": "s1", "agent": "investigator"},
+        {"type": "subsession_start", "subsession_id": "s1", "agent": "kodo_investigator"},
         {"type": "subsession_end", "subsession_id": "s1", "result": {}},
-        {"type": "subsession_start", "subsession_id": "s2", "agent": "planner"},
+        {"type": "subsession_start", "subsession_id": "s2", "agent": "kodo_planner"},
     ]
     engine = _engine_with_lines(lines)
     ledger = engine._build_replay_ledger()
@@ -416,13 +423,13 @@ async def test_resume_main_turn_redispatches_ask_user_and_finishes(tmp_path: Pat
     tool_uses = [{"type": "tool_use", "id": "tu_1", "name": "ask_user", "input": {"q": "?"}}]
     engine, compactor, sink, dispatch_calls = _resumable_engine(
         tool_uses=tool_uses,
-        session_lines=[{"role": "assistant", "content": "ok", "top_agent": "guide"}],
+        session_lines=[{"role": "assistant", "content": "ok", "top_agent": "kodo_guide"}],
         tmp_path=tmp_path,
     )
 
     await engine._resume_main_turn()
 
-    assert dispatch_calls[0][1] == "guide"
+    assert dispatch_calls[0][1] == "kodo_guide"
     assert dispatch_calls[0][0] == [("tu_1", "ask_user", {"q": "?"})]
     assert compactor.noted == ["key-medium"]
     assert compactor.auto_compact_calls == 1
@@ -498,7 +505,7 @@ async def test_resume_main_turn_redispatches_call_matching_pending_security_aler
 
     await engine._resume_main_turn()
 
-    assert dispatch_calls == [([("tu_1", "run_command", {"command": "x"})], "problem_solver")]
+    assert dispatch_calls == [([("tu_1", "run_command", {"command": "x"})], "kodo_problem_solver")]
 
 
 @pytest.mark.asyncio
@@ -566,7 +573,7 @@ async def test_resume_main_turn_only_alert_matched_call_redispatched_among_sever
 
     await engine._resume_main_turn()
 
-    assert dispatch_calls == [([("tu_1", "run_command", {})], "problem_solver")]
+    assert dispatch_calls == [([("tu_1", "run_command", {})], "kodo_problem_solver")]
 
 
 # ---------------------------------------------------------------------------
@@ -592,7 +599,7 @@ async def test_resume_main_turn_redispatches_call_matching_pending_edit_review(
 
     await engine._resume_main_turn()
 
-    assert dispatch_calls == [([("tu_1", "edit_file", {"path": "a.py"})], "problem_solver")]
+    assert dispatch_calls == [([("tu_1", "edit_file", {"path": "a.py"})], "kodo_problem_solver")]
 
 
 @pytest.mark.asyncio
@@ -657,8 +664,8 @@ async def test_resume_main_turn_pending_security_alert_and_pending_edit_review_i
     # Each redispatch-eligible call is dispatched individually (the real loop
     # calls _dispatch_tool_calls once per tool_use, never batched).
     assert dispatch_calls == [
-        ([("tu_1", "run_command", {})], "problem_solver"),
-        ([("tu_2", "edit_file", {})], "problem_solver"),
+        ([("tu_1", "run_command", {})], "kodo_problem_solver"),
+        ([("tu_2", "edit_file", {})], "kodo_problem_solver"),
     ]
     assert engine._transient.pending_security_alert is None
     assert engine._transient.pending_edit_review is None

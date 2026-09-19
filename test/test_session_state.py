@@ -33,7 +33,7 @@ def test_to_dict_reports_diverged_selected_vs_effective() -> None:
     # edit/command postures are reported verbatim.
     state = SessionState()
     state.autonomous = True
-    state.top_agent = "problem_solver"
+    state.top_agent = "kodo_problem_solver"
     state.edit_control = "allow_all"
     state.command_control = "permissive"
     state.thinking_level = "unlimited"
@@ -42,7 +42,7 @@ def test_to_dict_reports_diverged_selected_vs_effective() -> None:
     payload = state.to_dict()
     assert payload["autonomous"] is True
     assert payload["effective_autonomous"] is False
-    assert payload["top_agent"] == "problem_solver"
+    assert payload["top_agent"] == "kodo_problem_solver"
     assert payload["effective_top_agent"] == ""
     assert payload["edit_control"] == "allow_all"
     assert payload["command_control"] == "permissive"

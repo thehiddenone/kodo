@@ -77,7 +77,6 @@ def test_load_reads_every_field(tmp_path: Path) -> None:
         rank=42,
         selectable=False,
         default=False,
-        aliases=["reviewing"],
     )
     cfg = load_top_agent(path)
     assert cfg == TopAgent(
@@ -86,7 +85,6 @@ def test_load_reads_every_field(tmp_path: Path) -> None:
         description="The reviewer agent.",
         rank=42,
         selectable=False,
-        aliases=("reviewing",),
         default=False,
         notes="fixture",
     )
@@ -98,13 +96,7 @@ def test_load_defaults_everything_optional(tmp_path: Path) -> None:
     cfg = load_top_agent(path)
     # `label` stays empty on purpose — only the registry knows the agent's
     # display_name to fall back to.
-    assert (cfg.label, cfg.rank, cfg.selectable, cfg.default, cfg.aliases) == (
-        "",
-        0,
-        True,
-        False,
-        (),
-    )
+    assert (cfg.label, cfg.rank, cfg.selectable, cfg.default) == ("", 0, True, False)
 
 
 def test_load_rejects_an_unknown_key(tmp_path: Path) -> None:
@@ -134,8 +126,6 @@ def test_load_requires_a_description(tmp_path: Path) -> None:
         ("rank", True, "'rank' must be an integer"),
         ("selectable", "yes", "'selectable' must be true or false"),
         ("default", 1, "'default' must be true or false"),
-        ("aliases", "guided", "'aliases' must be a list"),
-        ("aliases", [""], "'aliases' must be a list"),
         ("label", 3, "'label' must be a string"),
     ],
 )
@@ -188,15 +178,15 @@ def test_guides_picker_label_is_not_its_display_name() -> None:
     silently rename a control the user has always known by the other name.
     """
     registry = AgentRegistry(_REAL_AGENTS_DIR)
-    guide = next(a for a in registry.top_agents() if a.name == "guide")
+    guide = next(a for a in registry.top_agents() if a.name == "kodo_guide")
     assert guide.label == "Guide"
-    assert registry.get("guide").display_name == "Kōdo"
+    assert registry.get("kodo_guide").display_name == "Kōdo"
 
 
 def test_only_selectable_agents_would_reach_a_picker() -> None:
     registry = AgentRegistry(_REAL_AGENTS_DIR)
     hidden = {a.name for a in registry.top_agents() if not a.selectable}
-    assert hidden == {"judge"}, "judge is validator-only; everything else is user-facing"
+    assert hidden == {"kodo_judge"}, "judge is validator-only; everything else is user-facing"
 
 
 # ---------------------------------------------------------------------------
@@ -238,14 +228,20 @@ def test_registry_rejects_a_top_agent_that_also_has_a_spec(
         AgentRegistry(agents_dir)
 
 
-def test_registry_rejects_two_agents_claiming_one_value(agents_dir: Path) -> None:
-    """A name and an alias share one namespace — both arrive as a selection."""
-    _write_top_agent(agents_dir, "reviewer")
-    _write_config(agents_dir, "reviewer")
-    _write_top_agent(agents_dir, "auditor")
-    _write_config(agents_dir, "auditor", default=False, aliases=["reviewer"])
-    with pytest.raises(AgentLoadError, match="already claimed by"):
-        AgentRegistry(agents_dir)
+def test_registry_rejects_an_unknown_key_named_aliases(agents_dir: Path) -> None:
+    """``aliases`` went with the ``kodo_`` rename, and is now simply unknown.
+
+    The legacy workflow-mode values it carried (``guided``, ``problem_solving``)
+    have no agent to resolve to any more, so a config still declaring the key is
+    a config written against an older Kōdo — which the unknown-key check is
+    there to say out loud rather than ignore.
+    """
+    path = _write_config(agents_dir, "reviewer")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["aliases"] = ["reviewing"]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(TopAgentLoadError, match="unknown key"):
+        load_top_agent(path)
 
 
 @pytest.mark.parametrize("defaults", [0, 2])

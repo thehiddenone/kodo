@@ -130,7 +130,7 @@ def _make_dispatcher(
         services=_StubServices(
             rollback=rollback_fn, has_workspace=has_workspace, root_paths=root_paths
         ),
-        agent_name="guide",
+        agent_name="kodo_guide",
         session_id="sess-test",
         findings_dir=findings_dir,
     )
@@ -162,10 +162,10 @@ async def test_guided_dev_status_merges_the_document_log_with_the_findings_backl
         doc,
         tmp_path,
         commit_hash="sha1",
-        author="architect",
+        author="kodo_architect",
         tool="filesystem",
         summary="create",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
 
     findings_dir = tmp_path / "sess" / "findings"
@@ -176,7 +176,7 @@ async def test_guided_dev_status_merges_the_document_log_with_the_findings_backl
     work_product, _removed = record_membership(
         tmp_path,
         project="proj",
-        agent="architect",
+        agent="kodo_architect",
         responsibility_code="",
         paths=[logical],
     )
@@ -194,10 +194,10 @@ async def test_guided_dev_status_merges_the_document_log_with_the_findings_backl
     summary = apply_findings(
         findings_dir,
         work_product.id,
-        reviewer="architect_critic",
+        reviewer="kodo_architect_critic",
         updates=[{"kind": "gap", "description": "x", "locations": [{"path": logical}]}],
         project="proj",
-        agent="architect",
+        agent="kodo_architect",
     )
     assert summary.opened == 1
     result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
@@ -208,7 +208,7 @@ async def test_guided_dev_status_merges_the_document_log_with_the_findings_backl
     apply_findings(
         findings_dir,
         work_product.id,
-        reviewer="architect_critic",
+        reviewer="kodo_architect_critic",
         updates=[{"id": opened_id, "state": "fixed"}],
     )
     result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
@@ -234,10 +234,10 @@ async def test_guided_dev_status_reads_pending_review_with_no_session_backlog(
         doc,
         tmp_path,
         commit_hash="sha1",
-        author="architect",
+        author="kodo_architect",
         tool="filesystem",
         summary="create",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
     dispatcher = _make_dispatcher(project_root=tmp_path, findings_dir=tmp_path / "empty")
     result = json.loads(await dispatcher.dispatch("guided_dev_status", {}))
@@ -267,10 +267,10 @@ async def test_run_subagent_returns_primary_path() -> None:
     result = json.loads(
         await dispatcher.dispatch(
             "run_subagent",
-            {"name": "narrative_author", "task_input": {"instructions": "Build a trading bot"}},
+            {"name": "kodo_narrative_author", "task_input": {"instructions": "Build a trading bot"}},
         )
     )
-    assert result["primary_path"] == "specs/stub-narrative_author.md"
+    assert result["primary_path"] == "specs/stub-kodo_narrative_author.md"
 
 
 def test_canonical_tool_call_unwraps_a_per_subagent_variant() -> None:
@@ -278,12 +278,12 @@ def test_canonical_tool_call_unwraps_a_per_subagent_variant() -> None:
     the top level; the engine folds that into the one canonical shape everything
     downstream (gating, checkpoints, cards, resume) is keyed on."""
     name, payload = canonical_tool_call(
-        "run_subagent_coder",
+        "run_subagent_kodo_coder",
         {"instructions": "implement it", "input_paths": {"design": "proj/specs/d.md"}},
     )
     assert name == "run_subagent"
     assert payload == {
-        "name": "coder",
+        "name": "kodo_coder",
         "task_input": {
             "instructions": "implement it",
             "input_paths": {"design": "proj/specs/d.md"},
@@ -294,7 +294,7 @@ def test_canonical_tool_call_unwraps_a_per_subagent_variant() -> None:
 def test_canonical_tool_call_lifts_max_rounds_out_of_the_task() -> None:
     """``max_rounds`` is the engine's loop budget, not part of the sub-agent's
     task, so it must not be smuggled into ``task_input``."""
-    _, payload = canonical_tool_call("run_subagent_coder", {"instructions": "go", "max_rounds": 3})
+    _, payload = canonical_tool_call("run_subagent_kodo_coder", {"instructions": "go", "max_rounds": 3})
     assert payload["max_rounds"] == 3
     assert payload["task_input"] == {"instructions": "go"}
 
@@ -314,14 +314,14 @@ async def test_variant_call_reaches_the_engine_as_a_targeted_spawn() -> None:
         gate=GateOrchestrator(_make_app_state(), MagicMock()),
         session=SessionState(),
         services=services,
-        agent_name="guide",
+        agent_name="kodo_guide",
         session_id="sess-test",
     )
     name, payload = canonical_tool_call(
-        "run_subagent_narrative_author", {"instructions": "Build a trading bot"}
+        "run_subagent_kodo_narrative_author", {"instructions": "Build a trading bot"}
     )
     result = json.loads(await dispatcher.dispatch(name, payload))
-    assert result["primary_path"] == "specs/stub-narrative_author.md"
+    assert result["primary_path"] == "specs/stub-kodo_narrative_author.md"
 
 
 class _DenyingServices(_StubServices):
@@ -344,7 +344,7 @@ def _make_denying_dispatcher() -> ToolDispatcher:
         gate=GateOrchestrator(_make_app_state(), MagicMock()),
         session=session,
         services=_DenyingServices(has_workspace=True),
-        agent_name="problem_solver",
+        agent_name="kodo_problem_solver",
         session_id="sess-test",
     )
 
@@ -355,7 +355,7 @@ async def test_run_subagent_denied_returns_error() -> None:
     result = json.loads(
         await dispatcher.dispatch(
             "run_subagent",
-            {"name": "narrative_author", "task_input": {"instructions": "go"}},
+            {"name": "kodo_narrative_author", "task_input": {"instructions": "go"}},
         )
     )
     assert "primary_path" not in result

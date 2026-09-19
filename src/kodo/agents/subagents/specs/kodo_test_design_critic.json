@@ -1,0 +1,29 @@
+{
+  "name": "kodo_test_design_critic",
+  "notes": "SubAgentSpec for `test_design_critic` (stage 5 critic of `test_designer`).",
+  "input_schema": {
+    "shape": "pipeline_input",
+    "input_paths": "The Test Plan under review, plus this component's Functional Design, the requirements, and the Tech Stack."
+  },
+  "output_schema": {
+    "shape": "critic_output"
+  },
+  "consumes": [
+    {
+      "role": "test_plan",
+      "scope": "under_review"
+    },
+    {
+      "role": "functional_design",
+      "scope": "self"
+    },
+    {
+      "role": "requirements",
+      "scope": "global"
+    },
+    {
+      "role": "tech_stack",
+      "scope": "global"
+    }
+  ]
+}

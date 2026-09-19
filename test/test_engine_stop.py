@@ -83,7 +83,7 @@ def test_persist_interrupted_turn_with_dangling_tool_use_synthesizes_result() ->
     )
     engine, transient = _bare_engine(main_messages=[Message(role="user", content="go"), dangling])
 
-    engine._persist_interrupted_turn("guide")
+    engine._persist_interrupted_turn("kodo_guide")
 
     main = engine._main_messages
     assert [m.role for m in main[-2:]] == ["user", "assistant"]
@@ -105,9 +105,9 @@ def test_persist_interrupted_turn_with_dangling_tool_use_synthesizes_result() ->
     # kind="stopped_notice" (so history replay renders it as the red callout,
     # not a fake user-typed bubble — see HistoryProjector._message_to_entries).
     assert [role for role, _content, _agent, _kind in transient.appended] == ["user", "assistant"]
-    assert all(agent == "guide" for _role, _content, agent, _kind in transient.appended)
-    assert transient.appended[0] == ("user", tool_results_msg.content, "guide", None)
-    assert transient.appended[1] == ("assistant", notice_msg.content, "guide", "stopped_notice")
+    assert all(agent == "kodo_guide" for _role, _content, agent, _kind in transient.appended)
+    assert transient.appended[0] == ("user", tool_results_msg.content, "kodo_guide", None)
+    assert transient.appended[1] == ("assistant", notice_msg.content, "kodo_guide", "stopped_notice")
 
 
 def test_persist_interrupted_turn_without_dangling_tool_use_only_adds_notice() -> None:
@@ -117,7 +117,7 @@ def test_persist_interrupted_turn_without_dangling_tool_use_only_adds_notice() -
         main_messages=[Message(role="user", content="go"), plain_reply]
     )
 
-    engine._persist_interrupted_turn("problem_solver")
+    engine._persist_interrupted_turn("kodo_problem_solver")
 
     main = engine._main_messages
     assert len(main) == 3
@@ -125,7 +125,7 @@ def test_persist_interrupted_turn_without_dangling_tool_use_only_adds_notice() -
     assert "The ongoing session was interrupted by the user" in main[-1].content
 
     assert transient.appended == [
-        ("assistant", main[-1].content, "problem_solver", "stopped_notice")
+        ("assistant", main[-1].content, "kodo_problem_solver", "stopped_notice")
     ]
 
 
@@ -140,7 +140,7 @@ def test_persist_interrupted_turn_resolves_every_pending_tool_use() -> None:
     )
     engine, _transient = _bare_engine(main_messages=[dangling])
 
-    engine._persist_interrupted_turn("guide")
+    engine._persist_interrupted_turn("kodo_guide")
 
     tool_results_msg = engine._main_messages[-2]
     ids = {block["tool_use_id"] for block in tool_results_msg.content}
@@ -158,7 +158,7 @@ def test_persist_interrupted_turn_clears_stale_pending_security_alert() -> None:
     )
     engine, transient = _bare_engine(main_messages=[dangling], pending_security_alert="tu_1")
 
-    engine._persist_interrupted_turn("guide")
+    engine._persist_interrupted_turn("kodo_guide")
 
     assert transient.pending_security_alert is None
     # The call is still folded into an ordinary interrupted result, not
@@ -173,7 +173,7 @@ def test_persist_interrupted_turn_noop_when_no_pending_security_alert() -> None:
     plain_reply = Message(role="assistant", content="partial")
     engine, transient = _bare_engine(main_messages=[plain_reply])
 
-    engine._persist_interrupted_turn("guide")
+    engine._persist_interrupted_turn("kodo_guide")
 
     assert transient.pending_security_alert is None
     assert not any("pending_security_alert" in call for call in transient.update_calls)
@@ -188,7 +188,7 @@ def test_persist_interrupted_turn_clears_stale_pending_edit_review() -> None:
     )
     engine, transient = _bare_engine(main_messages=[dangling], pending_edit_review="tu_1")
 
-    engine._persist_interrupted_turn("guide")
+    engine._persist_interrupted_turn("kodo_guide")
 
     assert transient.pending_edit_review is None
     tool_results_msg = engine._main_messages[-2]
@@ -201,7 +201,7 @@ def test_persist_interrupted_turn_noop_when_no_pending_edit_review() -> None:
     plain_reply = Message(role="assistant", content="partial")
     engine, transient = _bare_engine(main_messages=[plain_reply])
 
-    engine._persist_interrupted_turn("guide")
+    engine._persist_interrupted_turn("kodo_guide")
 
     assert transient.pending_edit_review is None
     assert not any("pending_edit_review" in call for call in transient.update_calls)

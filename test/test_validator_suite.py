@@ -53,7 +53,7 @@ def test_validation_suite_requires_judge_llm_and_summary_prompt() -> None:
 
 
 def test_validation_suite_judge_llm_knobs_defaults_none() -> None:
-    suite = ValidationSuite(name="s", entries=[], judge_llm="judge", summary_prompt="p")
+    suite = ValidationSuite(name="s", entries=[], judge_llm="kodo_judge", summary_prompt="p")
     assert suite.judge_llm_knobs is None
 
 
@@ -362,7 +362,7 @@ async def test_run_summary_round_selects_judge_then_completes(
 
 _FAKE_SUITE = (
     "from kodo.validator import ValidationSuite\n"
-    "SUITE = ValidationSuite(name={name!r}, entries=[], judge_llm='judge', "
+    "SUITE = ValidationSuite(name={name!r}, entries=[], judge_llm='kodo_judge', "
     "summary_prompt='summarize')\n"
 )
 

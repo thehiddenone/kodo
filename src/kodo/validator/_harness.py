@@ -80,7 +80,7 @@ class Modes:
     """
 
     autonomous: bool = False
-    agent: str = "problem_solver"
+    agent: str = "kodo_problem_solver"
     edit_control: Literal["review_all", "allow_all", "smart"] = "smart"
     command_control: Literal["defensive", "permissive", "smart"] = "smart"
 

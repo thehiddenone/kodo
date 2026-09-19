@@ -1,0 +1,46 @@
+{
+  "name": "kodo_e2e_test_designer",
+  "notes": "SubAgentSpec for `e2e_test_designer` (stage 8 author).",
+  "input_schema": {
+    "shape": "pipeline_input",
+    "input_paths": "The architecture (Part 3 verdict + seams), requirements, Narrative, Tech Stack, the Design Plan, and all Functional Designs."
+  },
+  "output_schema": {
+    "shape": "author_output",
+    "extra_properties": {
+      "missing_test_seam": {
+        "type": "boolean",
+        "description": "True when an external dependency lacks a declared configuration seam, so a missing_test_seam feedback was raised and the plan is blocked pending a fix."
+      }
+    }
+  },
+  "produces": {
+    "e2e_test_plan": "paths"
+  },
+  "consumes": [
+    {
+      "role": "architecture",
+      "scope": "global"
+    },
+    {
+      "role": "requirements",
+      "scope": "global"
+    },
+    {
+      "role": "narrative",
+      "scope": "global"
+    },
+    {
+      "role": "tech_stack",
+      "scope": "global"
+    },
+    {
+      "role": "design_plan",
+      "scope": "global"
+    },
+    {
+      "role": "functional_design",
+      "scope": "all"
+    }
+  ]
+}

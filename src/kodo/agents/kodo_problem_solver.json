@@ -1,0 +1,8 @@
+{
+  "name": "kodo_problem_solver",
+  "notes": "The standalone generalist, outside the pipeline. `default: true` means two things that are deliberately one: a brand-new session starts here (kodo-vsix adopts the served default), and an unrecognized selection falls back here. Ranked first so the picker reads top-down in the order a user meets them.",
+  "label": "Problem Solver",
+  "description": "One generalist agent tackles your request end to end.",
+  "rank": 10,
+  "default": true
+}

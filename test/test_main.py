@@ -36,7 +36,7 @@ from kodo.runtime import agent_tool_specs
 _REAL_AGENTS_DIR = Path(subagents_pkg.__file__).parent
 
 # The agent used wherever one concrete name is clearer than a parametrized sweep.
-_PINNED_AGENT = "guide"
+_PINNED_AGENT = "kodo_guide"
 
 
 # ---------------------------------------------------------------------------
@@ -370,12 +370,12 @@ def test_tools_the_agent_is_resolved_before_the_llm_id(
         pytest.param(["-p"], id="no-value-short"),
         pytest.param(["--tools"], id="tools-no-value"),
         pytest.param(
-            ["--system-prompt", "guide", "--tools", "guide"],
+            ["--system-prompt", "kodo_guide", "--tools", "kodo_guide"],
             id="both-flags",
         ),
         pytest.param(["--bogus", "a", "b"], id="unknown-flag"),
         pytest.param(["--model", "claude-opus-5"], id="model-without-a-command"),
-        pytest.param(["--system-prompt", "guide", "--model"], id="model-no-value"),
+        pytest.param(["--system-prompt", "kodo_guide", "--model"], id="model-no-value"),
     ],
 )
 def test_bad_invocation_exits_via_argparse(argv: list[str]) -> None:

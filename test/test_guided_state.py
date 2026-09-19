@@ -73,7 +73,7 @@ def test_append_new_revision_is_a_noop_outside_tracked_roots(tmp_path: Path) -> 
         author="a",
         tool="filesystem",
         summary="s",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
     assert read_history(doc, tmp_path) == []
     assert read_document_state(doc, tmp_path) is None
@@ -90,19 +90,19 @@ def test_new_revision_entry_carries_commit_and_top_agent(tmp_path: Path) -> None
         doc,
         tmp_path,
         commit_hash="sha1",
-        author="architect",
+        author="kodo_architect",
         tool="filesystem",
         summary="create_file",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
     history = read_history(doc, tmp_path)
     assert len(history) == 1
     entry = history[0]
     assert entry["type"] == "new_revision"
     assert entry["commit_hash"] == "sha1"
-    assert entry["author"] == "architect"
+    assert entry["author"] == "kodo_architect"
     assert entry["tool"] == "filesystem"
-    assert entry["top_agent"] == "guide"
+    assert entry["top_agent"] == "kodo_guide"
     assert entry["timestamp"]
 
     state = read_document_state(doc, tmp_path)
@@ -123,13 +123,13 @@ def test_new_revision_tags_problem_solver_writes_distinctly(tmp_path: Path) -> N
         doc,
         tmp_path,
         commit_hash="sha2",
-        author="problem_solver",
+        author="kodo_problem_solver",
         tool="edit_file",
         summary="edit",
-        top_agent="problem_solver",
+        top_agent="kodo_problem_solver",
     )
     history = read_history(doc, tmp_path)
-    assert history[0]["top_agent"] == "problem_solver"
+    assert history[0]["top_agent"] == "kodo_problem_solver"
     # Still just a new_revision — no review_result/accepted appear outside
     # Guided mode, because nothing in that flow ever fires there.
     assert [e["type"] for e in history] == ["new_revision"]
@@ -153,10 +153,10 @@ def test_status_derivation_full_lifecycle(tmp_path: Path) -> None:
         doc,
         tmp_path,
         commit_hash="sha-a",
-        author="architect",
+        author="kodo_architect",
         tool="filesystem",
         summary="create",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
     # Written, never looked at.
     assert _status(doc, tmp_path) == "pending_review"
@@ -170,10 +170,10 @@ def test_status_derivation_full_lifecycle(tmp_path: Path) -> None:
         doc,
         tmp_path,
         commit_hash="sha-b",
-        author="architect",
+        author="kodo_architect",
         tool="edit_file",
         summary="revise",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
     assert _status(doc, tmp_path, outstanding=2) == "needs_revision"
 
@@ -190,10 +190,10 @@ def test_status_derivation_full_lifecycle(tmp_path: Path) -> None:
         doc,
         tmp_path,
         commit_hash="sha-c",
-        author="architect",
+        author="kodo_architect",
         tool="edit_file",
         summary="revise again",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
     append_review_result(doc, tmp_path, decision="approve", comment="")
     assert _status(doc, tmp_path, reviewed=True) == "pending_acceptance"
@@ -214,10 +214,10 @@ def test_reviewed_clean_and_never_reviewed_are_distinguished(tmp_path: Path) -> 
         doc,
         tmp_path,
         commit_hash="sha",
-        author="architect",
+        author="kodo_architect",
         tool="filesystem",
         summary="create",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
     assert _status(doc, tmp_path, reviewed=False, outstanding=0) == "pending_review"
     assert _status(doc, tmp_path, reviewed=True, outstanding=0) == "pending_acceptance"
@@ -242,10 +242,10 @@ def test_last_revision_timestamp_finds_the_most_recent_revision(tmp_path: Path) 
             doc,
             tmp_path,
             commit_hash=sha,
-            author="architect",
+            author="kodo_architect",
             tool="edit_file",
             summary="x",
-            top_agent="guide",
+            top_agent="kodo_guide",
         )
     append_review_result(doc, tmp_path, decision="reject", comment="")
     history = read_history(doc, tmp_path)
@@ -261,10 +261,10 @@ def test_append_accepted_reuses_most_recent_new_revision_commit(
         doc,
         tmp_path,
         commit_hash="first-sha",
-        author="architect",
+        author="kodo_architect",
         tool="filesystem",
         summary="create",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
     append_review_result(doc, tmp_path, decision="approve", comment="")
     # No further new_revision before accepted — must still find "first-sha".
@@ -299,19 +299,19 @@ def test_scan_tracked_files_reports_every_tracked_document(tmp_path: Path) -> No
         doc_a,
         tmp_path,
         commit_hash="sha-a",
-        author="architect",
+        author="kodo_architect",
         tool="filesystem",
         summary="create",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
     append_new_revision(
         doc_b,
         tmp_path,
         commit_hash="sha-b",
-        author="coder",
+        author="kodo_coder",
         tool="filesystem",
         summary="create",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
     append_accepted(doc_a, tmp_path)
 

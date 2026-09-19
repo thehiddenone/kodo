@@ -112,10 +112,10 @@ async def test_engine_services_run_subagent_forwards_args() -> None:
     rec = _Recorder()
     services = _make_services(rec)
 
-    result = await services.run_subagent("guide", "investigator", {"task": "look"}, 3)
+    result = await services.run_subagent("kodo_guide", "kodo_investigator", {"task": "look"}, 3)
 
     assert result == {"ok": True}
-    assert rec.calls == [("run_subagent", ("guide", "investigator", {"task": "look"}, 3))]
+    assert rec.calls == [("run_subagent", ("kodo_guide", "kodo_investigator", {"task": "look"}, 3))]
 
 
 @pytest.mark.asyncio
@@ -126,9 +126,9 @@ async def test_engine_services_run_subagent_defaults_max_rounds_to_none() -> Non
     rec = _Recorder()
     services = _make_services(rec)
 
-    await services.run_subagent("guide", "coder", {"task": "build"})
+    await services.run_subagent("kodo_guide", "kodo_coder", {"task": "build"})
 
-    assert rec.calls == [("run_subagent", ("guide", "coder", {"task": "build"}, None))]
+    assert rec.calls == [("run_subagent", ("kodo_guide", "kodo_coder", {"task": "build"}, None))]
 
 
 @pytest.mark.asyncio
@@ -448,7 +448,7 @@ async def test_emit_usage_reports_tokens_and_running_cost() -> None:
     turn_end = TurnEnd(usage=usage, stop_reason="end_turn")
     emitters.add_tokens_from_usage(usage)
 
-    await emitters.emit_usage(turn_end, "claude-x", 2.5, "guide")
+    await emitters.emit_usage(turn_end, "claude-x", 2.5, "kodo_guide")
 
     payload = sink.sent[0].payload
     assert payload["type"] == "usage.update"
@@ -467,7 +467,7 @@ async def test_emit_usage_reports_tokens_and_running_cost() -> None:
     assert payload["model"] == "claude-x"
     assert payload["usd_cost"] == usage.usd_cost
     assert payload["stop_reason"] == "end_turn"
-    assert payload["agent"] == "guide"
+    assert payload["agent"] == "kodo_guide"
 
 
 @pytest.mark.asyncio
@@ -478,12 +478,12 @@ async def test_emit_usage_persists_marker_to_main_log_when_no_active_subsession(
     )
     turn_end = TurnEnd(usage=usage, stop_reason="end_turn")
 
-    await emitters.emit_usage(turn_end, "claude-x", 2.5, "guide")
+    await emitters.emit_usage(turn_end, "claude-x", 2.5, "kodo_guide")
 
     assert len(transient.markers) == 1
     assert transient.markers[0]["type"] == "usage"
     assert transient.markers[0]["duration_seconds"] == 2.5
-    assert transient.markers[0]["agent"] == "guide"
+    assert transient.markers[0]["agent"] == "kodo_guide"
     assert transient.subsession_markers == []
 
 
@@ -496,14 +496,14 @@ async def test_emit_usage_persists_marker_to_active_subsession() -> None:
     )
     turn_end = TurnEnd(usage=usage, stop_reason="end_turn")
 
-    await emitters.emit_usage(turn_end, "claude-x", 2.5, "narrative_author")
+    await emitters.emit_usage(turn_end, "claude-x", 2.5, "kodo_narrative_author")
 
     assert transient.markers == []
     assert len(transient.subsession_markers) == 1
     sid, marker = transient.subsession_markers[0]
     assert sid == "sub-1"
     assert marker["type"] == "usage"
-    assert marker["agent"] == "narrative_author"
+    assert marker["agent"] == "kodo_narrative_author"
 
 
 @pytest.mark.asyncio
@@ -604,11 +604,11 @@ async def test_emit_agent_started_includes_component() -> None:
     emitters, sink, _ = _make_emitters()
     emitters._session.component = "planning"
 
-    await emitters.emit_agent_started("guide")
+    await emitters.emit_agent_started("kodo_guide")
 
     assert sink.sent[0].payload == {
         "type": "agent.started",
-        "agent": "guide",
+        "agent": "kodo_guide",
         "component": "planning",
     }
 
@@ -617,11 +617,11 @@ async def test_emit_agent_started_includes_component() -> None:
 async def test_emit_agent_finished_includes_status_ok() -> None:
     emitters, sink, _ = _make_emitters()
 
-    await emitters.emit_agent_finished("guide")
+    await emitters.emit_agent_finished("kodo_guide")
 
     assert sink.sent[0].payload == {
         "type": "agent.finished",
-        "agent": "guide",
+        "agent": "kodo_guide",
         "component": None,
         "status": "ok",
     }

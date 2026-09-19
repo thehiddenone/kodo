@@ -47,6 +47,41 @@ def kodo_skills_dir() -> Path:
     return kodo_user_dir() / "skills"
 
 
+def kodo_agents_dir() -> Path:
+    """``~/.kodo/agents/`` — the user-installed agent store (doc/USER_AGENTS.md).
+
+    Two kinds of entry live directly under this root, and the layout is what
+    tells them apart:
+
+    - **one directory per user top-level agent**, named after the agent and
+      holding exactly two files — ``<agent_name>.json`` (how it is selected) and
+      ``agent_<agent_name>.md`` (its prompt);
+    - **one shared ``subagents/`` directory**, holding every user sub-agent as a
+      ``subagent_<name>.md`` prompt beside its ``<name>.json`` contract. They are
+      shared: any user top-level agent may list any of them.
+
+    ``subagents`` is therefore a **reserved** directory name — a user agent
+    called ``subagents`` would be indistinguishable from that shared directory
+    — as is any name beginning with ``kodo_``, which every built-in agent
+    carries so that a user file can never collide with one.
+
+    Exposed here, beside ``kodo_skills_dir``, so the registry, the installer and
+    the server's ``agents.*`` handlers all resolve the same root without
+    importing one another.
+    """
+    return kodo_user_dir() / "agents"
+
+
+def kodo_user_subagents_dir() -> Path:
+    """``~/.kodo/agents/subagents/`` — the shared user sub-agent directory.
+
+    Named rather than spelled out at each call site because it is the one path
+    under :func:`kodo_agents_dir` that is *not* a top-level agent's bundle, and
+    the difference matters to every caller that iterates the root.
+    """
+    return kodo_agents_dir() / "subagents"
+
+
 def session_attachments_dir(session_id: str) -> Path:
     """``~/.kodo/sessions/<session_id>/attachments`` — one session's stored prompt attachments.
 

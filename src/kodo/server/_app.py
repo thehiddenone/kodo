@@ -24,7 +24,7 @@ from typing import cast
 from aiohttp import web
 from huggingface_hub.errors import GatedRepoError
 
-from kodo.agents import AgentRegistry
+from kodo.agents import AgentRegistry, UserAgentStore
 from kodo.binutils import ensure_all_utils
 from kodo.llms import (
     CLOUD_THINKING_FAMILIES,
@@ -84,7 +84,13 @@ from kodo.llms.llamacpp import (
     update_llamacpp,
 )
 from kodo.llms.local import LocalModelError
-from kodo.project import ProjectLayoutError, WorkspaceLayout, kodo_skills_dir, kodo_user_dir
+from kodo.project import (
+    ProjectLayoutError,
+    WorkspaceLayout,
+    kodo_agents_dir,
+    kodo_skills_dir,
+    kodo_user_dir,
+)
 from kodo.runtime import (
     CheckpointState,
     MirrorDirtyError,
@@ -2770,6 +2776,11 @@ def create_app(config: Config) -> web.Application:
     # The store has no installer — the user drops directories in — so the
     # directory they are told about must exist before they look for it.
     SkillStore(kodo_skills_dir()).ensure_root()
+    # Same reasoning for user-installed agents: the folder a user is told to
+    # drop a bundle into — and that the Settings panel offers to open — must
+    # exist before they go looking for it. ``ensure_root`` also creates the
+    # shared ``subagents/`` directory, so both halves of the layout are there.
+    UserAgentStore(kodo_agents_dir()).ensure_root()
     _setup_log_file(layout, config.log_level)
 
     # The registry resolves the default agent, and the user's preference is a
@@ -2778,7 +2789,13 @@ def create_app(config: Config) -> web.Application:
     registry = AgentRegistry(
         _AGENTS_DIR,
         preferred_default=lambda: str(config.reload_settings().get("default_agent", "")),
+        user_dir=kodo_agents_dir(),
     )
+    for entry in registry.broken_agents:
+        # Visible, not fatal. A third-party bundle that does not load must never
+        # stop the server — but it must not vanish silently either, or the user
+        # is left wondering why the agent they installed is not in the picker.
+        _log.warning("user agent %r failed to load (%s): %s", entry.name, entry.path, entry.error)
     gateway = LLMGateway(
         cloud_concurrency=lambda: _cloud_concurrency(config),
     )

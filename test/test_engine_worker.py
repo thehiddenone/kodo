@@ -84,7 +84,7 @@ class _FakeTransient:
         self.active_subsession = active_subsession
 
 
-def _make_engine(*, top_agent: str = "guide") -> WorkflowEngine:
+def _make_engine(*, top_agent: str = "kodo_guide") -> WorkflowEngine:
     engine = object.__new__(WorkflowEngine)
     engine._resume_subsession_pending = False
     engine._replay_subsessions = None
@@ -172,7 +172,7 @@ async def test_resume_failure_is_recovered_and_worker_keeps_running() -> None:
     engine = _make_engine()
     engine._resume_subsession_pending = True
     engine._replay_subsessions = [{"subsession_id": "s1"}]
-    engine._session.agent = "guide"
+    engine._session.agent = "kodo_guide"
 
     async def _boom() -> None:
         raise RuntimeError("resume blew up")
@@ -187,7 +187,7 @@ async def test_resume_failure_is_recovered_and_worker_keeps_running() -> None:
     # Worker survives the failed resume and goes on to service the queue.
     engine._queue.put_nowait({"text": "hello"})
     await _drive(engine)
-    assert ("guide", "hello", []) in engine.calls
+    assert ("kodo_guide", "hello", []) in engine.calls
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +300,7 @@ async def test_non_list_attachments_are_coerced_to_empty_list() -> None:
 
     await _drive(engine)
 
-    assert engine.calls == [("guide", "hi", [])]
+    assert engine.calls == [("kodo_guide", "hi", [])]
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +327,7 @@ async def test_phase_done_breaks_worker_loop() -> None:
     task = asyncio.create_task(engine._run_worker())
     await asyncio.wait_for(task, timeout=0.3)  # must complete on its own, no cancel needed
 
-    assert engine.calls == [("guide", "wrap up", [])]
+    assert engine.calls == [("kodo_guide", "wrap up", [])]
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +433,7 @@ def _crashing_engine(
         attachments: list[str] | None = None,
         nudge_detail: dict[str, object] | None = None,
     ) -> None:
-        engine.calls.append(("guide", text, attachments))
+        engine.calls.append(("kodo_guide", text, attachments))
         if nudge_detail is not None:
             engine.nudge_details.append(nudge_detail)
         if crash_every_turn or len(engine.calls) == 1:
@@ -454,7 +454,7 @@ async def test_crash_with_open_subsession_closes_it_and_reports_to_caller() -> N
     """
     active = {
         "subsession_id": "sub1",
-        "agent": "toolchain_builder",
+        "agent": "kodo_toolchain_builder",
         "display_name": "Toolchain Builder",
     }
     engine = _crashing_engine(active)
@@ -468,7 +468,7 @@ async def test_crash_with_open_subsession_closes_it_and_reports_to_caller() -> N
     # (kodo-vsix renders it as a red <kodo_crit> card plus a toast).
     assert engine._emitters.errors == [("kaboom", True)]
     # ...and the calling agent got a second, real turn naming the crash.
-    assert [label for label, _text, _att in engine.calls] == ["guide", "guide"]
+    assert [label for label, _text, _att in engine.calls] == ["kodo_guide", "kodo_guide"]
     recovery_text = engine.calls[1][1]
     assert "Toolchain Builder" in recovery_text
     assert "kaboom" in recovery_text
@@ -484,7 +484,7 @@ async def test_crash_recovery_turn_carries_a_subsession_crash_nudge_detail() -> 
     needs no flush, which is why the new value costs no client change.
     """
     engine = _crashing_engine(
-        {"subsession_id": "sub1", "agent": "toolchain_builder"}, crash_every_turn=True
+        {"subsession_id": "sub1", "agent": "kodo_toolchain_builder"}, crash_every_turn=True
     )
     engine._queue.put_nowait({"text": "hi"})
 
@@ -496,21 +496,21 @@ async def test_crash_recovery_turn_carries_a_subsession_crash_nudge_detail() -> 
     assert detail["source"] == "subsession_crash"
     assert detail["reasons"] == ["subsession_crashed"]
     assert detail["mode"] == "auto"
-    assert "toolchain_builder" in str(detail["ui_text"])
+    assert "kodo_toolchain_builder" in str(detail["ui_text"])
     assert "kaboom" in str(detail["ui_text"])
 
 
 @pytest.mark.asyncio
 async def test_crash_recovery_is_one_shot_per_chain() -> None:
     """A crash *while recovering from a crash* goes idle instead of looping."""
-    engine = _crashing_engine({"subsession_id": "sub1", "agent": "developer"})
+    engine = _crashing_engine({"subsession_id": "sub1", "agent": "kodo_developer"})
     engine._subsession_crash_recovered = True
     engine._queue.put_nowait({"text": "hi"})
 
     await _drive(engine)
 
     # The subsession is still closed out — that half is never skipped.
-    assert engine.aborted_subsessions == [{"subsession_id": "sub1", "agent": "developer"}]
+    assert engine.aborted_subsessions == [{"subsession_id": "sub1", "agent": "kodo_developer"}]
     # But no second recovery turn is queued.
     assert engine._queue.empty()
 
@@ -518,7 +518,7 @@ async def test_crash_recovery_is_one_shot_per_chain() -> None:
 @pytest.mark.asyncio
 async def test_crash_recovery_survives_a_failing_abort() -> None:
     """The backstop must never wedge the worker, even if the abort itself fails."""
-    engine = _crashing_engine({"subsession_id": "sub1", "agent": "developer"})
+    engine = _crashing_engine({"subsession_id": "sub1", "agent": "kodo_developer"})
 
     async def _bad_abort() -> None:
         raise RuntimeError("marker write failed")
@@ -531,7 +531,7 @@ async def test_crash_recovery_survives_a_failing_abort() -> None:
     assert engine._session.phase == "awaiting_user"
     assert engine._emitters.errors == [("kaboom", True)]
     # Still reported to the caller — the abort failing does not lose the crash.
-    assert [label for label, _text, _att in engine.calls] == ["guide", "guide"]
+    assert [label for label, _text, _att in engine.calls] == ["kodo_guide", "kodo_guide"]
 
 
 @pytest.mark.asyncio
@@ -598,7 +598,7 @@ async def test_handle_input_no_agent_cycles_phase_and_logs() -> None:
     engine = _make_engine()
     del engine._handle_input_no_agent  # use the real bound method
 
-    await WorkflowEngine._handle_input_no_agent(engine, "guide", "hello there")
+    await WorkflowEngine._handle_input_no_agent(engine, "kodo_guide", "hello there")
 
     assert engine._session.phase == "intake"
     assert engine._emitters.state_emits == 2

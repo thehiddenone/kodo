@@ -32,10 +32,10 @@ def _revise(root: Path, sha: str = "sha") -> Path:
         doc,
         root,
         commit_hash=sha,
-        author="architect",
+        author="kodo_architect",
         tool="edit_file",
         summary="write",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
     return doc
 
@@ -58,7 +58,7 @@ def test_an_outstanding_finding_means_needs_revision(tmp_path: Path) -> None:
     apply_findings(
         findings,
         _LOGICAL,
-        reviewer="architect_critic",
+        reviewer="kodo_architect_critic",
         updates=[{"kind": "gap", "description": "x"}],
     )
     assert _status(root, findings) == "needs_revision"
@@ -68,7 +68,7 @@ def test_a_clean_review_since_the_last_revision_is_pending_acceptance(tmp_path: 
     root, findings = tmp_path / "p", tmp_path / "f"
     root.mkdir()
     _revise(root)
-    apply_findings(findings, _LOGICAL, reviewer="architect_critic", updates=[])
+    apply_findings(findings, _LOGICAL, reviewer="kodo_architect_critic", updates=[])
     assert _status(root, findings) == "pending_acceptance"
 
 
@@ -78,7 +78,7 @@ def test_a_revision_after_a_clean_review_goes_back_to_pending_review(tmp_path: P
     root, findings = tmp_path / "p", tmp_path / "f"
     root.mkdir()
     _revise(root, sha="sha-1")
-    apply_findings(findings, _LOGICAL, reviewer="architect_critic", updates=[])
+    apply_findings(findings, _LOGICAL, reviewer="kodo_architect_critic", updates=[])
     assert _status(root, findings) == "pending_acceptance"
 
     _revise(root, sha="sha-2")
@@ -89,7 +89,7 @@ def test_the_users_rejection_outranks_an_empty_backlog(tmp_path: Path) -> None:
     root, findings = tmp_path / "p", tmp_path / "f"
     root.mkdir()
     doc = _revise(root)
-    apply_findings(findings, _LOGICAL, reviewer="architect_critic", updates=[])
+    apply_findings(findings, _LOGICAL, reviewer="kodo_architect_critic", updates=[])
     append_review_result(doc, root, decision="reject", comment="no")
     assert _status(root, findings) == "needs_revision"
 
@@ -100,7 +100,7 @@ def test_the_users_feedback_finding_alone_puts_it_back_in_revision(tmp_path: Pat
     root, findings = tmp_path / "p", tmp_path / "f"
     root.mkdir()
     _revise(root)
-    apply_findings(findings, _LOGICAL, reviewer="architect_critic", updates=[])
+    apply_findings(findings, _LOGICAL, reviewer="kodo_architect_critic", updates=[])
     record_user_feedback(findings, _LOGICAL, "needs a North Star")
     assert _status(root, findings) == "needs_revision"
 
@@ -113,7 +113,7 @@ def test_accepted_is_terminal_regardless_of_the_backlog(tmp_path: Path) -> None:
     apply_findings(
         findings,
         _LOGICAL,
-        reviewer="architect_critic",
+        reviewer="kodo_architect_critic",
         updates=[{"kind": "gap", "description": "x"}],
     )
     assert _status(root, findings) == "accepted"
@@ -138,7 +138,7 @@ def test_an_untracked_or_unwritten_document_still_answers(tmp_path: Path) -> Non
     apply_findings(
         findings,
         _LOGICAL,
-        reviewer="architect_critic",
+        reviewer="kodo_architect_critic",
         updates=[{"kind": "gap", "description": "x"}],
     )
     assert _status(root, findings) == "needs_revision"

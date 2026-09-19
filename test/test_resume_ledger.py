@@ -48,11 +48,11 @@ def test_completed_subsession_preserves_structured_dict_result() -> None:
     }
     lines: list[dict[str, object]] = [
         {"role": "assistant", "content": [{"type": "tool_use", "id": "x", "name": "run_subagent"}]},
-        {"type": "subsession_start", "subsession_id": "s1", "agent": "toolchain_builder"},
+        {"type": "subsession_start", "subsession_id": "s1", "agent": "kodo_toolchain_builder"},
         {
             "type": "subsession_end",
             "subsession_id": "s1",
-            "agent": "toolchain_builder",
+            "agent": "kodo_toolchain_builder",
             "failed": False,
             "result": result,
         },
@@ -67,11 +67,11 @@ def test_completed_subsession_preserves_legacy_list_result() -> None:
     """A bare artifact-id list (legacy marker shape) is still carried through."""
     lines: list[dict[str, object]] = [
         {"role": "assistant", "content": [{"type": "tool_use", "id": "x", "name": "run_subagent"}]},
-        {"type": "subsession_start", "subsession_id": "s1", "agent": "coder"},
+        {"type": "subsession_start", "subsession_id": "s1", "agent": "kodo_coder"},
         {
             "type": "subsession_end",
             "subsession_id": "s1",
-            "agent": "coder",
+            "agent": "kodo_coder",
             "result": ["artifact-1", "artifact-2"],
         },
     ]
@@ -84,7 +84,7 @@ def test_active_unclosed_subsession_is_incomplete_with_no_result() -> None:
     """An unpaired start (the in-flight subsession at crash) is driven live, not reused."""
     lines: list[dict[str, object]] = [
         {"role": "assistant", "content": [{"type": "tool_use", "id": "x", "name": "run_subagent"}]},
-        {"type": "subsession_start", "subsession_id": "s1", "agent": "toolchain_builder"},
+        {"type": "subsession_start", "subsession_id": "s1", "agent": "kodo_toolchain_builder"},
     ]
     ledger = _ledger_for(lines)
     assert len(ledger) == 1
@@ -95,14 +95,14 @@ def test_active_unclosed_subsession_is_incomplete_with_no_result() -> None:
 def test_only_markers_after_last_assistant_count() -> None:
     """Markers from an earlier, already-handed-back subsession are ignored."""
     lines: list[dict[str, object]] = [
-        {"type": "subsession_start", "subsession_id": "old", "agent": "coder"},
-        {"type": "subsession_end", "subsession_id": "old", "agent": "coder", "result": {"a": 1}},
+        {"type": "subsession_start", "subsession_id": "old", "agent": "kodo_coder"},
+        {"type": "subsession_end", "subsession_id": "old", "agent": "kodo_coder", "result": {"a": 1}},
         {"role": "assistant", "content": [{"type": "tool_use", "id": "x", "name": "run_subagent"}]},
-        {"type": "subsession_start", "subsession_id": "new", "agent": "toolchain_builder"},
+        {"type": "subsession_start", "subsession_id": "new", "agent": "kodo_toolchain_builder"},
         {
             "type": "subsession_end",
             "subsession_id": "new",
-            "agent": "toolchain_builder",
+            "agent": "kodo_toolchain_builder",
             "result": {"summary": "fresh", "schema_compliance": True},
         },
     ]

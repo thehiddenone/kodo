@@ -391,7 +391,7 @@ async def test_defensive_asks_moderate_and_above() -> None:
 async def test_smart_allows_below_high() -> None:
     layer = SecurityLayer()
     assert (await _eval(layer, "edit_file", {"intent": "x"}, "smart")).action == "allow"
-    assert (await _eval(layer, "web_search", {}, "smart")).action == "allow"
+    assert (await _eval(layer, "kodo_web_search", {}, "smart")).action == "allow"
 
 
 @pytest.mark.asyncio

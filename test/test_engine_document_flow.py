@@ -208,10 +208,10 @@ def _seed_revision(project_root: Path, rel_path: str, *, sha: str = "deadbeef") 
         doc,
         project_root,
         commit_hash=sha,
-        author="architect",
+        author="kodo_architect",
         tool="filesystem",
         summary="create",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
     return doc
 
@@ -220,10 +220,10 @@ def _seed_revision(project_root: Path, rel_path: str, *, sha: str = "deadbeef") 
 # below drives the real store, so the id is derived exactly as the engine
 # derives it (project folder + authoring agent).
 _ARCH_DOC = "proj/specs/architecture.md"
-_ARCH_WP = "proj/architect"
+_ARCH_WP = "proj/kodo_architect"
 
 
-def _wp(paths: list[str], *, agent: str = "architect", responsibility: str = "") -> WorkProduct:
+def _wp(paths: list[str], *, agent: str = "kodo_architect", responsibility: str = "") -> WorkProduct:
     return WorkProduct(
         id=work_product_id("proj", agent, responsibility),
         project="proj",
@@ -247,7 +247,7 @@ async def _seed_architect_inputs(engine) -> None:
     and something these tests have to satisfy exactly as a real pipeline does.
     """
     await engine._record_work_product(
-        "narrative_author",
+        "kodo_narrative_author",
         "",
         ["proj/specs/narrative.md", "proj/specs/tech_stack.md"],
         {
@@ -408,15 +408,15 @@ async def test_review_loop_reviews_the_authors_whole_reported_set(tmp_path: Path
         phase: str = "initial",
     ) -> dict[str, object]:
         calls.append((name, task_input, findings_key))
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result(_ARCH_DOC, second)
-        await engine._record_findings("architect_critic", {"findings": []}, findings_key)
+        await engine._record_findings("kodo_architect_critic", {"findings": []}, findings_key)
         return {"findings": []}
 
     engine._spawn_subagent = _fake_spawn
 
     result = await engine._run_review_loop(
-        "architect", "architect_critic", {"instructions": "Produce the architecture."}, None
+        "kodo_architect", "kodo_architect_critic", {"instructions": "Produce the architecture."}, None
     )
 
     assert result["paths"] == [_ARCH_DOC, second]
@@ -424,8 +424,8 @@ async def test_review_loop_reviews_the_authors_whole_reported_set(tmp_path: Path
     assert result["review"]["outcome"] == "accepted"
     assert result["review"]["rounds"] == 1
     assert result["review"]["outstanding"] == 0
-    assert calls[0][0] == "architect"
-    assert calls[1][0] == "architect_critic"
+    assert calls[0][0] == "kodo_architect"
+    assert calls[1][0] == "kodo_architect_critic"
     # Both members reach the critic — under the ROLE they fill, which is what
     # architect_critic's own contract calls them — and the work product, not a
     # file path, scopes its get_findings.
@@ -480,18 +480,18 @@ async def test_review_loop_auto_closes_findings_for_a_file_that_leaves_the_set(
         findings_key: str = "",
         phase: str = "initial",
     ) -> dict[str, object]:
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result(*next(author_paths))
         updates = next(rounds)
         if updates is None:
             updates = [{"id": _ids(findings_dir)[0], "state": "fixed"}]
-        await engine._record_findings("architect_critic", {"findings": updates}, findings_key)
+        await engine._record_findings("kodo_architect_critic", {"findings": updates}, findings_key)
         return {"findings": updates}
 
     engine._spawn_subagent = _fake_spawn
 
     result = await engine._run_review_loop(
-        "architect", "architect_critic", {"instructions": "Produce it."}, 5
+        "kodo_architect", "kodo_architect_critic", {"instructions": "Produce it."}, 5
     )
 
     # Both findings ended up closed — one by the critic, one automatically.
@@ -526,7 +526,7 @@ async def test_review_loop_resends_identical_instructions_every_round(tmp_path: 
         phase: str = "initial",
     ) -> dict[str, object]:
         calls.append((name, dict(task_input), findings_key))
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result()
         n = next(round_no)
         if n == 0:
@@ -542,19 +542,19 @@ async def test_review_loop_resends_identical_instructions_every_round(tmp_path: 
             updates = [{"id": fid, "state": "fixed"} for fid in _ids(findings_dir)[:2]]
         else:
             updates = [{"id": _ids(findings_dir)[2], "state": "fixed"}]
-        await engine._record_findings("architect_critic", {"findings": updates}, findings_key)
+        await engine._record_findings("kodo_architect_critic", {"findings": updates}, findings_key)
         return {"findings": updates}
 
     engine._spawn_subagent = _fake_spawn
 
     result = await engine._run_review_loop(
-        "architect", "architect_critic", {"instructions": "Produce the architecture."}, None
+        "kodo_architect", "kodo_architect_critic", {"instructions": "Produce the architecture."}, None
     )
 
     assert result["review"]["outcome"] == "accepted"
     assert result["review"]["rounds"] == 3
 
-    author_rounds = [task for name, task, _ in calls if name == "architect"]
+    author_rounds = [task for name, task, _ in calls if name == "kodo_architect"]
     assert [t["instructions"] for t in author_rounds] == ["Produce the architecture."] * 3
     # Round 1 has no files yet, so no revision target and no findings scope.
     assert "for_revision_paths" not in author_rounds[0]
@@ -563,7 +563,7 @@ async def test_review_loop_resends_identical_instructions_every_round(tmp_path: 
     # point — and its get_findings is scoped to the work product, which is the
     # only place the findings reach it.
     assert author_rounds[1]["for_revision_paths"] == [doc_path]
-    assert [scope for name, _, scope in calls if name == "architect"][1:] == [_ARCH_WP] * 2
+    assert [scope for name, _, scope in calls if name == "kodo_architect"][1:] == [_ARCH_WP] * 2
     # Nothing about the findings themselves leaked into the task.
     assert all("missing" not in str(task) for task in author_rounds)
 
@@ -591,19 +591,19 @@ async def test_review_loop_stops_when_a_round_closes_and_opens_nothing(tmp_path:
         phase: str = "initial",
     ) -> dict[str, object]:
         nonlocal first
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result()
         # Round 1 raises one finding; every later round says nothing at all —
         # the finding stays outstanding, and nothing moves.
         updates = [{"kind": "gap", "description": "same finding, every round"}] if first else []
         first = False
-        await engine._record_findings("architect_critic", {"findings": updates}, findings_key)
+        await engine._record_findings("kodo_architect_critic", {"findings": updates}, findings_key)
         return {"findings": updates}
 
     engine._spawn_subagent = _fake_spawn
 
     result = await engine._run_review_loop(
-        "architect", "architect_critic", {"instructions": "Produce it."}, 5
+        "kodo_architect", "kodo_architect_critic", {"instructions": "Produce it."}, 5
     )
 
     assert result["review"]["outcome"] == "not_converging"
@@ -632,7 +632,7 @@ async def test_review_loop_keeps_going_while_a_round_fixes_and_finds_in_equal_nu
         findings_key: str = "",
         phase: str = "initial",
     ) -> dict[str, object]:
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result()
         n = next(round_no)
         if n == 0:
@@ -669,13 +669,13 @@ async def test_review_loop_keeps_going_while_a_round_fixes_and_finds_in_equal_nu
                 if f["state"] == "outstanding"
             ]
             updates = [{"id": fid, "state": "fixed"} for fid in open_ids]
-        await engine._record_findings("architect_critic", {"findings": updates}, findings_key)
+        await engine._record_findings("kodo_architect_critic", {"findings": updates}, findings_key)
         return {"findings": updates}
 
     engine._spawn_subagent = _fake_spawn
 
     result = await engine._run_review_loop(
-        "architect", "architect_critic", {"instructions": "Produce it."}, 5
+        "kodo_architect", "kodo_architect_critic", {"instructions": "Produce it."}, 5
     )
 
     assert result["review"]["outcome"] == "accepted"
@@ -696,18 +696,18 @@ async def test_review_loop_reports_max_rounds_when_budget_runs_out(tmp_path: Pat
         findings_key: str = "",
         phase: str = "initial",
     ) -> dict[str, object]:
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result()
         # Every round finds something new, so progress never stalls and only
         # the caller's budget can stop the loop.
         updates = [{"kind": "gap", "description": f"c{next(counter)}"}]
-        await engine._record_findings("architect_critic", {"findings": updates}, findings_key)
+        await engine._record_findings("kodo_architect_critic", {"findings": updates}, findings_key)
         return {"findings": updates}
 
     engine._spawn_subagent = _fake_spawn
 
     result = await engine._run_review_loop(
-        "architect", "architect_critic", {"instructions": "Produce it."}, 2
+        "kodo_architect", "kodo_architect_critic", {"instructions": "Produce it."}, 2
     )
 
     assert result["review"]["outcome"] == "max_rounds"
@@ -736,11 +736,11 @@ async def test_review_loop_reports_not_reviewed_when_author_names_no_file(
     engine._spawn_subagent = _fake_spawn
 
     result = await engine._run_review_loop(
-        "architect", "architect_critic", {"instructions": "Produce it."}, None
+        "kodo_architect", "kodo_architect_critic", {"instructions": "Produce it."}, None
     )
 
     assert result["review"]["outcome"] == "not_reviewed"
-    assert spawned == ["architect"]  # the critic is never spawned against nothing
+    assert spawned == ["kodo_architect"]  # the critic is never spawned against nothing
 
 
 @pytest.mark.asyncio
@@ -771,12 +771,12 @@ async def test_review_loop_stops_on_an_escalation_without_spawning_the_critic(
     engine._spawn_subagent = _fake_spawn
 
     result = await engine._run_review_loop(
-        "architect", "architect_critic", {"instructions": "Produce it."}, 5
+        "kodo_architect", "kodo_architect_critic", {"instructions": "Produce it."}, 5
     )
 
     assert result["review"]["outcome"] == "escalated"
     assert result["review"]["rounds"] == 1
-    assert spawned == ["architect"]
+    assert spawned == ["kodo_architect"]
     # The caller reads reason/summary/options straight off the result.
     assert result["reason"] == "insufficient_narrative_for_decomposition"
     assert result["options"] == ["Fold it into LEDGER", "Give it its own codename"]
@@ -800,19 +800,19 @@ async def test_review_loop_treats_an_empty_reason_as_a_normal_result(tmp_path: P
         phase: str = "initial",
     ) -> dict[str, object]:
         spawned.append(name)
-        if name == "architect":
+        if name == "kodo_architect":
             return {**_author_result(), "reason": "   "}
-        await engine._record_findings("architect_critic", {"findings": []}, findings_key)
+        await engine._record_findings("kodo_architect_critic", {"findings": []}, findings_key)
         return {"findings": []}
 
     engine._spawn_subagent = _fake_spawn
 
     result = await engine._run_review_loop(
-        "architect", "architect_critic", {"instructions": "Produce it."}, None
+        "kodo_architect", "kodo_architect_critic", {"instructions": "Produce it."}, None
     )
 
     assert result["review"]["outcome"] == "accepted"
-    assert spawned == ["architect", "architect_critic"]
+    assert spawned == ["kodo_architect", "kodo_architect_critic"]
 
 
 # ---------------------------------------------------------------------------
@@ -831,7 +831,7 @@ def _seed_work_product(engine, paths: list[str]) -> str:
     work_product, _removed = record_membership(
         engine._project_root("proj"),
         project="proj",
-        agent="architect",
+        agent="kodo_architect",
         responsibility_code="",
         paths=paths,
     )
@@ -848,7 +848,7 @@ async def test_record_findings_opens_new_findings_and_leaves_the_set_unsettled(
     key = _seed_work_product(engine, [_ARCH_DOC])
 
     await engine._record_findings(
-        "architect_critic",
+        "kodo_architect_critic",
         {
             "findings": [
                 {
@@ -865,10 +865,10 @@ async def test_record_findings_opens_new_findings_and_leaves_the_set_unsettled(
     findings = read_findings(_findings_dir(tmp_path), _ARCH_WP)
     assert len(findings) == 1
     # The id describes its subject rather than counting: <project>_<agent>_<file>_<line>.
-    assert findings[0]["id"] == "proj_architect_architecture.md_4"
+    assert findings[0]["id"] == "proj_kodo_architect_architecture.md_4"
     assert findings[0]["kind"] == "gap"
     assert findings[0]["state"] == "outstanding"
-    assert findings[0]["reported_by"] == "architect_critic"
+    assert findings[0]["reported_by"] == "kodo_architect_critic"
     assert await engine._work_product_status(_wp([_ARCH_DOC])) == "needs_revision"
     # Nothing outstanding was resolved, so acceptance was not driven.
     assert [e["type"] for e in read_history(tmp_path / "specs" / "architecture.md", tmp_path)] == [
@@ -885,7 +885,7 @@ async def test_record_findings_empty_backlog_drives_the_acceptance_flow(tmp_path
     _seed_revision(tmp_path, "specs/architecture.md")
     key = _seed_work_product(engine, [_ARCH_DOC])
 
-    await engine._record_findings("architect_critic", {"findings": [], "summary": "clean"}, key)
+    await engine._record_findings("kodo_architect_critic", {"findings": [], "summary": "clean"}, key)
 
     # Autonomous mode auto-accepts, so the log ends on the acceptance marker.
     history = read_history(tmp_path / "specs" / "architecture.md", tmp_path)
@@ -906,7 +906,7 @@ async def test_record_findings_accepts_every_member_only_once_the_last_one_is_cl
     key = _seed_work_product(engine, [_ARCH_DOC, other])
 
     await engine._record_findings(
-        "architect_critic",
+        "kodo_architect_critic",
         {
             "findings": [
                 {"kind": "gap", "description": "a", "locations": [{"path": _ARCH_DOC}]},
@@ -921,12 +921,12 @@ async def test_record_findings_accepts_every_member_only_once_the_last_one_is_cl
     # Closing only ONE of them settles nothing — not even its own file.
     open_ids = _ids(_findings_dir(tmp_path))
     await engine._record_findings(
-        "architect_critic", {"findings": [{"id": open_ids[0], "state": "fixed"}]}, key
+        "kodo_architect_critic", {"findings": [{"id": open_ids[0], "state": "fixed"}]}, key
     )
     assert [e["type"] for e in read_history(first, tmp_path)] == ["new_revision"]
 
     await engine._record_findings(
-        "architect_critic", {"findings": [{"id": open_ids[1], "state": "fixed"}]}, key
+        "kodo_architect_critic", {"findings": [{"id": open_ids[1], "state": "fixed"}]}, key
     )
     for doc in (first, second):
         assert [e["type"] for e in read_history(doc, tmp_path)] == ["new_revision", "accepted"]
@@ -943,7 +943,7 @@ async def test_record_findings_leaves_unmentioned_findings_alone(tmp_path: Path)
     key = _seed_work_product(engine, [_ARCH_DOC])
 
     await engine._record_findings(
-        "architect_critic",
+        "kodo_architect_critic",
         {
             "findings": [
                 {
@@ -961,7 +961,7 @@ async def test_record_findings_leaves_unmentioned_findings_alone(tmp_path: Path)
         key,
     )
     # A whole round that says nothing at all.
-    await engine._record_findings("architect_critic", {"findings": []}, key)
+    await engine._record_findings("kodo_architect_critic", {"findings": []}, key)
 
     states = {f["id"]: f["state"] for f in read_findings(_findings_dir(tmp_path), _ARCH_WP)}
     assert len(states) == 2
@@ -977,7 +977,7 @@ async def test_record_findings_ignores_a_round_with_no_work_product(tmp_path: Pa
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
     _seed_revision(tmp_path, "specs/architecture.md")
 
-    await engine._record_findings("architect_critic", {"findings": []}, "")
+    await engine._record_findings("kodo_architect_critic", {"findings": []}, "")
 
     history = read_history(tmp_path / "specs" / "architecture.md", tmp_path)
     assert [e["type"] for e in history] == ["new_revision"]
@@ -992,7 +992,7 @@ async def test_record_findings_ignores_an_unknown_work_product(tmp_path: Path) -
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=gate)
     _seed_revision(tmp_path, "specs/architecture.md")
 
-    await engine._record_findings("architect_critic", {"findings": []}, "proj/never_recorded")
+    await engine._record_findings("kodo_architect_critic", {"findings": []}, "proj/never_recorded")
 
     assert read_findings(_findings_dir(tmp_path), "proj/never_recorded") == []
 
@@ -1048,16 +1048,16 @@ async def test_guided_filesystem_write_earns_both_a_commit_and_a_new_revision(
         doc,
         tmp_path,
         commit_hash=checkpoint.sha,
-        author="architect",
+        author="kodo_architect",
         tool="filesystem",
         summary="create",
-        top_agent="guide",
+        top_agent="kodo_guide",
     )
 
     history = read_history(doc, tmp_path)
     assert len(history) == 1
     assert history[0]["commit_hash"] == checkpoint.sha
-    assert history[0]["top_agent"] == "guide"
+    assert history[0]["top_agent"] == "kodo_guide"
 
     # The jsonl evolution log itself lives under .kodo/, which the mirror
     # already excludes — it must never show up in the mirror's own commit.
@@ -1110,21 +1110,21 @@ async def test_review_block_matches_the_generated_run_subagent_output_schema(
         findings_key: str = "",
         phase: str = "initial",
     ) -> dict[str, object]:
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result()
         updates = [{"kind": "gap", "description": "still wrong"}]
-        await engine._record_findings("architect_critic", {"findings": updates}, findings_key)
+        await engine._record_findings("kodo_architect_critic", {"findings": updates}, findings_key)
         return {"findings": updates}
 
     engine._spawn_subagent = _fake_spawn
 
     result = await engine._run_review_loop(
-        "architect", "architect_critic", {"instructions": "Produce it."}, 1
+        "kodo_architect", "kodo_architect_critic", {"instructions": "Produce it."}, 1
     )
 
     registry = AgentRegistry(Path("src/kodo/agents"))
     spec = next(
-        s for s in registry.run_subagent_specs("guide") if s.name == "run_subagent_architect"
+        s for s in registry.run_subagent_specs("kodo_guide") if s.name == "run_subagent_kodo_architect"
     )
     review_schema = spec.output_schema["properties"]["review"]  # type: ignore[index]
 
@@ -1157,20 +1157,20 @@ async def test_resolution_supplies_the_input_that_went_missing(tmp_path: Path) -
     the architecture, so it now receives it — from the ledger, not from a
     label the calling model happened to choose."""
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
-    await _seed_role(engine, "architect", ["proj/specs/architecture.md"])
+    await _seed_role(engine, "kodo_architect", ["proj/specs/architecture.md"])
     await _seed_role(
         engine,
-        "narrative_author",
+        "kodo_narrative_author",
         ["proj/specs/narrative.md", "proj/specs/tech_stack.md"],
         {
             "narrative_path": "proj/specs/narrative.md",
             "tech_stack_path": "proj/specs/tech_stack.md",
         },
     )
-    reviewed = await _seed_role(engine, "requirements_author", [_ARCH_DOC])
+    reviewed = await _seed_role(engine, "kodo_requirements_author", [_ARCH_DOC])
 
     resolved, _unmet = await engine._resolve_input_paths(
-        "requirements_critic", under_review=reviewed
+        "kodo_requirements_critic", under_review=reviewed
     )
 
     assert resolved == {
@@ -1187,7 +1187,7 @@ async def test_a_multi_role_producer_fills_each_role_separately(tmp_path: Path) 
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
     work_product = await _seed_role(
         engine,
-        "narrative_author",
+        "kodo_narrative_author",
         ["proj/specs/narrative.md", "proj/specs/tech_stack.md"],
         {
             "narrative_path": "proj/specs/narrative.md",
@@ -1201,7 +1201,7 @@ async def test_a_multi_role_producer_fills_each_role_separately(tmp_path: Path) 
         "tech_stack": ("proj/specs/tech_stack.md",),
     }
     # The architect asks for both, and gets them under their own names.
-    architect_paths, unmet = await engine._resolve_input_paths("architect")
+    architect_paths, unmet = await engine._resolve_input_paths("kodo_architect")
     assert architect_paths == {
         "narrative": "proj/specs/narrative.md",
         "tech_stack": "proj/specs/tech_stack.md",
@@ -1225,7 +1225,7 @@ async def test_the_remainder_role_takes_only_what_no_named_field_claimed(
 
     work_product = await _seed_role(
         engine,
-        "functional_designer",
+        "kodo_functional_designer",
         paths,
         {"paths": paths, "design_plan_path": "proj/specs/design_plan.md"},
     )
@@ -1249,17 +1249,17 @@ async def test_a_critics_contract_excludes_what_its_author_was_given(
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
     await _seed_role(
         engine,
-        "narrative_author",
+        "kodo_narrative_author",
         ["proj/specs/narrative.md", "proj/specs/tech_stack.md"],
         {
             "narrative_path": "proj/specs/narrative.md",
             "tech_stack_path": "proj/specs/tech_stack.md",
         },
     )
-    await _seed_role(engine, "requirements_author", ["proj/specs/requirements.md"])
-    reviewed = await _seed_role(engine, "coder", ["proj/src/leaderboard.py"])
+    await _seed_role(engine, "kodo_requirements_author", ["proj/specs/requirements.md"])
+    reviewed = await _seed_role(engine, "kodo_coder", ["proj/src/leaderboard.py"])
 
-    resolved, _unmet = await engine._resolve_input_paths("code_critic", under_review=reviewed)
+    resolved, _unmet = await engine._resolve_input_paths("kodo_code_critic", under_review=reviewed)
 
     assert resolved == {
         "code": "proj/src/leaderboard.py",
@@ -1274,10 +1274,10 @@ async def test_an_unmet_required_need_is_logged_and_left_out(tmp_path: Path) -> 
     rather than being refused — refusing outright is the intended end state,
     once resolution is trusted across every stage — but it must not invent one."""
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
-    reviewed = await _seed_role(engine, "requirements_author", [_ARCH_DOC])
+    reviewed = await _seed_role(engine, "kodo_requirements_author", [_ARCH_DOC])
 
     resolved, _unmet = await engine._resolve_input_paths(
-        "requirements_critic", under_review=reviewed
+        "kodo_requirements_critic", under_review=reviewed
     )
 
     assert resolved == {"requirements": _ARCH_DOC}
@@ -1289,11 +1289,11 @@ async def test_resolution_keeps_projects_apart(tmp_path: Path) -> None:
     """A session may bind several projects, and one project's architecture is
     not another's."""
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
-    await engine._record_work_product("architect", "", ["other/specs/architecture.md"], {})
-    reviewed = await _seed_role(engine, "requirements_author", [_ARCH_DOC])
+    await engine._record_work_product("kodo_architect", "", ["other/specs/architecture.md"], {})
+    reviewed = await _seed_role(engine, "kodo_requirements_author", [_ARCH_DOC])
 
     resolved, _unmet = await engine._resolve_input_paths(
-        "requirements_critic", under_review=reviewed
+        "kodo_requirements_critic", under_review=reviewed
     )
 
     assert "architecture" not in resolved
@@ -1310,7 +1310,7 @@ async def test_a_caller_supplied_path_survives_but_never_shadows_a_resolved_role
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
     await _seed_role(
         engine,
-        "narrative_author",
+        "kodo_narrative_author",
         ["proj/specs/narrative.md", "proj/specs/tech_stack.md"],
         {
             "narrative_path": "proj/specs/narrative.md",
@@ -1319,7 +1319,7 @@ async def test_a_caller_supplied_path_survives_but_never_shadows_a_resolved_role
     )
 
     resolved, _unmet = await engine._resolve_input_paths(
-        "architect",
+        "kodo_architect",
         caller_paths={"narrative": "proj/specs/WRONG.md", "scratch": "proj/notes.md"},
     )
 
@@ -1336,7 +1336,7 @@ async def test_an_agent_that_declares_nothing_keeps_its_callers_paths(
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
 
     resolved, _unmet = await engine._resolve_input_paths(
-        "developer", caller_paths={"module": "proj/src/orders.py"}
+        "kodo_developer", caller_paths={"module": "proj/src/orders.py"}
     )
 
     assert resolved == {"module": "proj/src/orders.py"}
@@ -1347,10 +1347,10 @@ async def test_malformed_caller_paths_are_ignored(tmp_path: Path) -> None:
     """`input_paths` is model-authored, so it is not trusted to be well-shaped."""
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
 
-    assert (await engine._resolve_input_paths("developer", caller_paths=None))[0] == {}
-    assert (await engine._resolve_input_paths("developer", caller_paths="nope"))[0] == {}
+    assert (await engine._resolve_input_paths("kodo_developer", caller_paths=None))[0] == {}
+    assert (await engine._resolve_input_paths("kodo_developer", caller_paths="nope"))[0] == {}
     junk, _ = await engine._resolve_input_paths(
-        "developer", caller_paths={"a": "", "b": None, "c": 42}
+        "kodo_developer", caller_paths={"a": "", "b": None, "c": 42}
     )
     assert junk == {}
 
@@ -1363,7 +1363,7 @@ async def test_the_architects_component_graph_is_recorded(tmp_path: Path) -> Non
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
 
     await engine._record_work_product(
-        "architect",
+        "kodo_architect",
         "",
         ["proj/specs/architecture.md"],
         {
@@ -1384,7 +1384,7 @@ async def test_only_the_architecture_producer_can_record_a_graph(tmp_path: Path)
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
 
     await engine._record_work_product(
-        "requirements_author",
+        "kodo_requirements_author",
         "",
         ["proj/specs/requirements.md"],
         {
@@ -1406,7 +1406,7 @@ async def test_per_component_designs_are_attributed_from_the_authors_map(
     paths = ["proj/specs/design_plan.md", "proj/d/AUTH.md", "proj/d/LEDGER.md"]
 
     work_product = await engine._record_work_product(
-        "functional_designer",
+        "kodo_functional_designer",
         "",
         paths,
         {
@@ -1432,7 +1432,7 @@ async def test_a_coder_gets_its_own_design_and_its_neighbours(tmp_path: Path) ->
     touches, out of however many the product has."""
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
     await engine._record_work_product(
-        "narrative_author",
+        "kodo_narrative_author",
         "",
         ["proj/specs/narrative.md", "proj/specs/tech_stack.md"],
         {
@@ -1441,7 +1441,7 @@ async def test_a_coder_gets_its_own_design_and_its_neighbours(tmp_path: Path) ->
         },
     )
     await engine._record_work_product(
-        "architect",
+        "kodo_architect",
         "",
         ["proj/specs/architecture.md"],
         {
@@ -1453,10 +1453,10 @@ async def test_a_coder_gets_its_own_design_and_its_neighbours(tmp_path: Path) ->
             ],
         },
     )
-    await engine._record_work_product("requirements_author", "", ["proj/specs/requirements.md"], {})
+    await engine._record_work_product("kodo_requirements_author", "", ["proj/specs/requirements.md"], {})
     designs = ["proj/d/AUTH.md", "proj/d/LEDGER.md", "proj/d/REPORTS.md"]
     await engine._record_work_product(
-        "functional_designer",
+        "kodo_functional_designer",
         "",
         designs,
         {
@@ -1468,10 +1468,10 @@ async def test_a_coder_gets_its_own_design_and_its_neighbours(tmp_path: Path) ->
             },
         },
     )
-    await engine._record_work_product("test_designer", "AUTH", ["proj/t/AUTH.md"], {})
-    await engine._record_work_product("test_coder", "AUTH", ["proj/test/AUTH_test.py"], {})
+    await engine._record_work_product("kodo_test_designer", "AUTH", ["proj/t/AUTH.md"], {})
+    await engine._record_work_product("kodo_test_coder", "AUTH", ["proj/test/AUTH_test.py"], {})
 
-    resolved, unmet = await engine._resolve_input_paths("coder", responsibility_code="AUTH")
+    resolved, unmet = await engine._resolve_input_paths("kodo_coder", responsibility_code="AUTH")
 
     assert unmet == ()
     # Its own design, plus LEDGER's because AUTH consumes it — and REPORTS,
@@ -1497,13 +1497,13 @@ async def test_a_reinvoked_author_is_handed_what_it_wrote_last_time(
     await _seed_architect_inputs(engine)
     _seed_revision(tmp_path, "specs/architecture.md")
     # A previous run_subagent call already produced this work product.
-    await engine._record_work_product("architect", "", [_ARCH_DOC], {"paths": [_ARCH_DOC]})
+    await engine._record_work_product("kodo_architect", "", [_ARCH_DOC], {"paths": [_ARCH_DOC]})
 
     calls: list[tuple[str, dict[str, object], str]] = []
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
         calls.append((name, dict(task_input), findings_key))
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result()
         await engine._record_findings(name, {"findings": []}, findings_key)
         return {"findings": []}
@@ -1511,7 +1511,7 @@ async def test_a_reinvoked_author_is_handed_what_it_wrote_last_time(
     engine._spawn_subagent = _fake_spawn
 
     await engine._run_review_loop(
-        "architect", "architect_critic", {"instructions": "Carry on."}, None
+        "kodo_architect", "kodo_architect_critic", {"instructions": "Carry on."}, None
     )
 
     first_author_round = calls[0][1]
@@ -1532,7 +1532,7 @@ async def test_a_first_ever_round_has_nothing_to_revise(tmp_path: Path) -> None:
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
         calls.append((name, dict(task_input), findings_key))
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result()
         await engine._record_findings(name, {"findings": []}, findings_key)
         return {"findings": []}
@@ -1540,7 +1540,7 @@ async def test_a_first_ever_round_has_nothing_to_revise(tmp_path: Path) -> None:
     engine._spawn_subagent = _fake_spawn
 
     await engine._run_review_loop(
-        "architect", "architect_critic", {"instructions": "Produce it."}, None
+        "kodo_architect", "kodo_architect_critic", {"instructions": "Produce it."}, None
     )
 
     assert "for_revision_paths" not in calls[0][1]
@@ -1561,7 +1561,7 @@ async def test_engine_resolved_paths_replace_anything_a_caller_still_sends(
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
         calls.append(dict(task_input))
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result()
         await engine._record_findings(name, {"findings": []}, findings_key)
         return {"findings": []}
@@ -1569,8 +1569,8 @@ async def test_engine_resolved_paths_replace_anything_a_caller_still_sends(
     engine._spawn_subagent = _fake_spawn
 
     await engine._run_review_loop(
-        "architect",
-        "architect_critic",
+        "kodo_architect",
+        "kodo_architect_critic",
         {
             "instructions": "Produce it.",
             "input_paths": {"narrative": "proj/specs/INVENTED.md"},
@@ -1587,7 +1587,7 @@ async def test_a_responsibility_code_aimed_at_a_product_level_stage_is_dropped(
 ) -> None:
     """`architect` is product-level: it has no `responsibility_code` on its tool
     at all. A model that sends one anyway must not be able to split its work
-    product — `proj/architect/AUTH` and `proj/architect` are two records, and a
+    product — `proj/kodo_architect/AUTH` and `proj/kodo_architect` are two records, and a
     later stage asking for "the architecture" finds whichever the last call
     happened to write. The engine drops the field rather than trusting the
     caller to have read the rule."""
@@ -1599,7 +1599,7 @@ async def test_a_responsibility_code_aimed_at_a_product_level_stage_is_dropped(
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
         calls.append(dict(task_input))
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result()
         await engine._record_findings(name, {"findings": []}, findings_key)
         return {"findings": []}
@@ -1607,8 +1607,8 @@ async def test_a_responsibility_code_aimed_at_a_product_level_stage_is_dropped(
     engine._spawn_subagent = _fake_spawn
 
     await engine._run_review_loop(
-        "architect",
-        "architect_critic",
+        "kodo_architect",
+        "kodo_architect_critic",
         {"instructions": "Produce it.", "responsibility_code": "AUTH"},
         None,
     )
@@ -1616,7 +1616,7 @@ async def test_a_responsibility_code_aimed_at_a_product_level_stage_is_dropped(
     # Recorded under the un-suffixed id, exactly as a call without the stray
     # field would have been…
     assert read_work_product(tmp_path, _ARCH_WP) is not None
-    assert read_work_product(tmp_path, work_product_id("proj", "architect", "AUTH")) is None
+    assert read_work_product(tmp_path, work_product_id("proj", "kodo_architect", "AUTH")) is None
     # …and it never reaches the rendered brief either, so the author is not told
     # it is working on one component of a product-level document.
     assert "responsibility_code" not in calls[0]
@@ -1631,7 +1631,7 @@ async def test_a_per_component_stage_still_carries_its_responsibility_code(
     work product and the brief."""
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
     await engine._record_work_product(
-        "functional_designer",
+        "kodo_functional_designer",
         "",
         ["proj/specs/design_plan.md", "proj/specs/design/AUTH.md"],
         {
@@ -1640,10 +1640,10 @@ async def test_a_per_component_stage_still_carries_its_responsibility_code(
         },
     )
     await engine._record_work_product(
-        "requirements_author", "", ["proj/specs/requirements.md"], {"paths": []}
+        "kodo_requirements_author", "", ["proj/specs/requirements.md"], {"paths": []}
     )
     await engine._record_work_product(
-        "narrative_author",
+        "kodo_narrative_author",
         "",
         ["proj/specs/narrative.md", "proj/specs/tech_stack.md"],
         {
@@ -1658,7 +1658,7 @@ async def test_a_per_component_stage_still_carries_its_responsibility_code(
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
         calls.append(dict(task_input))
-        if name == "test_designer":
+        if name == "kodo_test_designer":
             return {"paths": [plan], "summary": "wrote it"}
         await engine._record_findings(name, {"findings": []}, findings_key)
         return {"findings": []}
@@ -1666,13 +1666,13 @@ async def test_a_per_component_stage_still_carries_its_responsibility_code(
     engine._spawn_subagent = _fake_spawn
 
     await engine._run_review_loop(
-        "test_designer",
-        "test_design_critic",
+        "kodo_test_designer",
+        "kodo_test_design_critic",
         {"instructions": "Plan AUTH's tests.", "responsibility_code": "AUTH"},
         None,
     )
 
-    assert read_work_product(tmp_path, work_product_id("proj", "test_designer", "AUTH")) is not None
+    assert read_work_product(tmp_path, work_product_id("proj", "kodo_test_designer", "AUTH")) is not None
     assert calls[0]["responsibility_code"] == "AUTH"
 
 
@@ -1690,7 +1690,7 @@ async def test_a_gate_only_author_loops_until_the_user_accepts(tmp_path: Path) -
     engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
     await _seed_architect_inputs(engine)
     _seed_revision(tmp_path, "specs/architecture.md")
-    engine._registry = _FakeAgentRegistry(critics={"architect": ""})
+    engine._registry = _FakeAgentRegistry(critics={"kodo_architect": ""})
     engine._emitters = _FakeEmitters()
 
     rounds: list[str] = []
@@ -1701,7 +1701,7 @@ async def test_a_gate_only_author_loops_until_the_user_accepts(tmp_path: Path) -
 
     engine._spawn_subagent = _fake_spawn
 
-    result = await engine._run_review_loop("architect", "", {"instructions": "go"}, 3)
+    result = await engine._run_review_loop("kodo_architect", "", {"instructions": "go"}, 3)
 
     # The user rejected every round, so the budget is what ended it — and no
     # critic was ever spawned.
@@ -1720,7 +1720,7 @@ async def test_a_gate_only_author_stops_the_moment_the_user_agrees(tmp_path: Pat
     engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
     await _seed_architect_inputs(engine)
     _seed_revision(tmp_path, "specs/architecture.md")
-    engine._registry = _FakeAgentRegistry(critics={"architect": ""})
+    engine._registry = _FakeAgentRegistry(critics={"kodo_architect": ""})
     engine._emitters = _FakeEmitters()
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
@@ -1728,7 +1728,7 @@ async def test_a_gate_only_author_stops_the_moment_the_user_agrees(tmp_path: Pat
 
     engine._spawn_subagent = _fake_spawn
 
-    result = await engine._run_review_loop("architect", "", {"instructions": "go"}, 5)
+    result = await engine._run_review_loop("kodo_architect", "", {"instructions": "go"}, 5)
 
     assert result["review"]["outcome"] == "accepted"
     assert result["review"]["rounds"] == 1
@@ -1747,7 +1747,7 @@ async def test_a_first_round_is_initial_and_the_next_is_a_revision(tmp_path: Pat
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
         nonlocal round_no
-        if name == "architect":
+        if name == "kodo_architect":
             phases.append(phase)
             return _author_result(_ARCH_DOC)
         round_no += 1
@@ -1757,12 +1757,12 @@ async def test_a_first_round_is_initial_and_the_next_is_a_revision(tmp_path: Pat
             if round_no == 1
             else [{"id": _ids(_findings_dir(tmp_path))[0], "state": "fixed"}]
         )
-        await engine._record_findings("architect_critic", {"findings": updates}, findings_key)
+        await engine._record_findings("kodo_architect_critic", {"findings": updates}, findings_key)
         return {"findings": updates}
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_review_loop("architect", "architect_critic", {"instructions": "go"}, 3)
+    await engine._run_review_loop("kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 3)
 
     assert phases == ["initial", "revision"]
 
@@ -1774,19 +1774,19 @@ async def test_a_reinvoked_author_starts_in_the_revision_phase(tmp_path: Path) -
     engine = _bare_engine(project_root=tmp_path, autonomous=True, gate=_FakeGate())
     await _seed_architect_inputs(engine)
     _seed_revision(tmp_path, "specs/architecture.md")
-    await engine._record_work_product("architect", "", [_ARCH_DOC], _author_result(_ARCH_DOC))
+    await engine._record_work_product("kodo_architect", "", [_ARCH_DOC], _author_result(_ARCH_DOC))
     phases: list[str] = []
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
-        if name == "architect":
+        if name == "kodo_architect":
             phases.append(phase)
             return _author_result(_ARCH_DOC)
-        await engine._record_findings("architect_critic", {"findings": []}, findings_key)
+        await engine._record_findings("kodo_architect_critic", {"findings": []}, findings_key)
         return {"findings": []}
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_review_loop("architect", "architect_critic", {"instructions": "go"}, 3)
+    await engine._run_review_loop("kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 3)
 
     assert phases == ["revision"]
 
@@ -1800,7 +1800,7 @@ async def test_each_review_round_pushes_the_users_findings_table(tmp_path: Path)
     _seed_revision(tmp_path, "specs/architecture.md")
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result(_ARCH_DOC)
         updates = [
             {
@@ -1809,19 +1809,19 @@ async def test_each_review_round_pushes_the_users_findings_table(tmp_path: Path)
                 "locations": [{"path": _ARCH_DOC, "first_line": 12}],
             }
         ]
-        await engine._record_findings("architect_critic", {"findings": updates}, findings_key)
+        await engine._record_findings("kodo_architect_critic", {"findings": updates}, findings_key)
         return {"findings": updates}
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_review_loop("architect", "architect_critic", {"instructions": "go"}, 2)
+    await engine._run_review_loop("kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 2)
 
     tables = engine._emitters.review_findings
     assert len(tables) == 2
     first = tables[0]
     assert first["work_product_id"] == _ARCH_WP
-    assert first["agent"] == "architect"
-    assert first["reviewer_name"] == "architect_critic"
+    assert first["agent"] == "kodo_architect"
+    assert first["reviewer_name"] == "kodo_architect_critic"
     assert (first["iteration"], first["max_rounds"]) == (1, 2)
     assert [f["description"] for f in first["findings"]] == ["missing"]
     # The counter rises, which is what makes the table readable as progress.
@@ -1837,14 +1837,14 @@ async def test_a_clean_first_round_pushes_no_table(tmp_path: Path) -> None:
     _seed_revision(tmp_path, "specs/architecture.md")
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result(_ARCH_DOC)
-        await engine._record_findings("architect_critic", {"findings": []}, findings_key)
+        await engine._record_findings("kodo_architect_critic", {"findings": []}, findings_key)
         return {"findings": []}
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_review_loop("architect", "architect_critic", {"instructions": "go"}, 2)
+    await engine._run_review_loop("kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 2)
 
     assert engine._emitters.review_findings == []
 
@@ -1867,7 +1867,7 @@ async def test_the_narrative_reaches_the_user_gate_with_its_real_output_shape(
     engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
     _seed_revision(tmp_path, "specs/narrative.md")
     _seed_revision(tmp_path, "specs/tech_stack.md")
-    engine._registry = _FakeAgentRegistry(critics={"narrative_author": ""})
+    engine._registry = _FakeAgentRegistry(critics={"kodo_narrative_author": ""})
     engine._emitters = _FakeEmitters()
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
@@ -1880,7 +1880,7 @@ async def test_the_narrative_reaches_the_user_gate_with_its_real_output_shape(
 
     engine._spawn_subagent = _fake_spawn
 
-    result = await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 3)
+    result = await engine._run_review_loop("kodo_narrative_author", "", {"instructions": "go"}, 3)
 
     # The user was actually asked, and about both documents at once.
     assert len(gate.calls) == 1
@@ -1890,7 +1890,7 @@ async def test_the_narrative_reaches_the_user_gate_with_its_real_output_shape(
     for rel in ("specs/narrative.md", "specs/tech_stack.md"):
         history = read_history(tmp_path / rel, tmp_path)
         assert [e["type"] for e in history] == ["new_revision", "review_result", "accepted"]
-    work_product = await engine._existing_work_product("narrative_author", "")
+    work_product = await engine._existing_work_product("kodo_narrative_author", "")
     assert work_product is not None
     assert work_product.paths == ("proj/specs/narrative.md", "proj/specs/tech_stack.md")
 
@@ -1905,7 +1905,7 @@ async def test_the_users_rejection_of_the_narrative_comes_back_as_a_finding(
     engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
     _seed_revision(tmp_path, "specs/narrative.md")
     _seed_revision(tmp_path, "specs/tech_stack.md")
-    engine._registry = _FakeAgentRegistry(critics={"narrative_author": ""})
+    engine._registry = _FakeAgentRegistry(critics={"kodo_narrative_author": ""})
     engine._emitters = _FakeEmitters()
     phases: list[str] = []
 
@@ -1920,9 +1920,9 @@ async def test_the_users_rejection_of_the_narrative_comes_back_as_a_finding(
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 2)
+    await engine._run_review_loop("kodo_narrative_author", "", {"instructions": "go"}, 2)
 
-    findings = read_findings(_findings_dir(tmp_path), "proj/narrative_author")
+    findings = read_findings(_findings_dir(tmp_path), "proj/kodo_narrative_author")
     assert [f["description"] for f in findings] == ["the North Star is too vague"] * 2
     assert all(f["reported_by"] == "user" for f in findings)
     # Round 2 spoke to the author as a correction pass, and the findings key was
@@ -1951,7 +1951,7 @@ async def test_the_users_objection_is_readable_through_get_findings(tmp_path: Pa
     engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
     _seed_revision(tmp_path, "specs/narrative.md")
     _seed_revision(tmp_path, "specs/tech_stack.md")
-    engine._registry = _FakeAgentRegistry(critics={"narrative_author": ""})
+    engine._registry = _FakeAgentRegistry(critics={"kodo_narrative_author": ""})
     engine._emitters = _FakeEmitters()
     scopes: list[str] = []
     seen: list[list[dict[str, object]]] = []
@@ -1976,10 +1976,10 @@ async def test_the_users_objection_is_readable_through_get_findings(tmp_path: Pa
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 2)
+    await engine._run_review_loop("kodo_narrative_author", "", {"instructions": "go"}, 2)
 
     # Round 1 has nothing written yet, so no scope and an empty backlog.
-    assert scopes == ["", "proj/narrative_author"]
+    assert scopes == ["", "proj/kodo_narrative_author"]
     assert seen[0] == []
 
     # Round 2 — the author sees the user's objection, in the same shape and
@@ -1992,7 +1992,7 @@ async def test_the_users_objection_is_readable_through_get_findings(tmp_path: Pa
 
     # And once the user approves the revision, it is closed rather than left
     # outstanding forever — nobody else can verify a fix here.
-    assert read_findings(_findings_dir(tmp_path), "proj/narrative_author")[0]["state"] == "fixed"
+    assert read_findings(_findings_dir(tmp_path), "proj/kodo_narrative_author")[0]["state"] == "fixed"
 
 
 @pytest.mark.asyncio
@@ -2021,7 +2021,7 @@ async def test_the_gate_shows_the_user_what_is_still_outstanding(tmp_path: Path)
     engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=gate)
     _seed_revision(tmp_path, "specs/narrative.md")
     _seed_revision(tmp_path, "specs/tech_stack.md")
-    engine._registry = _FakeAgentRegistry(critics={"narrative_author": ""})
+    engine._registry = _FakeAgentRegistry(critics={"kodo_narrative_author": ""})
     engine._emitters = _FakeEmitters()
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
@@ -2034,7 +2034,7 @@ async def test_the_gate_shows_the_user_what_is_still_outstanding(tmp_path: Path)
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 2)
+    await engine._run_review_loop("kodo_narrative_author", "", {"instructions": "go"}, 2)
 
     assert gate.findings[0] == []
     assert [f["description"] for f in gate.findings[1]] == ["still not right"]
@@ -2050,9 +2050,9 @@ async def test_a_rejection_can_settle_earlier_objections_it_does_not_repeat(
     engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=_FakeGate())
     _seed_revision(tmp_path, "specs/narrative.md")
     _seed_revision(tmp_path, "specs/tech_stack.md")
-    engine._registry = _FakeAgentRegistry(critics={"narrative_author": ""})
+    engine._registry = _FakeAgentRegistry(critics={"kodo_narrative_author": ""})
     engine._emitters = _FakeEmitters()
-    key = "proj/narrative_author"
+    key = "proj/kodo_narrative_author"
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
         return {
@@ -2066,7 +2066,7 @@ async def test_a_rejection_can_settle_earlier_objections_it_does_not_repeat(
 
     # Round 1: reject over the North Star.
     engine._gate = _FakeGate(action="feedback", feedback="the North Star is too vague")
-    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 1)
+    await engine._run_review_loop("kodo_narrative_author", "", {"instructions": "go"}, 1)
     first = _ids(_findings_dir(tmp_path), key)
     assert len(first) == 1
 
@@ -2075,7 +2075,7 @@ async def test_a_rejection_can_settle_earlier_objections_it_does_not_repeat(
     engine._gate = _FakeGate(
         action="feedback", feedback="use Postgres, not MySQL", resolves=[tuple(first)]
     )
-    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 1)
+    await engine._run_review_loop("kodo_narrative_author", "", {"instructions": "go"}, 1)
 
     states = {f["id"]: f["state"] for f in read_findings(_findings_dir(tmp_path), key)}
     assert states[first[0]] == "fixed"
@@ -2092,9 +2092,9 @@ async def test_the_gate_cannot_close_a_finding_that_is_not_outstanding_here(
     engine = _bare_engine(project_root=tmp_path, autonomous=False, gate=_FakeGate())
     _seed_revision(tmp_path, "specs/narrative.md")
     _seed_revision(tmp_path, "specs/tech_stack.md")
-    engine._registry = _FakeAgentRegistry(critics={"narrative_author": ""})
+    engine._registry = _FakeAgentRegistry(critics={"kodo_narrative_author": ""})
     engine._emitters = _FakeEmitters()
-    key = "proj/narrative_author"
+    key = "proj/kodo_narrative_author"
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
         return {
@@ -2107,14 +2107,14 @@ async def test_the_gate_cannot_close_a_finding_that_is_not_outstanding_here(
     engine._spawn_subagent = _fake_spawn
 
     engine._gate = _FakeGate(action="feedback", feedback="not right")
-    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 1)
+    await engine._run_review_loop("kodo_narrative_author", "", {"instructions": "go"}, 1)
 
     engine._gate = _FakeGate(
         action="feedback",
         feedback="still not right",
         resolves=[("proj/some_other_agent_file_1", "made_up_id")],
     )
-    await engine._run_review_loop("narrative_author", "", {"instructions": "go"}, 1)
+    await engine._run_review_loop("kodo_narrative_author", "", {"instructions": "go"}, 1)
 
     # Both real findings are untouched; the invented ids closed nothing.
     states = [f["state"] for f in read_findings(_findings_dir(tmp_path), key)]
@@ -2132,13 +2132,13 @@ async def test_a_critic_backed_gate_is_offered_nothing_to_resolve(tmp_path: Path
     _seed_revision(tmp_path, "specs/architecture.md")
 
     async def _fake_spawn(name, task_input, findings_key="", phase="initial"):
-        if name == "architect":
+        if name == "kodo_architect":
             return _author_result(_ARCH_DOC)
-        await engine._record_findings("architect_critic", {"findings": []}, findings_key)
+        await engine._record_findings("kodo_architect_critic", {"findings": []}, findings_key)
         return {"findings": []}
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_review_loop("architect", "architect_critic", {"instructions": "go"}, 2)
+    await engine._run_review_loop("kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 2)
 
     assert gate.findings == [[]]

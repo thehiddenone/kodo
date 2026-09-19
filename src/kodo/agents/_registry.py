@@ -139,6 +139,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
+from kodo import __version__
 from kodo.plan import (
     PLAN_CONTEXT_FIELD,
     PLAN_OUTPUT_FIELDS,
@@ -160,6 +161,7 @@ from kodo.toolspecs import (
 
 from ._loader import AgentLoadError, SubAgent, load_agent
 from ._topagent import TopAgent, TopAgentLoadError, load_top_agents
+from ._userstore import BrokenAgent, UserAgents, UserAgentStore
 from .subagents import (
     ALL_ROLES,
     ALL_SCOPES,
@@ -429,6 +431,26 @@ class _Problems:
         """Whether anything was recorded."""
         return bool(self.__entries)
 
+    def take(self, names: frozenset[str]) -> list[tuple[str, list[str], Path | None]]:
+        """Remove and return every entry recorded against one of *names*.
+
+        The mechanism behind "packaged agents fail fast, user agents fail
+        visibly": the registry drains the user-attributed half of the
+        accumulator into broken rows, and whatever remains is by definition a
+        problem with a packaged file and is raised.
+
+        Args:
+            names: The agent names to drain — the user-installed set.
+
+        Returns:
+            list[tuple[str, list[str], Path | None]]: ``(name, messages, path)``
+            per drained agent, in name order.
+        """
+        taken: list[tuple[str, list[str], Path | None]] = []
+        for name in sorted(self.__entries.keys() & names):
+            taken.append((name, self.__entries.pop(name), self.__paths.pop(name, None)))
+        return taken
+
     def report(self) -> str:
         """The aggregated message, grouped by agent in name order."""
         count = len(self.__entries)
@@ -472,6 +494,10 @@ def _output_fields(spec: SubAgentSpec) -> frozenset[str]:
 # first message (see ``kodo.runtime._engine._subagents._render_task_input``) —
 # no schema is ever shown in a system prompt. Top-level agents (guide/problem_solver
 # /judge) have no spec and are left untouched.
+#: Every **built-in** sub-agent spec, keyed by name. A registry consults its own
+#: union of this and whatever the user root declared (``AgentRegistry.spec``);
+#: this constant stays the packaged catalog, which is what the tests that sweep
+#: the shipped set exhaustively actually want.
 SUBAGENT_SPECS_BY_NAME: dict[str, SubAgentSpec] = {s.name: s for s in ALL_SUBAGENTS}
 
 
@@ -587,12 +613,18 @@ class AgentRegistry:
 
     __slots__ = (
         "__agents",
+        "__agents_dir",
+        "__broken",
         "__declared_default",
         "__preferred_default",
         "__shared",
         "__skills",
+        "__skills_dir",
+        "__specs",
         "__top_agent_by_value",
         "__top_agents",
+        "__user_dir",
+        "__user_names",
     )
 
     def __init__(
@@ -600,12 +632,20 @@ class AgentRegistry:
         agents_dir: Path,
         skills_dir: Path | None = None,
         preferred_default: Callable[[], str] | None = None,
+        user_dir: Path | None = None,
     ) -> None:
         # The skills root is injectable purely so tests (and the validator's
         # isolated home) can point at a temp directory; every production caller
         # leaves it None and gets ``~/.kodo/skills``. The store itself holds no
         # cache — it re-scans on each read — so binding it once here still sees
         # skills installed after the server started.
+        self.__skills_dir = skills_dir
+        self.__agents_dir = agents_dir
+        # ``None`` means "this registry has no user root at all" — every test
+        # fixture over a temp directory of synthetic agents, and the validator's
+        # isolated home. It is *not* the same as an empty root: a registry with
+        # no user root reports no broken rows and refuses a reload.
+        self.__user_dir = user_dir
         self.__skills = SkillStore(skills_dir if skills_dir is not None else kodo_skills_dir())
         # The user's preferred starting agent, read *live* on every
         # ``default_top_agent()`` so a settings change applies without a
@@ -654,24 +694,85 @@ class AgentRegistry:
         agent_paths = sorted((agents_dir / SUBAGENTS_SUBDIR).glob("subagent_*.md")) + sorted(
             agents_dir.glob("agent_*.md")
         )
-        for path in agent_paths:
-            try:
-                agent = load_agent(path)
-            except AgentLoadError as exc:
-                # A file too malformed to become a SubAgent at all. Recorded and
-                # skipped rather than raised, so the agents that *are* readable
-                # still get checked and reported in the same run.
-                problems.add(path.stem, str(exc).replace(f"{path}: ", ""), path)
-                continue
-            # Validate every declared tool resolves now, at load time, so a bad
-            # frontmatter reference fails fast rather than at first dispatch.
+        # Every built-in agent's version *is* Kōdo's — a packaged agent ships
+        # with the product and has nothing of its own to declare — so the
+        # frontmatter never carries one and the stamp is applied here, at the
+        # one place that knows a prompt came from the packaged root.
+        builtin = [
+            replace(agent, version=__version__)
+            for agent in self.__load_prompts(agent_paths, problems)
+        ]
+        # The user root, scanned fail-soft: a malformed third-party file becomes
+        # a row the user can see and delete, never an exception past this point.
+        scan = UserAgentStore(user_dir).scan() if user_dir is not None else UserAgents()
+        broken: list[BrokenAgent] = list(scan.broken)
+        self.__user_names = frozenset(a.name for a in scan.agents)
+        # One flat namespace over both roots, safe because every built-in name
+        # carries the reserved ``kodo_`` prefix and ``UserAgentStore`` refuses it
+        # on a user file. A collision can therefore only be user-vs-user, which
+        # is impossible too (a name is a directory or a filename stem), so this
+        # is a belt-and-braces check rather than a live hazard.
+        self.__specs = dict(SUBAGENT_SPECS_BY_NAME)
+        for spec in scan.specs:
+            self.__specs[spec.name] = spec
+        for agent in (*builtin, *scan.agents):
+            path = agent.source_path
+            user = agent.name in self.__user_names
+            # A *user* prompt is not required to include the shared blocks — it
+            # may include them and inherit Kōdo's prose, or ship its own. An
+            # unknown block name is still an error either way, because it would
+            # silently render nothing.
             problems.extend(agent.name, self.__validate_tools(agent.tools, path), path)
-            problems.extend(agent.name, self.__validate_shared(agent), path)
+            problems.extend(agent.name, self.__validate_shared(agent, required=not user), path)
             problems.extend(agent.name, self.__validate_skills(agent), path)
             problems.extend(agent.name, self.__validate_phases(agent), path)
             problems.extend(agent.name, self.__validate_user_review(agent), path)
             problems.extend(agent.name, self.__validate_planner(agent), path)
             self.__agents[agent.name] = agent
+        # Cross-agent validation runs in a loop, because demoting a user agent
+        # can invalidate another that named it. Each round re-checks whatever
+        # survived the last; with a finite agent set it settles, and in the
+        # overwhelmingly common case (nothing broken) it runs exactly once.
+        while True:
+            self.__validate_cross_agent(problems)
+            self.__validate_artifact_roles(problems)
+            demoted = self.__demote_user_agents(problems)
+            if not demoted:
+                break
+            broken.extend(demoted)
+        # The top-agent pass runs after the loop has settled, so a user agent
+        # that failed above is already gone when its config is matched against
+        # the loaded set — the alternative is a "config with no prompt" error
+        # blaming the config for the prompt's fault.
+        # Only the configs whose prompt survived the loop above. A bundle that
+        # was demoted for its *prompt* must not then be blamed a second time for
+        # a config that now points at nothing — one fault, one row.
+        surviving = tuple(cfg for cfg in scan.configs if cfg.name in self.__agents)
+        self.__build_top_agents(agents_dir, surviving, problems)
+        broken.extend(self.__demote_user_agents(problems))
+        self.__broken = tuple(sorted(broken, key=lambda b: (not b.is_top_level, b.name)))
+        if problems.any:
+            # Whatever is left is attributed to a **built-in** agent: a bug in
+            # the repo, which must stop the server exactly as it always has.
+            # Every user-attributed problem became a row above.
+            raise AgentLoadError(problems.report())
+
+    def __validate_cross_agent(self, problems: _Problems) -> None:
+        """Validate every reference one loaded agent makes to another.
+
+        Runs only once every agent is loaded, because each rule here is a
+        question about the *set*: does this ``critic:`` resolve to something
+        that really declares ``role: critic``, does every ``subagents:`` entry
+        exist, does every sub-agent somebody can spawn carry the ``## Purpose``
+        that becomes its tool description.
+
+        Idempotent, so the demotion loop can re-run it over the survivors: it
+        only reads the loaded set and records into *problems*.
+
+        Args:
+            problems: Accumulator; every failure is attributed to the agent that
+                made the bad reference, not to the one it pointed at.
+        """
         # Every sub-agent some caller may spawn — the union of all
         # ``subagents:`` allow-lists. Exactly these get a generated
         # ``run_subagent_<name>`` tool, so exactly these need the ``## Purpose``
@@ -732,12 +833,64 @@ class AgentRegistry:
                         f"subagents entry {sub!r} has no subagent_{sub}.md in the registry",
                         agent.source_path,
                     )
-        self.__validate_artifact_roles(problems)
-        self.__build_top_agents(agents_dir, problems)
-        if problems.any:
-            raise AgentLoadError(problems.report())
 
-    def __build_top_agents(self, config_dir: Path, problems: _Problems) -> None:
+    def __load_prompts(self, paths: list[Path], problems: _Problems) -> list[SubAgent]:
+        """Parse each packaged prompt, recording rather than raising on failure.
+
+        Args:
+            paths: The ``agent_*.md`` / ``subagent_*.md`` files to parse.
+            problems: Accumulator for files too malformed to become a
+                :class:`SubAgent` at all. Recorded and skipped rather than
+                raised, so the agents that *are* readable still get checked and
+                reported in the same run.
+
+        Returns:
+            list[SubAgent]: Every prompt that parsed, in the given order.
+        """
+        loaded: list[SubAgent] = []
+        for path in paths:
+            try:
+                loaded.append(load_agent(path))
+            except AgentLoadError as exc:
+                problems.add(path.stem, str(exc).replace(f"{path}: ", ""), path)
+        return loaded
+
+    def __demote_user_agents(self, problems: _Problems) -> list[BrokenAgent]:
+        """Turn every user-attributed problem into a row and drop that agent.
+
+        This is the whole of "packaged agents fail fast, user agents fail
+        visibly". A problem recorded against a user agent removes it from the
+        registry and becomes a :class:`BrokenAgent`; a problem recorded against
+        a built-in one is left in *problems* for the caller to raise.
+
+        Demotion **cascades**, because dropping one agent can invalidate
+        another that named it (a user top-level agent listing a user sub-agent
+        that just failed). The caller therefore runs this after each validation
+        pass rather than once at the end, and each pass re-checks the survivors.
+
+        Args:
+            problems: The accumulator, drained of every user-attributed entry.
+
+        Returns:
+            list[BrokenAgent]: One row per demoted agent.
+        """
+        rows: list[BrokenAgent] = []
+        for name, messages, path in problems.take(self.__user_names):
+            agent = self.__agents.pop(name, None)
+            self.__specs.pop(name, None)
+            rows.append(
+                BrokenAgent(
+                    name=name,
+                    path=path if path is not None else (agent.source_path if agent else Path(name)),
+                    error="; ".join(messages),
+                    is_top_level=agent.is_top_level if agent is not None else True,
+                )
+            )
+        return rows
+
+    def __build_top_agents(
+        self, config_dir: Path, user_configs: tuple[TopAgent, ...], problems: _Problems
+    ) -> None:
         """Load the ``<name>.json`` configs and index the selectable agents.
 
         Runs last in construction, once every agent is loaded, so it can check
@@ -756,6 +909,12 @@ class AgentRegistry:
         """
         try:
             configs = {cfg.name: cfg for cfg in load_top_agents(config_dir)}
+            # User configs arrive already parsed, from the fail-soft scan — one
+            # per bundle rather than one directory-glob, because each lives
+            # beside its own prompt. They join the same dict, so every check
+            # below (both directions of the pairing, the one-default rule, the
+            # namespace collision) sees the union and needs no second copy.
+            configs.update({cfg.name: cfg for cfg in user_configs})
         except TopAgentLoadError as exc:
             # One unreadable config file. Nothing downstream can be trusted to
             # describe the set, so record it and leave the table empty.
@@ -781,7 +940,7 @@ class AgentRegistry:
         # A top-level agent talks to a human in prose and is never called with
         # arguments, so a typed I/O contract on one is a category error rather
         # than surplus: something declared an interface nothing will ever use.
-        for name in sorted(loaded & SUBAGENT_SPECS_BY_NAME.keys()):
+        for name in sorted(loaded & self.__specs.keys()):
             problems.add(
                 name,
                 f"is a top-level agent but also has specs/{name}.json — a top-level "
@@ -799,18 +958,28 @@ class AgentRegistry:
             # where it speaks and falls back where it does not.
             agents.append(replace(cfg, label=cfg.label or self.__agents[name].display_name))
         for top in agents:
-            # A name and an alias share one namespace: both are values that may
-            # arrive over the wire or off disk, so a collision between them is
-            # as ambiguous as one between two names.
-            for value in (top.name, *top.aliases):
-                if value in by_value:
-                    problems.add(
-                        top.name,
-                        f"selection value {value!r} is already claimed by {by_value[value]!r}",
-                    )
-                    continue
-                by_value[value] = top.name
-        defaults = [top.name for top in agents if top.default]
+            # One namespace, one kind of value: an agent's name *is* the value
+            # that selects it. The legacy workflow-mode aliases are gone with
+            # the ``kodo_`` rename, so a collision here can only mean two roots
+            # claiming one name — which the reserved-prefix rule already
+            # prevents, and which is recorded rather than raised so the user
+            # root can be demoted instead of the packaged one.
+            if top.name in by_value:
+                problems.add(
+                    top.name,
+                    f"selection value {top.name!r} is already claimed by {by_value[top.name]!r}",
+                )
+                continue
+            by_value[top.name] = top.name
+        for top in agents:
+            if top.default and top.name in self.__user_names:
+                problems.add(
+                    top.name,
+                    'declares "default": true — which agent a new session starts on is '
+                    "Kōdo's to declare and the user's to override in settings "
+                    "(default_agent), not an installed agent's to claim",
+                )
+        defaults = [top.name for top in agents if top.default and top.name not in self.__user_names]
         # A registry with no top-level agents at all (a fixture of sub-agents
         # only) is legitimate and simply has no default to declare.
         if agents and len(defaults) != 1:
@@ -822,6 +991,69 @@ class AgentRegistry:
         self.__top_agents = tuple(sorted(agents, key=lambda a: (a.rank, a.name)))
         self.__top_agent_by_value = by_value
         self.__declared_default = defaults[0] if defaults else ""
+
+    @property
+    def broken_agents(self) -> tuple[BrokenAgent, ...]:
+        """Every user-installed agent that failed to load, and why.
+
+        Top-level agents first, then sub-agents, each group name-sorted. Always
+        empty for a registry built with no user root, and for one whose user
+        agents all loaded.
+        """
+        return self.__broken
+
+    @property
+    def user_agent_names(self) -> frozenset[str]:
+        """The names of the user-installed agents that loaded successfully.
+
+        What separates the two regimes for every caller that needs to know
+        which root an agent came from — the installer deciding what it may
+        overwrite, a UI deciding whether to offer a Delete button.
+        """
+        return frozenset(self.__user_names & self.__agents.keys())
+
+    def reload(self) -> tuple[BrokenAgent, ...]:
+        """Rebuild the registry from disk, swapping only if the rebuild succeeds.
+
+        The registry is a process singleton shared by every session on the
+        machine, and its validation is cross-agent — so unlike
+        :class:`kodo.skills.SkillStore` it cannot simply re-scan per lookup.
+        This is the explicit alternative: build a **whole second registry** over
+        the same roots, and adopt its state only once it has validated. A
+        rebuild that raises leaves the working set exactly as it was.
+
+        No locking is needed. :meth:`get` returns frozen dataclasses, so a
+        session mid-turn finishes on the definition it already holds and picks
+        up the new one on its next turn — which is the correct semantics, not a
+        compromise.
+
+        Returns:
+            tuple[BrokenAgent, ...]: The broken rows of the *new* state.
+
+        Raises:
+            AgentLoadError: The rebuild failed on a **packaged** agent. The
+                registry is unchanged and still usable.
+        """
+        fresh = AgentRegistry(
+            self.__agents_dir,
+            skills_dir=self.__skills_dir,
+            preferred_default=self.__preferred_default,
+            user_dir=self.__user_dir,
+        )
+        # Field-by-field rather than ``__dict__`` because ``__slots__`` means
+        # there is no ``__dict__`` to copy, and naming them keeps the swap
+        # auditable: everything derived from disk moves, the injected
+        # collaborators (the skills store, the preference callable, the roots)
+        # are already identical by construction.
+        self.__agents = fresh.__agents
+        self.__specs = fresh.__specs
+        self.__shared = fresh.__shared
+        self.__broken = fresh.__broken
+        self.__user_names = fresh.__user_names
+        self.__top_agents = fresh.__top_agents
+        self.__top_agent_by_value = fresh.__top_agent_by_value
+        self.__declared_default = fresh.__declared_default
+        return self.__broken
 
     def top_agents(self) -> tuple[TopAgent, ...]:
         """Every top-level agent, in picker order (``rank``, then name).
@@ -837,19 +1069,37 @@ class AgentRegistry:
     def resolve_top_agent(self, value: str) -> str:
         """Resolve a selection *value* to a top-level agent name.
 
-        Accepts an agent name or any of its legacy aliases, so a session
-        persisted under the old workflow-mode vocabulary resumes onto the right
-        agent. An unrecognized value resolves to :meth:`default_top_agent`
-        rather than raising: this runs on every prompt and on every resume, and
-        a session whose stored selection has gone stale must keep working.
+        An unrecognized value resolves to :meth:`default_top_agent` rather
+        than raising, for the paths where a fallback is the right answer: a new
+        session, a stale ``default_agent`` setting, a client that sent a name
+        this build does not have. **Resuming** an existing session is not one of
+        those paths — a session whose stored agent has been uninstalled must say
+        so rather than silently continue as a different agent — so that path
+        asks :meth:`knows_top_agent` first.
 
         Args:
-            value: An agent name, an alias, or anything else.
+            value: An agent name, or anything else.
 
         Returns:
             str: The resolved agent name — always one that exists.
         """
         return self.__top_agent_by_value.get(value, self.default_top_agent())
+
+    def knows_top_agent(self, value: str) -> bool:
+        """Whether *value* names a registered top-level agent.
+
+        The question :meth:`resolve_top_agent` deliberately cannot answer,
+        because it always returns a usable name. A caller that must distinguish
+        "the user picked something we do not have" from "the user picked the
+        default" — resume, above all — asks this first.
+
+        Args:
+            value: An agent name, or anything else.
+
+        Returns:
+            bool: ``True`` when the value selects a registered agent.
+        """
+        return value in self.__top_agent_by_value
 
     def default_top_agent(self) -> str:
         """The agent to use when nobody has validly said which.
@@ -862,9 +1112,9 @@ class AgentRegistry:
         Resolved highest-priority first:
 
         1. The **user's** preference, if the injected ``preferred_default``
-           names a registered *selectable* agent (an alias is accepted; a
-           non-selectable one is not — a session must not start on an agent
-           with no interactive prompt).
+           names a registered *selectable* agent (a non-selectable one is
+           not — a session must not start on an agent with no interactive
+           prompt).
         2. The **shipped** default — the one config declaring ``default: true``.
 
         A preference naming an agent that is unknown, non-selectable or since
@@ -896,11 +1146,19 @@ class AgentRegistry:
         for a reason worth stating: it names the work product the round is
         already reviewing, which the engine supplies from the round itself and
         never looks up.
+
+        The **role vocabulary** is closed for a built-in spec and open for a
+        user one. A built-in naming a role outside :data:`ALL_ROLES` is a typo
+        in the repo, and the closed check is what catches it; a user pipeline
+        legitimately has documents Kōdo has no word for, so a user spec may
+        coin ``threat_model`` and be judged only by the rule that actually
+        matters — that something produces what something else consumes, which
+        is checked over the union of both roots.
         """
         produced: set[str] = set()
-        for spec in SUBAGENT_SPECS_BY_NAME.values():
+        for spec in self.__specs.values():
             for role, field_name in spec.produces.items():
-                if role not in ALL_ROLES:
+                if role not in ALL_ROLES and spec.name not in self.__user_names:
                     problems.add(
                         spec.name,
                         f"produces unknown artifact role {role!r}; "
@@ -914,9 +1172,9 @@ class AgentRegistry:
                     )
                 produced.add(role)
 
-        for spec in SUBAGENT_SPECS_BY_NAME.values():
+        for spec in self.__specs.values():
             for need in spec.consumes:
-                if need.role not in ALL_ROLES:
+                if need.role not in ALL_ROLES and spec.name not in self.__user_names:
                     problems.add(
                         spec.name,
                         f"consumes unknown artifact role {need.role!r}; "
@@ -948,8 +1206,20 @@ class AgentRegistry:
                 problems.append(f"tool {name!r} has no ToolSpec in kodo.toolspecs")
         return problems
 
-    def __validate_shared(self, agent: SubAgent) -> list[str]:
+    def __validate_shared(self, agent: SubAgent, *, required: bool = True) -> list[str]:
         """Check *agent*'s ``{SHARED:…}`` inclusions at construction time.
+
+        Args:
+            agent: The loaded prompt to check.
+            required: Whether :data:`_REQUIRED_SHARED` is enforced. ``True`` for
+                a **built-in** agent, where a forgotten token would ship a Kōdo
+                agent with no injection resistance. ``False`` for a
+                **user-installed** one, which may include the blocks and inherit
+                Kōdo's prose or write its own — the author's call, not the
+                registry's. Every other rule here applies to both: an unknown
+                block name, a file-modifying tool without the editing
+                discipline, and the findings pairing are mistakes in either
+                root.
 
         Nothing is auto-appended to a prompt any more — inclusion is the agent's
         own declaration — so these checks are the only thing standing
@@ -975,7 +1245,7 @@ class AgentRegistry:
                 f"{SHARED_FILE_PREFIX}<name>.md for each; known: {sorted(self.__shared)}"
             )
 
-        missing = [name for name in _REQUIRED_SHARED if name not in included]
+        missing = [name for name in _REQUIRED_SHARED if name not in included] if required else []
         if missing:
             problems.append(
                 f"every agent prompt must include {', '.join(shared_token(n) for n in missing)}"
@@ -1018,7 +1288,7 @@ class AgentRegistry:
         # ``# Task`` + ``## Input Parameters`` turn — and it documents its real
         # input itself. Requiring it everywhere would force that agent to state
         # something false about its own input.
-        if _TASK_INPUT_SHARED in included and agent.name not in SUBAGENT_SPECS_BY_NAME:
+        if _TASK_INPUT_SHARED in included and agent.name not in self.__specs:
             problems.append(
                 f"{shared_token(_TASK_INPUT_SHARED)} is only valid "
                 f"in an agent that declares a SubAgentSpec — this one has none, so it "
@@ -1059,8 +1329,7 @@ class AgentRegistry:
             )
         return problems
 
-    @staticmethod
-    def __validate_phases(agent: SubAgent) -> list[str]:
+    def __validate_phases(self, agent: SubAgent) -> list[str]:
         """Check *agent*'s ``{PHASE:…}`` blocks at construction time.
 
         Two rules. The tokens must be well formed
@@ -1085,7 +1354,7 @@ class AgentRegistry:
             _validate_phase_tokens(agent.system_prompt, agent.source_path)
         except AgentLoadError as exc:
             problems.append(str(exc).replace(f"{agent.source_path}: ", ""))
-        if _PHASE_OPEN_RE.search(agent.system_prompt) and agent.name not in SUBAGENT_SPECS_BY_NAME:
+        if _PHASE_OPEN_RE.search(agent.system_prompt) and agent.name not in self.__specs:
             problems.append(
                 "phase blocks are only valid in an agent that "
                 "declares a SubAgentSpec — this one has none, so the engine never "
@@ -1093,8 +1362,7 @@ class AgentRegistry:
             )
         return problems
 
-    @staticmethod
-    def __validate_user_review(agent: SubAgent) -> list[str]:
+    def __validate_user_review(self, agent: SubAgent) -> list[str]:
         """Check a ``user_review: true`` agent has something to gate.
 
         The gate signs off a **work product** — every file one review loop wrote
@@ -1110,7 +1378,7 @@ class AgentRegistry:
         problems: list[str] = []
         if not agent.user_review:
             return problems
-        spec = SUBAGENT_SPECS_BY_NAME.get(agent.name)
+        spec = self.__specs.get(agent.name)
         if spec is None or not spec.produces:
             problems.append(
                 "declares 'user_review: true' but produces no "
@@ -1119,8 +1387,7 @@ class AgentRegistry:
             )
         return problems
 
-    @staticmethod
-    def __validate_planner(agent: SubAgent) -> list[str]:
+    def __validate_planner(self, agent: SubAgent) -> list[str]:
         """Check a ``planner: true`` agent returns something the engine can read.
 
         The plan contract (doc/PLANNING.md §2): a planner's ``output_schema``
@@ -1148,7 +1415,7 @@ class AgentRegistry:
         problems: list[str] = []
         if not agent.planner:
             return problems
-        spec = SUBAGENT_SPECS_BY_NAME.get(agent.name)
+        spec = self.__specs.get(agent.name)
         if spec is None:
             problems.append(
                 "declares 'planner: true' but has no SubAgentSpec, "
@@ -1211,7 +1478,7 @@ class AgentRegistry:
         ``{PHASE:…}`` block that arrived through a shared file or the skills
         catalog is stripped on the same rules as one written inline.
         """
-        spec = SUBAGENT_SPECS_BY_NAME.get(agent.name)
+        spec = self.__specs.get(agent.name)
         effective_tools = agent.tools
         # Schema-bearing sub-agents are auto-granted the terminal return tool so
         # they can return their result against their declared output schema.
@@ -1328,7 +1595,7 @@ class AgentRegistry:
                     f"{self.__agents[caller].source_path}: subagents entry {name!r} has "
                     f"no subagent_{name}.md in the registry"
                 )
-            spec = SUBAGENT_SPECS_BY_NAME.get(name)
+            spec = self.__specs.get(name)
             if spec is None or agent.is_critic:
                 continue
             specs.append(
@@ -1366,7 +1633,7 @@ class AgentRegistry:
         agent with no :class:`SubAgentSpec` — the top-level agents, which never
         return a result to anyone.
         """
-        spec = SUBAGENT_SPECS_BY_NAME.get(name)
+        spec = self.__specs.get(name)
         if spec is None:
             return []
         return [build_return_result_spec(spec.output_schema)]
@@ -1378,7 +1645,7 @@ class AgentRegistry:
         The engine uses the spec's ``output_schema`` to validate the agent's
         ``return_result`` payload.
         """
-        return SUBAGENT_SPECS_BY_NAME.get(name)
+        return self.__specs.get(name)
 
     def all_agents(self) -> list[SubAgent]:
         """Return all loaded subagents (interactive-mode render) in name order."""

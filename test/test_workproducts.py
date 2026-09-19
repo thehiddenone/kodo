@@ -28,7 +28,7 @@ from kodo.workproducts import (
 )
 
 
-def _record(session_dir: Path, paths: list[str], *, agent: str = "coder", responsibility: str = ""):
+def _record(session_dir: Path, paths: list[str], *, agent: str = "kodo_coder", responsibility: str = ""):
     return record_membership(
         session_dir,
         project="proj",
@@ -44,20 +44,20 @@ def _record(session_dir: Path, paths: list[str], *, agent: str = "coder", respon
 
 
 def test_id_is_derived_from_what_produced_the_work() -> None:
-    assert work_product_id("proj", "requirements_author") == "proj/requirements_author"
-    assert work_product_id("proj", "coder", "LEADERBOARD") == "proj/coder/LEADERBOARD"
+    assert work_product_id("proj", "kodo_requirements_author") == "proj/kodo_requirements_author"
+    assert work_product_id("proj", "kodo_coder", "LEADERBOARD") == "proj/kodo_coder/LEADERBOARD"
 
 
 def test_id_keeps_projects_apart() -> None:
     """A session may bind several projects; two of them running the same agent
     on the same responsibility must not share a backlog."""
-    assert work_product_id("a", "coder", "AUTH") != work_product_id("b", "coder", "AUTH")
+    assert work_product_id("a", "kodo_coder", "AUTH") != work_product_id("b", "kodo_coder", "AUTH")
 
 
 def test_id_segments_are_sanitised_because_the_id_becomes_a_file_path() -> None:
     """The first segment is a workspace-folder display name, which is not
     guaranteed filesystem-safe."""
-    wp_id = work_product_id("my:proj*name", "coder", "A/B")
+    wp_id = work_product_id("my:proj*name", "kodo_coder", "A/B")
     assert ":" not in wp_id and "*" not in wp_id
     assert wp_id.count("/") == 2  # only the segment separators survive
 
@@ -75,7 +75,7 @@ def test_id_without_an_agent_is_empty_rather_than_invented() -> None:
 def test_recording_membership_returns_the_set_and_nothing_removed(tmp_path: Path) -> None:
     work_product, removed = _record(tmp_path, ["proj/src/a.py", "proj/src/b.py"])
 
-    assert work_product.id == "proj/coder"
+    assert work_product.id == "proj/kodo_coder"
     assert work_product.paths == ("proj/src/a.py", "proj/src/b.py")
     assert removed == ()
 
@@ -164,8 +164,8 @@ def test_an_unknown_or_empty_path_maps_to_nothing(tmp_path: Path) -> None:
 def test_the_last_recorded_membership_wins_an_ambiguous_file(tmp_path: Path) -> None:
     """Nothing structurally stops two authors writing the same file; the replay
     is last-write-wins everywhere else, so this is too."""
-    _record(tmp_path, ["proj/src/shared.py"], agent="coder")
-    later, _ = _record(tmp_path, ["proj/src/shared.py"], agent="test_coder")
+    _record(tmp_path, ["proj/src/shared.py"], agent="kodo_coder")
+    later, _ = _record(tmp_path, ["proj/src/shared.py"], agent="kodo_test_coder")
 
     assert work_product_for_path(tmp_path, "proj/src/shared.py").id == later.id  # type: ignore[union-attr]
 
@@ -187,7 +187,7 @@ def test_state_is_a_replay_of_the_log_not_an_index(tmp_path: Path) -> None:
 
 def test_reading_before_anything_is_recorded_is_empty_not_an_error(tmp_path: Path) -> None:
     assert read_work_products(tmp_path) == []
-    assert read_work_product(tmp_path, "proj/coder") is None
+    assert read_work_product(tmp_path, "proj/kodo_coder") is None
     assert work_product_for_path(tmp_path, "proj/src/a.py") is None
 
 
@@ -213,7 +213,7 @@ def test_roles_narrow_a_work_product_to_the_files_filling_one_role(tmp_path: Pat
     work_product, _ = record_membership(
         tmp_path,
         project="proj",
-        agent="narrative_author",
+        agent="kodo_narrative_author",
         responsibility_code="",
         paths=["proj/specs/narrative.md", "proj/specs/tech_stack.md"],
         roles={
@@ -233,7 +233,7 @@ def test_a_role_naming_a_non_member_is_dropped(tmp_path: Path) -> None:
     work_product, _ = record_membership(
         tmp_path,
         project="proj",
-        agent="architect",
+        agent="kodo_architect",
         responsibility_code="",
         paths=["proj/specs/architecture.md"],
         roles={"architecture": ["proj/specs/architecture.md", "proj/specs/ghost.md"]},
@@ -254,7 +254,7 @@ def _wp(agent: str, paths: list[str], roles: dict[str, list[str]], **kw) -> Work
 
 
 def test_global_scope_takes_the_current_work_product_for_a_role() -> None:
-    ledger = [_wp("architect", ["proj/a1.md"], {"architecture": ["proj/a1.md"]})]
+    ledger = [_wp("kodo_architect", ["proj/a1.md"], {"architecture": ["proj/a1.md"]})]
 
     [resolved] = resolve_needs(ledger, [("architecture", "global", True)], project="proj")
 
@@ -266,8 +266,8 @@ def test_global_scope_takes_the_last_producer_when_a_role_was_refilled() -> None
     """An author re-invoked on the same subject re-produces its role; the ledger
     is last-write-wins everywhere else, and this is no exception."""
     ledger = [
-        _wp("architect", ["proj/old.md"], {"architecture": ["proj/old.md"]}),
-        _wp("architect", ["proj/new.md"], {"architecture": ["proj/new.md"]}),
+        _wp("kodo_architect", ["proj/old.md"], {"architecture": ["proj/old.md"]}),
+        _wp("kodo_architect", ["proj/new.md"], {"architecture": ["proj/new.md"]}),
     ]
 
     [resolved] = resolve_needs(ledger, [("architecture", "global", True)], project="proj")
@@ -277,8 +277,8 @@ def test_global_scope_takes_the_last_producer_when_a_role_was_refilled() -> None
 
 def test_self_scope_narrows_to_this_spawns_component() -> None:
     ledger = [
-        _wp("test_designer", ["proj/t/A.md"], {"test_plan": ["proj/t/A.md"]}, responsibility="A"),
-        _wp("test_designer", ["proj/t/B.md"], {"test_plan": ["proj/t/B.md"]}, responsibility="B"),
+        _wp("kodo_test_designer", ["proj/t/A.md"], {"test_plan": ["proj/t/A.md"]}, responsibility="A"),
+        _wp("kodo_test_designer", ["proj/t/B.md"], {"test_plan": ["proj/t/B.md"]}, responsibility="B"),
     ]
 
     [resolved] = resolve_needs(
@@ -290,7 +290,7 @@ def test_self_scope_narrows_to_this_spawns_component() -> None:
 
 def test_self_scope_resolves_to_nothing_for_an_unknown_component() -> None:
     ledger = [
-        _wp("test_designer", ["proj/t/A.md"], {"test_plan": ["proj/t/A.md"]}, responsibility="A")
+        _wp("kodo_test_designer", ["proj/t/A.md"], {"test_plan": ["proj/t/A.md"]}, responsibility="A")
     ]
 
     [resolved] = resolve_needs(
@@ -303,9 +303,9 @@ def test_self_scope_resolves_to_nothing_for_an_unknown_component() -> None:
 
 def test_all_scope_unions_every_producer_of_a_role_without_duplicates() -> None:
     ledger = [
-        _wp("functional_designer", ["proj/d/A.md"], {"functional_design": ["proj/d/A.md"]}),
+        _wp("kodo_functional_designer", ["proj/d/A.md"], {"functional_design": ["proj/d/A.md"]}),
         _wp(
-            "functional_designer",
+            "kodo_functional_designer",
             ["proj/d/A.md", "proj/d/B.md"],
             {"functional_design": ["proj/d/A.md", "proj/d/B.md"]},
         ),
@@ -319,7 +319,7 @@ def test_all_scope_unions_every_producer_of_a_role_without_duplicates() -> None:
 def test_under_review_scope_comes_from_the_round_not_the_ledger() -> None:
     """The engine already knows what it spawned this critic against; looking it
     up again would be a second chance to get it wrong."""
-    reviewed = _wp("architect", ["proj/a.md"], {"architecture": ["proj/a.md"]})
+    reviewed = _wp("kodo_architect", ["proj/a.md"], {"architecture": ["proj/a.md"]})
 
     [resolved] = resolve_needs(
         [], [("architecture", "under_review", True)], project="proj", under_review=reviewed
@@ -334,7 +334,7 @@ def test_under_review_outside_a_review_round_resolves_to_nothing() -> None:
 
 
 def test_resolution_ignores_other_projects() -> None:
-    ledger = [_wp("architect", ["other/a.md"], {"architecture": ["other/a.md"]}, project="other")]
+    ledger = [_wp("kodo_architect", ["other/a.md"], {"architecture": ["other/a.md"]}, project="other")]
 
     [resolved] = resolve_needs(ledger, [("architecture", "global", True)], project="proj")
 
@@ -362,9 +362,9 @@ def test_a_pre_roles_work_product_reads_as_filling_whatever_is_asked() -> None:
     Reading those as "all of it" keeps them resolvable instead of silently
     empty, which would look exactly like the bug this replaced."""
     legacy = WorkProduct(
-        id="proj/architect",
+        id="proj/kodo_architect",
         project="proj",
-        agent="architect",
+        agent="kodo_architect",
         responsibility_code="",
         paths=("proj/specs/architecture.md",),
     )
@@ -377,7 +377,7 @@ def test_a_pre_roles_work_product_reads_as_filling_whatever_is_asked() -> None:
 def test_an_unwired_scope_resolves_to_nothing_rather_than_raising() -> None:
     """`dependencies` is in the vocabulary but needs the architect's component
     graph. No spec declares it yet; reaching it must not take down a spawn."""
-    ledger = [_wp("architect", ["proj/a.md"], {"architecture": ["proj/a.md"]})]
+    ledger = [_wp("kodo_architect", ["proj/a.md"], {"architecture": ["proj/a.md"]})]
 
     [resolved] = resolve_needs(ledger, [("architecture", "dependencies", True)], project="proj")
 
@@ -442,9 +442,9 @@ def test_reading_a_graph_that_was_never_recorded_is_empty(tmp_path: Path) -> Non
 def _designs() -> WorkProduct:
     """One whole-product functional_designer run: three designs, no responsibility."""
     return WorkProduct(
-        id="proj/functional_designer",
+        id="proj/kodo_functional_designer",
         project="proj",
-        agent="functional_designer",
+        agent="kodo_functional_designer",
         responsibility_code="",
         paths=("proj/d/AUTH.md", "proj/d/LEDGER.md", "proj/d/REPORTS.md"),
         roles={
@@ -539,9 +539,9 @@ def test_a_per_component_work_product_needs_no_per_file_attribution() -> None:
     """A per-component stage's whole work product belongs to one component, so
     its own responsibility_code covers every member."""
     plan = WorkProduct(
-        id="proj/test_designer/AUTH",
+        id="proj/kodo_test_designer/AUTH",
         project="proj",
-        agent="test_designer",
+        agent="kodo_test_designer",
         responsibility_code="AUTH",
         paths=("proj/t/AUTH.md",),
         roles={"test_plan": ("proj/t/AUTH.md",)},

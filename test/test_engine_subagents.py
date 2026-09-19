@@ -64,7 +64,7 @@ class _FakeRegistry:
             capability="medium",
             tools=frozenset(),
             system_prompt="sys",
-            display_name="" if name != "architect" else "The Architect",
+            display_name="" if name != "kodo_architect" else "The Architect",
             critic="",
             user_review=False,
             planner=name in self._planners,
@@ -257,26 +257,26 @@ def _make_engine(
 
 
 def test_assert_can_spawn_allows_permitted_agent() -> None:
-    engine = _make_engine(allowed={"guide": frozenset({"investigator"})})
-    engine._assert_can_spawn("guide", "investigator")  # must not raise
+    engine = _make_engine(allowed={"kodo_guide": frozenset({"kodo_investigator"})})
+    engine._assert_can_spawn("kodo_guide", "kodo_investigator")  # must not raise
 
 
 def test_assert_can_spawn_rejects_unpermitted_agent() -> None:
-    engine = _make_engine(allowed={"guide": frozenset({"investigator"})})
+    engine = _make_engine(allowed={"kodo_guide": frozenset({"kodo_investigator"})})
     with pytest.raises(PermissionError, match="not permitted to spawn"):
-        engine._assert_can_spawn("guide", "planner")
+        engine._assert_can_spawn("kodo_guide", "kodo_planner")
 
 
 def test_assert_can_spawn_rejects_direct_only_agent() -> None:
-    engine = _make_engine(allowed={"guide": frozenset({"compactor"})})
+    engine = _make_engine(allowed={"kodo_guide": frozenset({"kodo_compactor"})})
     with pytest.raises(PermissionError, match="engine-driven only"):
-        engine._assert_can_spawn("guide", "compactor")
+        engine._assert_can_spawn("kodo_guide", "kodo_compactor")
 
 
 def test_assert_can_spawn_checks_every_name() -> None:
-    engine = _make_engine(allowed={"guide": frozenset({"architect"})})
+    engine = _make_engine(allowed={"kodo_guide": frozenset({"kodo_architect"})})
     with pytest.raises(PermissionError):
-        engine._assert_can_spawn("guide", "architect", "critic")
+        engine._assert_can_spawn("kodo_guide", "kodo_architect", "critic")
 
 
 # ---------------------------------------------------------------------------
@@ -285,17 +285,17 @@ def test_assert_can_spawn_checks_every_name() -> None:
 
 
 async def test_run_subagent_denies_when_not_permitted() -> None:
-    engine = _make_engine(allowed={"guide": frozenset()})
+    engine = _make_engine(allowed={"kodo_guide": frozenset()})
     with pytest.raises(PermissionError):
-        await engine._run_subagent("guide", "investigator", {})
+        await engine._run_subagent("kodo_guide", "kodo_investigator", {})
 
 
 async def test_run_subagent_spawns_when_permitted() -> None:
     engine = _make_engine(
-        allowed={"guide": frozenset({"investigator"})},
+        allowed={"kodo_guide": frozenset({"kodo_investigator"})},
         dispatcher_output={"result": "ok"},
     )
-    result = await engine._run_subagent("guide", "investigator", {"instructions": "go look"})
+    result = await engine._run_subagent("kodo_guide", "kodo_investigator", {"instructions": "go look"})
     assert result == {"result": "ok"}
 
 
@@ -308,8 +308,8 @@ async def test_a_planner_result_initializes_the_session_plan(tmp_path: Path) -> 
     """The whole point of the flag: the engine reads `tasks`/`codebase_context`
     off the result and records them, with nothing written by any model."""
     engine = _make_engine(
-        allowed={"guide": frozenset({"planner"})},
-        planners=frozenset({"planner"}),
+        allowed={"kodo_guide": frozenset({"kodo_planner"})},
+        planners=frozenset({"kodo_planner"}),
         session_dir=tmp_path,
         dispatcher_output={
             "plan_warranted": True,
@@ -317,11 +317,11 @@ async def test_a_planner_result_initializes_the_session_plan(tmp_path: Path) -> 
             "tasks": [{"title": "Extract parser"}, {"title": "Rewire CLI"}],
         },
     )
-    await engine._run_subagent("guide", "planner", {"instructions": "split the parser out"})
+    await engine._run_subagent("kodo_guide", "kodo_planner", {"instructions": "split the parser out"})
     plan = read_plan(tmp_path / "plan")
     assert plan is not None
     assert [t["title"] for t in plan["tasks"]] == ["Extract parser", "Rewire CLI"]
-    assert plan["created_by"] == "planner"
+    assert plan["created_by"] == "kodo_planner"
     assert plan["context"] == "the parser lives in src/parse.py"
     # The user is shown the plan the moment it exists — a plan they cannot see is
     # one they cannot object to before the work starts.
@@ -332,8 +332,8 @@ async def test_a_planner_result_with_no_tasks_creates_no_plan(tmp_path: Path) ->
     """`plan_warranted: false` is not a field the engine reads — "it gave me no
     tasks" is the same fact, and the session is simply left with no plan."""
     engine = _make_engine(
-        allowed={"guide": frozenset({"planner"})},
-        planners=frozenset({"planner"}),
+        allowed={"kodo_guide": frozenset({"kodo_planner"})},
+        planners=frozenset({"kodo_planner"}),
         session_dir=tmp_path,
         dispatcher_output={
             "plan_warranted": False,
@@ -341,7 +341,7 @@ async def test_a_planner_result_with_no_tasks_creates_no_plan(tmp_path: Path) ->
             "tasks": [],
         },
     )
-    await engine._run_subagent("guide", "planner", {"instructions": "tiny fix"})
+    await engine._run_subagent("kodo_guide", "kodo_planner", {"instructions": "tiny fix"})
     assert read_plan(tmp_path / "plan") is None
     assert engine._emitters.plan_states == []
 
@@ -350,11 +350,11 @@ async def test_a_non_planner_result_never_creates_a_plan(tmp_path: Path) -> None
     """Gated on the declaration, not on the shape of the result: an agent that
     happens to return a `tasks` array is not thereby a planner."""
     engine = _make_engine(
-        allowed={"guide": frozenset({"investigator"})},
+        allowed={"kodo_guide": frozenset({"kodo_investigator"})},
         session_dir=tmp_path,
         dispatcher_output={"tasks": [{"title": "not a plan"}], "codebase_context": "x"},
     )
-    await engine._run_subagent("guide", "investigator", {"instructions": "look"})
+    await engine._run_subagent("kodo_guide", "kodo_investigator", {"instructions": "look"})
     assert read_plan(tmp_path / "plan") is None
 
 
@@ -364,16 +364,16 @@ async def test_replanning_over_an_unfinished_plan_raises_out_of_run_subagent(
     """The one hard failure — it must propagate, not become part of the result,
     because the worker turns it into a stopped session (doc/PLANNING.md §4)."""
     plan_dir = tmp_path / "plan"
-    create_plan(plan_dir, created_by="planner", context="c", tasks=[{"title": "half-done work"}])
+    create_plan(plan_dir, created_by="kodo_planner", context="c", tasks=[{"title": "half-done work"}])
     step_plan(plan_dir)  # task 1 now in progress — the plan is live and unfinished
     engine = _make_engine(
-        allowed={"guide": frozenset({"planner"})},
-        planners=frozenset({"planner"}),
+        allowed={"kodo_guide": frozenset({"kodo_planner"})},
+        planners=frozenset({"kodo_planner"}),
         session_dir=tmp_path,
         dispatcher_output={"codebase_context": "c2", "tasks": [{"title": "replacement"}]},
     )
     with pytest.raises(PlanConflictError, match="half-done work"):
-        await engine._run_subagent("guide", "planner", {"instructions": "re-plan"})
+        await engine._run_subagent("kodo_guide", "kodo_planner", {"instructions": "re-plan"})
     # The live plan is untouched: a refused supersede changes nothing.
     live = read_plan(plan_dir)
     assert live is not None
@@ -382,16 +382,16 @@ async def test_replanning_over_an_unfinished_plan_raises_out_of_run_subagent(
 
 async def test_replanning_after_the_plan_completes_supersedes_it(tmp_path: Path) -> None:
     plan_dir = tmp_path / "plan"
-    create_plan(plan_dir, created_by="planner", context="c", tasks=[{"title": "finished work"}])
+    create_plan(plan_dir, created_by="kodo_planner", context="c", tasks=[{"title": "finished work"}])
     step_plan(plan_dir)
     step_plan(plan_dir)
     engine = _make_engine(
-        allowed={"guide": frozenset({"planner"})},
-        planners=frozenset({"planner"}),
+        allowed={"kodo_guide": frozenset({"kodo_planner"})},
+        planners=frozenset({"kodo_planner"}),
         session_dir=tmp_path,
         dispatcher_output={"codebase_context": "c2", "tasks": [{"title": "next phase"}]},
     )
-    await engine._run_subagent("guide", "planner", {"instructions": "plan the next phase"})
+    await engine._run_subagent("kodo_guide", "kodo_planner", {"instructions": "plan the next phase"})
     live = read_plan(plan_dir)
     assert live is not None
     assert [t["title"] for t in live["tasks"]] == ["next phase"]
@@ -402,12 +402,12 @@ async def test_unusable_tasks_are_reported_to_the_caller(tmp_path: Path) -> None
     planner answering with bare strings is "compliant" and yields no plan — the
     caller must be told, or it meets a contradictory "there is no plan" later."""
     engine = _make_engine(
-        allowed={"guide": frozenset({"planner"})},
-        planners=frozenset({"planner"}),
+        allowed={"kodo_guide": frozenset({"kodo_planner"})},
+        planners=frozenset({"kodo_planner"}),
         session_dir=tmp_path,
         dispatcher_output={"codebase_context": "c", "tasks": ["step one", "step two"]},
     )
-    result = await engine._run_subagent("guide", "planner", {"instructions": "go"})
+    result = await engine._run_subagent("kodo_guide", "kodo_planner", {"instructions": "go"})
     assert read_plan(tmp_path / "plan") is None
     assert "none were usable" in str(result["plan_issue"])
     # No widget: there is no plan to render.
@@ -418,15 +418,15 @@ async def test_a_partially_usable_plan_is_created_and_flagged(tmp_path: Path) ->
     """The plan is real but short, so the warning rides on the very widget that is
     missing the tasks — as well as going back to the caller."""
     engine = _make_engine(
-        allowed={"guide": frozenset({"planner"})},
-        planners=frozenset({"planner"}),
+        allowed={"kodo_guide": frozenset({"kodo_planner"})},
+        planners=frozenset({"kodo_planner"}),
         session_dir=tmp_path,
         dispatcher_output={
             "codebase_context": "c",
             "tasks": [{"title": "a"}, {"no_title": 1}, {"title": "c"}],
         },
     )
-    result = await engine._run_subagent("guide", "planner", {"instructions": "go"})
+    result = await engine._run_subagent("kodo_guide", "kodo_planner", {"instructions": "go"})
     plan = read_plan(tmp_path / "plan")
     assert plan is not None
     assert [t["title"] for t in plan["tasks"]] == ["a", "c"]
@@ -439,28 +439,28 @@ async def test_reporting_no_tasks_is_not_an_issue(tmp_path: Path) -> None:
     """`plan_warranted: false` is a legitimate answer, not a failure — nothing is
     flagged and the caller's result stays clean."""
     engine = _make_engine(
-        allowed={"guide": frozenset({"planner"})},
-        planners=frozenset({"planner"}),
+        allowed={"kodo_guide": frozenset({"kodo_planner"})},
+        planners=frozenset({"kodo_planner"}),
         session_dir=tmp_path,
         dispatcher_output={"codebase_context": "c", "tasks": []},
     )
-    result = await engine._run_subagent("guide", "planner", {"instructions": "go"})
+    result = await engine._run_subagent("kodo_guide", "kodo_planner", {"instructions": "go"})
     assert "plan_issue" not in result
 
 
 async def test_a_planner_may_supersede_an_abandoned_plan(tmp_path: Path) -> None:
     """The escape route, end to end through the engine hook."""
     plan_dir = tmp_path / "plan"
-    create_plan(plan_dir, created_by="planner", context="c", tasks=[{"title": "half-done"}])
+    create_plan(plan_dir, created_by="kodo_planner", context="c", tasks=[{"title": "half-done"}])
     step_plan(plan_dir)
     abandon_plan(plan_dir, "user redirected")
     engine = _make_engine(
-        allowed={"guide": frozenset({"planner"})},
-        planners=frozenset({"planner"}),
+        allowed={"kodo_guide": frozenset({"kodo_planner"})},
+        planners=frozenset({"kodo_planner"}),
         session_dir=tmp_path,
         dispatcher_output={"codebase_context": "c2", "tasks": [{"title": "next phase"}]},
     )
-    await engine._run_subagent("guide", "planner", {"instructions": "re-plan"})
+    await engine._run_subagent("kodo_guide", "kodo_planner", {"instructions": "re-plan"})
     live = read_plan(plan_dir)
     assert live is not None
     assert [t["title"] for t in live["tasks"]] == ["next phase"]
@@ -471,11 +471,11 @@ async def test_a_planner_with_no_session_store_is_a_no_op() -> None:
     """A bare host (no `session_dir`) cannot hold a plan; the spawn still succeeds
     and returns its result rather than failing on the bookkeeping."""
     engine = _make_engine(
-        allowed={"guide": frozenset({"planner"})},
-        planners=frozenset({"planner"}),
+        allowed={"kodo_guide": frozenset({"kodo_planner"})},
+        planners=frozenset({"kodo_planner"}),
         dispatcher_output={"codebase_context": "c", "tasks": [{"title": "a"}]},
     )
-    result = await engine._run_subagent("guide", "planner", {"instructions": "go"})
+    result = await engine._run_subagent("kodo_guide", "kodo_planner", {"instructions": "go"})
     assert result["tasks"] == [{"title": "a"}]
     assert engine._emitters.plan_states == []
 
@@ -485,7 +485,7 @@ async def test_run_dependency_manager_is_ungated() -> None:
     result = await engine._run_dependency_manager({"action": "add"})
     assert result == {"ok": True}
     # No allow-list was consulted — the fixed depsmgr agent name was used.
-    assert engine.run_agent_turn_calls[0]["agent_name"] == "toolchain_depsmgr"
+    assert engine.run_agent_turn_calls[0]["agent_name"] == "kodo_toolchain_depsmgr"
 
 
 async def test_run_web_search_agent_returns_themes_and_note() -> None:
@@ -655,12 +655,12 @@ def test_render_task_input_null_value_renders_as_none_not_python_literal() -> No
 
 def test_display_name_uses_frontmatter_when_set() -> None:
     engine = _make_engine()
-    assert engine._display_name("architect") == "The Architect"
+    assert engine._display_name("kodo_architect") == "The Architect"
 
 
 def test_display_name_falls_back_to_name_when_blank() -> None:
     engine = _make_engine()
-    assert engine._display_name("investigator") == "investigator"
+    assert engine._display_name("kodo_investigator") == "kodo_investigator"
 
 
 def test_display_name_falls_back_on_load_error() -> None:
@@ -675,15 +675,15 @@ def test_display_name_falls_back_on_load_error() -> None:
 
 async def test_open_subsession_records_marker_active_pointer_and_event() -> None:
     engine = _make_engine()
-    engine._session.agent = "guide"
+    engine._session.agent = "kodo_guide"
 
-    await engine._open_subsession("investigator", "sub1", "look into it")
+    await engine._open_subsession("kodo_investigator", "sub1", "look into it")
 
     assert engine._transient.markers[-1]["type"] == "subsession_start"
     assert engine._transient.markers[-1]["subsession_id"] == "sub1"
     # An agent holds the floor, so it is the parent — see the next test for
     # what happens when none does.
-    assert engine._transient.markers[-1]["parent_display_name"] == "guide"
+    assert engine._transient.markers[-1]["parent_display_name"] == "kodo_guide"
     assert engine._transient.updates[-1]["active_subsession"]["subsession_id"] == "sub1"
     assert engine._sink.sent[-1].payload["type"] == "subsession.started"
     assert engine._sink.sent[-1].payload["task"] == "look into it"
@@ -693,18 +693,18 @@ async def test_open_subsession_defaults_parent_to_the_top_agent() -> None:
     engine = _make_engine()
     engine._session.agent = None
 
-    await engine._open_subsession("investigator", "sub1")
+    await engine._open_subsession("kodo_investigator", "sub1")
 
     # Nobody holds the floor, so the parent shown is the session's top-level
     # agent — a registry lookup, not a hardcoded name.
-    assert engine._transient.markers[-1]["parent_display_name"] == "problem_solver"
+    assert engine._transient.markers[-1]["parent_display_name"] == "kodo_problem_solver"
 
 
 async def test_close_subsession_marks_failed_when_schema_noncompliant() -> None:
     engine = _make_engine()
     output = {SCHEMA_COMPLIANCE_KEY: False}
 
-    await engine._close_subsession("investigator", "sub1", output)
+    await engine._close_subsession("kodo_investigator", "sub1", output)
 
     assert engine._transient.markers[-1]["failed"] is True
     assert engine._transient.markers[-1]["result"] == output
@@ -715,7 +715,7 @@ async def test_close_subsession_marks_failed_when_schema_noncompliant() -> None:
 async def test_close_subsession_clears_and_reemits_subsession_context_gauge() -> None:
     engine = _make_engine()
 
-    await engine._close_subsession("investigator", "sub1", {SCHEMA_COMPLIANCE_KEY: True})
+    await engine._close_subsession("kodo_investigator", "sub1", {SCHEMA_COMPLIANCE_KEY: True})
 
     assert engine._compactor.cleared_count == 1
     assert ("context_stats",) in engine._emitters.events
@@ -723,7 +723,7 @@ async def test_close_subsession_clears_and_reemits_subsession_context_gauge() ->
 
 async def test_close_subsession_not_failed_when_schema_compliant() -> None:
     engine = _make_engine()
-    await engine._close_subsession("investigator", "sub1", {SCHEMA_COMPLIANCE_KEY: True})
+    await engine._close_subsession("kodo_investigator", "sub1", {SCHEMA_COMPLIANCE_KEY: True})
     assert engine._transient.markers[-1]["failed"] is False
 
 
@@ -754,7 +754,7 @@ async def test_abort_active_subsession_closes_out_the_open_subsession() -> None:
     engine = _make_engine()
     engine._transient.active_subsession = {
         "subsession_id": "sub1",
-        "agent": "investigator",
+        "agent": "kodo_investigator",
         "display_name": "Investigator",
         "parent_display_name": "Guide",
     }
@@ -767,7 +767,7 @@ async def test_abort_active_subsession_closes_out_the_open_subsession() -> None:
     marker = engine._transient.markers[-1]
     assert marker["type"] == "subsession_end"
     assert marker["subsession_id"] == "sub1"
-    assert marker["agent"] == "investigator"
+    assert marker["agent"] == "kodo_investigator"
     assert marker["display_name"] == "Investigator"
     assert marker["parent_display_name"] == "Guide"
     assert marker["failed"] is True
@@ -788,7 +788,7 @@ async def test_abort_active_subsession_falls_back_to_display_name_lookup() -> No
     engine = _make_engine()
     engine._transient.active_subsession = {
         "subsession_id": "sub1",
-        "agent": "architect",
+        "agent": "kodo_architect",
         "display_name": "",
         "parent_display_name": "",
     }
@@ -797,7 +797,7 @@ async def test_abort_active_subsession_falls_back_to_display_name_lookup() -> No
 
     marker = engine._transient.markers[-1]
     assert marker["display_name"] == "The Architect"
-    assert marker["parent_display_name"] == "problem_solver"
+    assert marker["parent_display_name"] == "kodo_problem_solver"
 
 
 # ---------------------------------------------------------------------------
@@ -809,26 +809,26 @@ async def test_drive_subsession_returns_dispatcher_output() -> None:
     engine = _make_engine(dispatcher_output={"summary": "done"})
     seed = [Message(role="user", content="go")]
 
-    output = await engine._drive_subsession("investigator", "sub1", seed)
+    output = await engine._drive_subsession("kodo_investigator", "sub1", seed)
 
     assert output == {"summary": "done"}
-    assert engine._session.agent == "investigator"
-    assert ("started", "investigator") in engine._emitters.events
-    assert ("finished", "investigator") in engine._emitters.events
+    assert engine._session.agent == "kodo_investigator"
+    assert ("started", "kodo_investigator") in engine._emitters.events
+    assert ("finished", "kodo_investigator") in engine._emitters.events
     assert engine._sink.sent[-1].kind == "stream_end"
 
 
 async def test_drive_subsession_passes_resolved_model_as_subsession_model_key() -> None:
     engine = _make_engine(dispatcher_output={"ok": True})
 
-    await engine._drive_subsession("investigator", "sub1", [])
+    await engine._drive_subsession("kodo_investigator", "sub1", [])
 
     assert engine.run_agent_turn_calls[0]["subsession_model_key"] == "model-x"
 
 
 async def test_drive_subsession_synthesizes_fallback_when_no_return_result() -> None:
     engine = _make_engine(dispatcher_output=None)
-    output = await engine._drive_subsession("investigator", "sub1", [])
+    output = await engine._drive_subsession("kodo_investigator", "sub1", [])
     assert output == {SCHEMA_COMPLIANCE_KEY: False}
 
 
@@ -841,7 +841,7 @@ async def test_drive_subsession_persist_callback_appends_subsession_messages() -
 
     engine._run_agent_turn = _run_agent_turn
 
-    await engine._drive_subsession("investigator", "sub1", [])
+    await engine._drive_subsession("kodo_investigator", "sub1", [])
 
     assert engine._transient.subsession_messages["sub1"] == [("assistant", "partial", None)]
 
@@ -862,7 +862,7 @@ async def test_drive_subsession_wires_on_cyclic_thinking_for_subagent_scope() ->
     }
     engine._session.effective_autonomous = True
 
-    await engine._drive_subsession("investigator", "sub-1", [])
+    await engine._drive_subsession("kodo_investigator", "sub-1", [])
 
     kwargs = engine.run_agent_turn_calls[0]
     handler = kwargs["on_cyclic_thinking"]
@@ -894,13 +894,13 @@ async def test_drive_subsession_folds_a_turn_crash_into_an_escalation() -> None:
 
     engine._run_agent_turn = _boom
 
-    output = await engine._drive_subsession("investigator", "sub1", [])
+    output = await engine._drive_subsession("kodo_investigator", "sub1", [])
 
     assert output["reason"] == "subsession_crashed"
     assert output[SCHEMA_COMPLIANCE_KEY] is False
     assert "/gone" in str(output["summary"])
     # The stream is still torn down, so no client spinner is left hanging.
-    assert ("finished", "investigator") in engine._emitters.events
+    assert ("finished", "kodo_investigator") in engine._emitters.events
     assert engine._sink.sent[-1].kind == "stream_end"
     # ...and the human sees the exception itself.
     assert any("crashed" in msg for msg, _rec in engine._emitters.errors)
@@ -921,7 +921,7 @@ async def test_drive_subsession_reraises_session_level_failures(exc: BaseExcepti
     engine._run_agent_turn = _boom
 
     with pytest.raises(type(exc)):
-        await engine._drive_subsession("investigator", "sub1", [])
+        await engine._drive_subsession("kodo_investigator", "sub1", [])
 
 
 async def test_drive_subsession_crash_records_no_findings_from_a_critic() -> None:
@@ -940,7 +940,7 @@ async def test_drive_subsession_crash_records_no_findings_from_a_critic() -> Non
 
     engine._record_findings = _record_findings
 
-    output = await engine._drive_subsession("code_critic", "sub1", [], "wp-1")
+    output = await engine._drive_subsession("kodo_code_critic", "sub1", [], "wp-1")
 
     assert output["reason"] == "subsession_crashed"
     assert engine.recorded_findings == []
@@ -953,7 +953,7 @@ async def test_drive_subsession_crash_records_no_findings_from_a_critic() -> Non
 
 async def test_spawn_subagent_rejects_direct_only_agent() -> None:
     engine = _make_engine()
-    result = await engine._spawn_subagent("compactor", {})
+    result = await engine._spawn_subagent("kodo_compactor", {})
     assert result == {}
     assert engine._transient.markers == []  # never opened a subsession
 
@@ -961,7 +961,7 @@ async def test_spawn_subagent_rejects_direct_only_agent() -> None:
 async def test_spawn_subagent_fresh_run_opens_and_closes_subsession() -> None:
     engine = _make_engine(dispatcher_output={"primary_path": "a.md"})
 
-    result = await engine._spawn_subagent("investigator", {"instructions": "look"})
+    result = await engine._spawn_subagent("kodo_investigator", {"instructions": "look"})
 
     assert result == {"primary_path": "a.md"}
     kinds = [m["type"] for m in engine._transient.markers]
@@ -974,10 +974,10 @@ async def test_spawn_subagent_fresh_run_opens_and_closes_subsession() -> None:
 async def test_spawn_subagent_replay_mode_consumes_ledger_instead_of_running() -> None:
     engine = _make_engine()
     engine._replay_subsessions = [
-        {"subsession_id": "sub1", "agent": "investigator", "completed": True, "result": {"x": 1}}
+        {"subsession_id": "sub1", "agent": "kodo_investigator", "completed": True, "result": {"x": 1}}
     ]
 
-    result = await engine._spawn_subagent("investigator", {"instructions": "look"})
+    result = await engine._spawn_subagent("kodo_investigator", {"instructions": "look"})
 
     assert result == {"x": 1}
     # A completed replay never opens a new subsession.
@@ -988,7 +988,7 @@ async def test_spawn_subagent_clears_replay_flag_when_ledger_empty() -> None:
     engine = _make_engine(dispatcher_output={"ok": True})
     engine._replay_subsessions = []  # falsy but not None
 
-    await engine._spawn_subagent("investigator", {})
+    await engine._spawn_subagent("kodo_investigator", {})
 
     assert engine._replay_subsessions is None
 
@@ -1007,7 +1007,7 @@ async def test_spawn_subagent_closes_the_subsession_when_startup_crashes() -> No
 
     engine._drive_subsession = _boom
 
-    result = await engine._spawn_subagent("investigator", {"instructions": "look"})
+    result = await engine._spawn_subagent("kodo_investigator", {"instructions": "look"})
 
     assert result["reason"] == "subsession_crashed"
     kinds = [m["type"] for m in engine._transient.markers]
@@ -1029,7 +1029,7 @@ async def test_spawn_subagent_reraises_session_level_failures(exc: BaseException
     engine._drive_subsession = _boom
 
     with pytest.raises(type(exc)):
-        await engine._spawn_subagent("investigator", {"instructions": "look"})
+        await engine._spawn_subagent("kodo_investigator", {"instructions": "look"})
 
 
 # ---------------------------------------------------------------------------
@@ -1040,10 +1040,10 @@ async def test_spawn_subagent_reraises_session_level_failures(exc: BaseException
 async def test_replay_next_subsession_completed_returns_stored_dict_result() -> None:
     engine = _make_engine()
     engine._replay_subsessions = [
-        {"subsession_id": "sub1", "agent": "investigator", "completed": True, "result": {"x": 1}}
+        {"subsession_id": "sub1", "agent": "kodo_investigator", "completed": True, "result": {"x": 1}}
     ]
 
-    result = await engine._replay_next_subsession("investigator")
+    result = await engine._replay_next_subsession("kodo_investigator")
 
     assert result == {"x": 1}
     assert engine._replay_subsessions is None
@@ -1054,13 +1054,13 @@ async def test_replay_next_subsession_completed_non_dict_result_returns_empty() 
     engine._replay_subsessions = [
         {
             "subsession_id": "sub1",
-            "agent": "investigator",
+            "agent": "kodo_investigator",
             "completed": True,
             "result": ["not", "a", "dict"],
         }
     ]
 
-    result = await engine._replay_next_subsession("investigator")
+    result = await engine._replay_next_subsession("kodo_investigator")
 
     assert result == {}
 
@@ -1068,17 +1068,17 @@ async def test_replay_next_subsession_completed_non_dict_result_returns_empty() 
 async def test_replay_next_subsession_active_rehydrates_and_drives(monkeypatch) -> None:
     engine = _make_engine(dispatcher_output={"resumed": True})
     engine._replay_subsessions = [
-        {"subsession_id": "sub1", "agent": "investigator", "completed": False, "result": {}},
-        {"subsession_id": "sub2", "agent": "planner", "completed": False, "result": {}},
+        {"subsession_id": "sub1", "agent": "kodo_investigator", "completed": False, "result": {}},
+        {"subsession_id": "sub2", "agent": "kodo_planner", "completed": False, "result": {}},
     ]
     engine._transient._rehydrate["sub1"] = [{"role": "user", "content": "seed"}]
 
-    result = await engine._replay_next_subsession("investigator")
+    result = await engine._replay_next_subsession("kodo_investigator")
 
     assert result == {"resumed": True}
     # Only the consumed entry was popped; the ledger is not yet exhausted.
     assert engine._replay_subsessions == [
-        {"subsession_id": "sub2", "agent": "planner", "completed": False, "result": {}}
+        {"subsession_id": "sub2", "agent": "kodo_planner", "completed": False, "result": {}}
     ]
     # Driving to completion also closes the subsession.
     assert engine._transient.markers[-1]["type"] == "subsession_end"
@@ -1087,10 +1087,10 @@ async def test_replay_next_subsession_active_rehydrates_and_drives(monkeypatch) 
 async def test_replay_next_subsession_pops_last_entry_clears_ledger() -> None:
     engine = _make_engine(dispatcher_output={"ok": True})
     engine._replay_subsessions = [
-        {"subsession_id": "sub1", "agent": "investigator", "completed": False, "result": {}}
+        {"subsession_id": "sub1", "agent": "kodo_investigator", "completed": False, "result": {}}
     ]
     engine._transient._rehydrate["sub1"] = []
 
-    await engine._replay_next_subsession("investigator")
+    await engine._replay_next_subsession("kodo_investigator")
 
     assert engine._replay_subsessions is None

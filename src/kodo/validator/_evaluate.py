@@ -159,7 +159,7 @@ async def run_evaluation(
         # gates would just add noise (and SMART security judgements would burn
         # extra VLLM calls) to a run that only ever reads.
         await judge.request(MSG_MODE_SET, autonomous=True)
-        await judge.request(MSG_AGENT_SET, name="judge")
+        await judge.request(MSG_AGENT_SET, name="kodo_judge")
         await judge.request(MSG_EDIT_CONTROL_SET, edit_control="allow_all")
         await judge.request(MSG_COMMAND_CONTROL_SET, command_control="permissive")
 
