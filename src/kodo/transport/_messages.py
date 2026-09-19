@@ -387,6 +387,61 @@ MSG_DEFAULT_AGENT_GET = "default_agent.get"
 # read fresh every time the default is resolved.
 MSG_DEFAULT_AGENT_SET = "default_agent.set"
 
+# Client → Server. Control connection only. List every user-installed agent and
+# sub-agent under ``~/.kodo/agents`` (doc/USER_AGENTS.md §6), for the Kōdo
+# Settings panel's Agents section. No payload. Replies ``agents.list.ack``
+# ``{ok: true, agents: [{name, kind, version, label, description, path, error}, ...],
+# root}``. ``kind`` is ``"agent"`` or ``"subagent"``; a non-empty ``error`` is a
+# bundle that failed to load, listed deliberately so a broken one is visible and
+# deletable rather than silently missing — the same contract ``skills.list``
+# has. Built-in agents are **not** listed: they are not the user's to delete,
+# and the picker already publishes them through ``hello.ack``.
+MSG_AGENTS_LIST = "agents.list"
+
+# Client → Server. Control connection only. Delete one user-installed agent —
+# a top-level agent's whole bundle directory, or a sub-agent's prompt and
+# contract from the shared directory. Payload: ``{name: "reviewer", kind:
+# "agent"}``. ``kodo.agents.UserAgentStore`` re-validates that the name is a
+# single path component resolving inside the agents root, so a crafted ``name``
+# cannot reach outside it. Replies ``agents.delete.ack`` ``{ok, error?, agents,
+# root}`` with the post-deletion listing. The registry is reloaded before the
+# reply, so the picker a client rebuilds from ``agents.reload``'s broadcast
+# already reflects the deletion.
+MSG_AGENTS_DELETE = "agents.delete"
+
+# Client → Server. Control connection only. Read a source — a local directory or
+# a git repository URL — and report what installing it *would* do, without
+# writing anything (doc/USER_AGENTS.md §4). Payload: ``{source: "..."}``.
+# Replies ``agents.install_scan.ack`` ``{ok: true, candidates: [{name, kind,
+# version, installed_version, error}, ...], conflicts: "<multi-line report>"}``,
+# or ``{ok: false, error}`` when the source is unreadable, the ``git`` CLI is
+# missing, or the clone failed. A non-empty ``installed_version`` on a candidate
+# is the existing-vs-incoming decision the panel puts to the user; ``conflicts``
+# is that same set pre-rendered as the list it shows. A cloned source goes to a
+# throwaway temp directory deleted before this replies — nothing here installs.
+MSG_AGENTS_INSTALL_SCAN = "agents.install_scan"
+
+# Client → Server. Control connection only. Read the same source again
+# (independently of any prior ``agents.install_scan`` — nothing is cached
+# between the two) and install it into ``~/.kodo/agents``. Payload:
+# ``{source: "...", replace: false, names?: ["reviewer", ...]}`` — ``replace``
+# is the user's answer to the keep-or-replace question, applying to every
+# conflicting entry, and ``names`` narrows the install to a subset (omit it to
+# install everything the source offers). Replies ``agents.install.ack``
+# ``{ok: true, installed, kept, skipped, missing, agents, root}`` with the
+# post-install listing, or ``{ok: false, error}``. The registry is reloaded
+# before the reply, so a newly installed agent is selectable immediately with no
+# server restart.
+MSG_AGENTS_INSTALL = "agents.install"
+
+# Client → Server. Control connection only. Rebuild the agent registry from both
+# roots — for the user who edited a bundle by hand rather than installing it.
+# No payload. Replies ``agents.reload.ack`` ``{ok, error?, agents, root}``.
+# ``ok: false`` means the rebuild failed on a *packaged* agent, which leaves the
+# previous working set live (``AgentRegistry.reload`` swaps only on success), so
+# the session the user is in keeps working.
+MSG_AGENTS_RELOAD = "agents.reload"
+
 MSG_SKILLS_LIST = "skills.list"
 
 # Client → Server. Control connection only. Delete one installed skill's whole

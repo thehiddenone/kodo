@@ -267,7 +267,10 @@ async def test_run_subagent_returns_primary_path() -> None:
     result = json.loads(
         await dispatcher.dispatch(
             "run_subagent",
-            {"name": "kodo_narrative_author", "task_input": {"instructions": "Build a trading bot"}},
+            {
+                "name": "kodo_narrative_author",
+                "task_input": {"instructions": "Build a trading bot"},
+            },
         )
     )
     assert result["primary_path"] == "specs/stub-kodo_narrative_author.md"
@@ -294,7 +297,9 @@ def test_canonical_tool_call_unwraps_a_per_subagent_variant() -> None:
 def test_canonical_tool_call_lifts_max_rounds_out_of_the_task() -> None:
     """``max_rounds`` is the engine's loop budget, not part of the sub-agent's
     task, so it must not be smuggled into ``task_input``."""
-    _, payload = canonical_tool_call("run_subagent_kodo_coder", {"instructions": "go", "max_rounds": 3})
+    _, payload = canonical_tool_call(
+        "run_subagent_kodo_coder", {"instructions": "go", "max_rounds": 3}
+    )
     assert payload["max_rounds"] == 3
     assert payload["task_input"] == {"instructions": "go"}
 

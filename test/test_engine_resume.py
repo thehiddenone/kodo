@@ -137,7 +137,9 @@ def test_last_top_agent_falls_back_when_tag_missing() -> None:
 
 def test_last_top_agent_reads_the_pre_rename_tag() -> None:
     """A session written before the rename tagged its lines ``entry_agent``."""
-    engine = _engine_with_lines([{"role": "assistant", "content": "ok", "entry_agent": "kodo_guide"}])
+    engine = _engine_with_lines(
+        [{"role": "assistant", "content": "ok", "entry_agent": "kodo_guide"}]
+    )
     assert engine._last_top_agent() == "kodo_guide"
 
 

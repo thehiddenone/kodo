@@ -223,7 +223,9 @@ _ARCH_DOC = "proj/specs/architecture.md"
 _ARCH_WP = "proj/kodo_architect"
 
 
-def _wp(paths: list[str], *, agent: str = "kodo_architect", responsibility: str = "") -> WorkProduct:
+def _wp(
+    paths: list[str], *, agent: str = "kodo_architect", responsibility: str = ""
+) -> WorkProduct:
     return WorkProduct(
         id=work_product_id("proj", agent, responsibility),
         project="proj",
@@ -416,7 +418,10 @@ async def test_review_loop_reviews_the_authors_whole_reported_set(tmp_path: Path
     engine._spawn_subagent = _fake_spawn
 
     result = await engine._run_review_loop(
-        "kodo_architect", "kodo_architect_critic", {"instructions": "Produce the architecture."}, None
+        "kodo_architect",
+        "kodo_architect_critic",
+        {"instructions": "Produce the architecture."},
+        None,
     )
 
     assert result["paths"] == [_ARCH_DOC, second]
@@ -548,7 +553,10 @@ async def test_review_loop_resends_identical_instructions_every_round(tmp_path: 
     engine._spawn_subagent = _fake_spawn
 
     result = await engine._run_review_loop(
-        "kodo_architect", "kodo_architect_critic", {"instructions": "Produce the architecture."}, None
+        "kodo_architect",
+        "kodo_architect_critic",
+        {"instructions": "Produce the architecture."},
+        None,
     )
 
     assert result["review"]["outcome"] == "accepted"
@@ -885,7 +893,9 @@ async def test_record_findings_empty_backlog_drives_the_acceptance_flow(tmp_path
     _seed_revision(tmp_path, "specs/architecture.md")
     key = _seed_work_product(engine, [_ARCH_DOC])
 
-    await engine._record_findings("kodo_architect_critic", {"findings": [], "summary": "clean"}, key)
+    await engine._record_findings(
+        "kodo_architect_critic", {"findings": [], "summary": "clean"}, key
+    )
 
     # Autonomous mode auto-accepts, so the log ends on the acceptance marker.
     history = read_history(tmp_path / "specs" / "architecture.md", tmp_path)
@@ -1124,7 +1134,9 @@ async def test_review_block_matches_the_generated_run_subagent_output_schema(
 
     registry = AgentRegistry(Path("src/kodo/agents"))
     spec = next(
-        s for s in registry.run_subagent_specs("kodo_guide") if s.name == "run_subagent_kodo_architect"
+        s
+        for s in registry.run_subagent_specs("kodo_guide")
+        if s.name == "run_subagent_kodo_architect"
     )
     review_schema = spec.output_schema["properties"]["review"]  # type: ignore[index]
 
@@ -1453,7 +1465,9 @@ async def test_a_coder_gets_its_own_design_and_its_neighbours(tmp_path: Path) ->
             ],
         },
     )
-    await engine._record_work_product("kodo_requirements_author", "", ["proj/specs/requirements.md"], {})
+    await engine._record_work_product(
+        "kodo_requirements_author", "", ["proj/specs/requirements.md"], {}
+    )
     designs = ["proj/d/AUTH.md", "proj/d/LEDGER.md", "proj/d/REPORTS.md"]
     await engine._record_work_product(
         "kodo_functional_designer",
@@ -1672,7 +1686,10 @@ async def test_a_per_component_stage_still_carries_its_responsibility_code(
         None,
     )
 
-    assert read_work_product(tmp_path, work_product_id("proj", "kodo_test_designer", "AUTH")) is not None
+    assert (
+        read_work_product(tmp_path, work_product_id("proj", "kodo_test_designer", "AUTH"))
+        is not None
+    )
     assert calls[0]["responsibility_code"] == "AUTH"
 
 
@@ -1762,7 +1779,9 @@ async def test_a_first_round_is_initial_and_the_next_is_a_revision(tmp_path: Pat
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_review_loop("kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 3)
+    await engine._run_review_loop(
+        "kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 3
+    )
 
     assert phases == ["initial", "revision"]
 
@@ -1786,7 +1805,9 @@ async def test_a_reinvoked_author_starts_in_the_revision_phase(tmp_path: Path) -
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_review_loop("kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 3)
+    await engine._run_review_loop(
+        "kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 3
+    )
 
     assert phases == ["revision"]
 
@@ -1814,7 +1835,9 @@ async def test_each_review_round_pushes_the_users_findings_table(tmp_path: Path)
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_review_loop("kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 2)
+    await engine._run_review_loop(
+        "kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 2
+    )
 
     tables = engine._emitters.review_findings
     assert len(tables) == 2
@@ -1844,7 +1867,9 @@ async def test_a_clean_first_round_pushes_no_table(tmp_path: Path) -> None:
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_review_loop("kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 2)
+    await engine._run_review_loop(
+        "kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 2
+    )
 
     assert engine._emitters.review_findings == []
 
@@ -1992,7 +2017,9 @@ async def test_the_users_objection_is_readable_through_get_findings(tmp_path: Pa
 
     # And once the user approves the revision, it is closed rather than left
     # outstanding forever — nobody else can verify a fix here.
-    assert read_findings(_findings_dir(tmp_path), "proj/kodo_narrative_author")[0]["state"] == "fixed"
+    assert (
+        read_findings(_findings_dir(tmp_path), "proj/kodo_narrative_author")[0]["state"] == "fixed"
+    )
 
 
 @pytest.mark.asyncio
@@ -2139,6 +2166,8 @@ async def test_a_critic_backed_gate_is_offered_nothing_to_resolve(tmp_path: Path
 
     engine._spawn_subagent = _fake_spawn
 
-    await engine._run_review_loop("kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 2)
+    await engine._run_review_loop(
+        "kodo_architect", "kodo_architect_critic", {"instructions": "go"}, 2
+    )
 
     assert gate.findings == [[]]

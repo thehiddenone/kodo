@@ -107,7 +107,12 @@ def test_persist_interrupted_turn_with_dangling_tool_use_synthesizes_result() ->
     assert [role for role, _content, _agent, _kind in transient.appended] == ["user", "assistant"]
     assert all(agent == "kodo_guide" for _role, _content, agent, _kind in transient.appended)
     assert transient.appended[0] == ("user", tool_results_msg.content, "kodo_guide", None)
-    assert transient.appended[1] == ("assistant", notice_msg.content, "kodo_guide", "stopped_notice")
+    assert transient.appended[1] == (
+        "assistant",
+        notice_msg.content,
+        "kodo_guide",
+        "stopped_notice",
+    )
 
 
 def test_persist_interrupted_turn_without_dangling_tool_use_only_adds_notice() -> None:

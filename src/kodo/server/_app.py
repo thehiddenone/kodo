@@ -24,7 +24,17 @@ from typing import cast
 from aiohttp import web
 from huggingface_hub.errors import GatedRepoError
 
-from kodo.agents import AgentRegistry, UserAgentStore
+from kodo.agents import (
+    KIND_AGENT,
+    KIND_SUBAGENT,
+    AgentInstallError,
+    AgentLoadError,
+    AgentRegistry,
+    UserAgentDeleteError,
+    UserAgentStore,
+    install_source,
+    scan_source,
+)
 from kodo.binutils import ensure_all_utils
 from kodo.llms import (
     CLOUD_THINKING_FAMILIES,
@@ -121,6 +131,11 @@ from kodo.transport import (
     EVT_LOCAL_LLM_REGISTRY_STATE,
     EVT_LOCAL_LLM_UPDATES_AVAILABLE,
     MSG_AGENT_SET,
+    MSG_AGENTS_DELETE,
+    MSG_AGENTS_INSTALL,
+    MSG_AGENTS_INSTALL_SCAN,
+    MSG_AGENTS_LIST,
+    MSG_AGENTS_RELOAD,
     MSG_BEDROCK_MODELS_REFRESH,
     MSG_CHECKPOINT_LIST,
     MSG_CHECKPOINT_REDO,
@@ -1052,6 +1067,190 @@ def _skill_row(skill: Skill) -> dict[str, object]:
         "path": str(skill.root),
         "error": skill.error,
     }
+
+
+def _agents_payload(registry: AgentRegistry) -> dict[str, object]:
+    """The user-installed agent listing every ``agents.*`` ack carries.
+
+    Read from the store rather than the registry's loaded set, for the same
+    reason ``skills.list`` reads the directory: what is *installed* is a fact
+    about the folder, and a bundle the registry demoted is still installed and
+    still the user's to see and delete. The registry supplies only the two
+    presentation fields it alone knows — a top-level agent's picker ``label``
+    and ``description``, which live in its config.
+
+    Args:
+        registry: The live registry, for those two fields.
+
+    Returns:
+        dict[str, object]: ``{agents: [...], root}``.
+    """
+    root = kodo_agents_dir()
+    configs = {top.name: top for top in registry.top_agents()}
+    rows: list[dict[str, object]] = []
+    for agent in sorted(
+        UserAgentStore(root).scan().agents, key=lambda a: (not a.is_top_level, a.name)
+    ):
+        config = configs.get(agent.name)
+        rows.append(
+            {
+                "name": agent.name,
+                "kind": KIND_AGENT if agent.is_top_level else KIND_SUBAGENT,
+                "version": agent.version,
+                "label": config.label if config is not None else agent.display_name,
+                "description": config.description if config is not None else "",
+                "path": str(agent.source_path.parent),
+                "error": "",
+            }
+        )
+    for entry in UserAgentStore(root).scan().broken:
+        rows.append(
+            {
+                "name": entry.name,
+                "kind": KIND_AGENT if entry.is_top_level else KIND_SUBAGENT,
+                "version": "",
+                "label": entry.name,
+                "description": "",
+                "path": str(entry.path),
+                "error": entry.error,
+            }
+        )
+    return {"agents": rows, "root": str(root)}
+
+
+def _reload_agents(registry: AgentRegistry) -> str:
+    """Rebuild the registry over both roots; return the error, or ``""``.
+
+    A failed rebuild is reported rather than raised: ``AgentRegistry.reload``
+    swaps only on success, so the previous working set is still live and the
+    session the user is in keeps working. Only a **packaged** agent can fail
+    this way — a bad user bundle demotes itself to a broken row instead.
+
+    Args:
+        registry: The process-wide registry every session shares.
+
+    Returns:
+        str: The aggregated load error, or ``""`` when the reload succeeded.
+    """
+    try:
+        registry.reload()
+    except AgentLoadError as exc:
+        _log.error("agent registry reload failed, keeping the previous set: %s", exc)
+        return str(exc)
+    return ""
+
+
+def _make_agents_list_handler(registry: AgentRegistry) -> HandlerFn:
+    """Build the ``agents.list`` handler bound to the process registry."""
+
+    async def _handle_agents_list(req: Request) -> None:
+        await req.reply({"type": "agents.list.ack", "ok": True, **_agents_payload(registry)})
+
+    return _handle_agents_list
+
+
+def _make_agents_delete_handler(registry: AgentRegistry) -> HandlerFn:
+    """Build the ``agents.delete`` handler bound to the process registry."""
+
+    async def _handle_agents_delete(req: Request) -> None:
+        name = str(req.env.payload.get("name", "")).strip()
+        kind = str(req.env.payload.get("kind", KIND_AGENT)).strip()
+        error = ""
+        try:
+            UserAgentStore(kodo_agents_dir()).delete(name, top_level=kind != KIND_SUBAGENT)
+        except UserAgentDeleteError as exc:
+            # Still send the listing: the likeliest cause is a panel showing
+            # something already removed from disk, and a refreshed table is
+            # what makes that obvious.
+            error = str(exc)
+        reload_error = _reload_agents(registry)
+        await req.reply(
+            {
+                "type": "agents.delete.ack",
+                "ok": not error,
+                "error": error or reload_error,
+                **_agents_payload(registry),
+            }
+        )
+
+    return _handle_agents_delete
+
+
+async def _handle_agents_install_scan(req: Request) -> None:
+    source = str(req.env.payload.get("source", "")).strip()
+    try:
+        scan = await asyncio.to_thread(scan_source, source, kodo_agents_dir())
+    except (AgentInstallError, GitNotAvailableError) as exc:
+        await req.reply({"type": "agents.install_scan.ack", "ok": False, "error": str(exc)})
+        return
+    await req.reply(
+        {
+            "type": "agents.install_scan.ack",
+            "ok": True,
+            "candidates": [
+                {
+                    "name": c.name,
+                    "kind": c.kind,
+                    "version": c.version,
+                    "installed_version": c.installed_version,
+                    "error": c.error,
+                }
+                for c in scan.candidates
+            ],
+            "conflicts": scan.conflict_report(),
+        }
+    )
+
+
+def _make_agents_install_handler(registry: AgentRegistry) -> HandlerFn:
+    """Build the ``agents.install`` handler bound to the process registry."""
+
+    async def _handle_agents_install(req: Request) -> None:
+        source = str(req.env.payload.get("source", "")).strip()
+        replace = bool(req.env.payload.get("replace", False))
+        raw_names = req.env.payload.get("names")
+        names = (
+            tuple(str(n) for n in raw_names) if isinstance(raw_names, list) and raw_names else None
+        )
+        try:
+            result = await asyncio.to_thread(
+                install_source, source, kodo_agents_dir(), replace=replace, names=names
+            )
+        except (AgentInstallError, GitNotAvailableError) as exc:
+            await req.reply({"type": "agents.install.ack", "ok": False, "error": str(exc)})
+            return
+        reload_error = _reload_agents(registry)
+        await req.reply(
+            {
+                "type": "agents.install.ack",
+                "ok": not reload_error,
+                "error": reload_error,
+                "installed": list(result.installed),
+                "kept": list(result.kept),
+                "skipped": list(result.skipped),
+                "missing": list(result.missing),
+                **_agents_payload(registry),
+            }
+        )
+
+    return _handle_agents_install
+
+
+def _make_agents_reload_handler(registry: AgentRegistry) -> HandlerFn:
+    """Build the ``agents.reload`` handler bound to the process registry."""
+
+    async def _handle_agents_reload(req: Request) -> None:
+        error = _reload_agents(registry)
+        await req.reply(
+            {
+                "type": "agents.reload.ack",
+                "ok": not error,
+                "error": error,
+                **_agents_payload(registry),
+            }
+        )
+
+    return _handle_agents_reload
 
 
 async def _handle_skills_list(req: Request) -> None:
@@ -2835,6 +3034,11 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(
         MSG_DEFAULT_AGENT_SET, _make_default_agent_set_handler(config, registry)
     )
+    conn_registry.register_handler(MSG_AGENTS_LIST, _make_agents_list_handler(registry))
+    conn_registry.register_handler(MSG_AGENTS_DELETE, _make_agents_delete_handler(registry))
+    conn_registry.register_handler(MSG_AGENTS_INSTALL_SCAN, _handle_agents_install_scan)
+    conn_registry.register_handler(MSG_AGENTS_INSTALL, _make_agents_install_handler(registry))
+    conn_registry.register_handler(MSG_AGENTS_RELOAD, _make_agents_reload_handler(registry))
     conn_registry.register_handler(MSG_SKILLS_LIST, _handle_skills_list)
     conn_registry.register_handler(MSG_SKILLS_DELETE, _handle_skills_delete)
     conn_registry.register_handler(MSG_SKILLS_INSTALL_SCAN, _handle_skills_install_scan)

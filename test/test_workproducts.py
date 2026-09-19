@@ -28,7 +28,9 @@ from kodo.workproducts import (
 )
 
 
-def _record(session_dir: Path, paths: list[str], *, agent: str = "kodo_coder", responsibility: str = ""):
+def _record(
+    session_dir: Path, paths: list[str], *, agent: str = "kodo_coder", responsibility: str = ""
+):
     return record_membership(
         session_dir,
         project="proj",
@@ -277,8 +279,18 @@ def test_global_scope_takes_the_last_producer_when_a_role_was_refilled() -> None
 
 def test_self_scope_narrows_to_this_spawns_component() -> None:
     ledger = [
-        _wp("kodo_test_designer", ["proj/t/A.md"], {"test_plan": ["proj/t/A.md"]}, responsibility="A"),
-        _wp("kodo_test_designer", ["proj/t/B.md"], {"test_plan": ["proj/t/B.md"]}, responsibility="B"),
+        _wp(
+            "kodo_test_designer",
+            ["proj/t/A.md"],
+            {"test_plan": ["proj/t/A.md"]},
+            responsibility="A",
+        ),
+        _wp(
+            "kodo_test_designer",
+            ["proj/t/B.md"],
+            {"test_plan": ["proj/t/B.md"]},
+            responsibility="B",
+        ),
     ]
 
     [resolved] = resolve_needs(
@@ -290,7 +302,12 @@ def test_self_scope_narrows_to_this_spawns_component() -> None:
 
 def test_self_scope_resolves_to_nothing_for_an_unknown_component() -> None:
     ledger = [
-        _wp("kodo_test_designer", ["proj/t/A.md"], {"test_plan": ["proj/t/A.md"]}, responsibility="A")
+        _wp(
+            "kodo_test_designer",
+            ["proj/t/A.md"],
+            {"test_plan": ["proj/t/A.md"]},
+            responsibility="A",
+        )
     ]
 
     [resolved] = resolve_needs(
@@ -334,7 +351,9 @@ def test_under_review_outside_a_review_round_resolves_to_nothing() -> None:
 
 
 def test_resolution_ignores_other_projects() -> None:
-    ledger = [_wp("kodo_architect", ["other/a.md"], {"architecture": ["other/a.md"]}, project="other")]
+    ledger = [
+        _wp("kodo_architect", ["other/a.md"], {"architecture": ["other/a.md"]}, project="other")
+    ]
 
     [resolved] = resolve_needs(ledger, [("architecture", "global", True)], project="proj")
 

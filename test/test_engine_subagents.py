@@ -295,7 +295,9 @@ async def test_run_subagent_spawns_when_permitted() -> None:
         allowed={"kodo_guide": frozenset({"kodo_investigator"})},
         dispatcher_output={"result": "ok"},
     )
-    result = await engine._run_subagent("kodo_guide", "kodo_investigator", {"instructions": "go look"})
+    result = await engine._run_subagent(
+        "kodo_guide", "kodo_investigator", {"instructions": "go look"}
+    )
     assert result == {"result": "ok"}
 
 
@@ -317,7 +319,9 @@ async def test_a_planner_result_initializes_the_session_plan(tmp_path: Path) -> 
             "tasks": [{"title": "Extract parser"}, {"title": "Rewire CLI"}],
         },
     )
-    await engine._run_subagent("kodo_guide", "kodo_planner", {"instructions": "split the parser out"})
+    await engine._run_subagent(
+        "kodo_guide", "kodo_planner", {"instructions": "split the parser out"}
+    )
     plan = read_plan(tmp_path / "plan")
     assert plan is not None
     assert [t["title"] for t in plan["tasks"]] == ["Extract parser", "Rewire CLI"]
@@ -364,7 +368,9 @@ async def test_replanning_over_an_unfinished_plan_raises_out_of_run_subagent(
     """The one hard failure — it must propagate, not become part of the result,
     because the worker turns it into a stopped session (doc/PLANNING.md §4)."""
     plan_dir = tmp_path / "plan"
-    create_plan(plan_dir, created_by="kodo_planner", context="c", tasks=[{"title": "half-done work"}])
+    create_plan(
+        plan_dir, created_by="kodo_planner", context="c", tasks=[{"title": "half-done work"}]
+    )
     step_plan(plan_dir)  # task 1 now in progress — the plan is live and unfinished
     engine = _make_engine(
         allowed={"kodo_guide": frozenset({"kodo_planner"})},
@@ -382,7 +388,9 @@ async def test_replanning_over_an_unfinished_plan_raises_out_of_run_subagent(
 
 async def test_replanning_after_the_plan_completes_supersedes_it(tmp_path: Path) -> None:
     plan_dir = tmp_path / "plan"
-    create_plan(plan_dir, created_by="kodo_planner", context="c", tasks=[{"title": "finished work"}])
+    create_plan(
+        plan_dir, created_by="kodo_planner", context="c", tasks=[{"title": "finished work"}]
+    )
     step_plan(plan_dir)
     step_plan(plan_dir)
     engine = _make_engine(
@@ -391,7 +399,9 @@ async def test_replanning_after_the_plan_completes_supersedes_it(tmp_path: Path)
         session_dir=tmp_path,
         dispatcher_output={"codebase_context": "c2", "tasks": [{"title": "next phase"}]},
     )
-    await engine._run_subagent("kodo_guide", "kodo_planner", {"instructions": "plan the next phase"})
+    await engine._run_subagent(
+        "kodo_guide", "kodo_planner", {"instructions": "plan the next phase"}
+    )
     live = read_plan(plan_dir)
     assert live is not None
     assert [t["title"] for t in live["tasks"]] == ["next phase"]
@@ -974,7 +984,12 @@ async def test_spawn_subagent_fresh_run_opens_and_closes_subsession() -> None:
 async def test_spawn_subagent_replay_mode_consumes_ledger_instead_of_running() -> None:
     engine = _make_engine()
     engine._replay_subsessions = [
-        {"subsession_id": "sub1", "agent": "kodo_investigator", "completed": True, "result": {"x": 1}}
+        {
+            "subsession_id": "sub1",
+            "agent": "kodo_investigator",
+            "completed": True,
+            "result": {"x": 1},
+        }
     ]
 
     result = await engine._spawn_subagent("kodo_investigator", {"instructions": "look"})
@@ -1040,7 +1055,12 @@ async def test_spawn_subagent_reraises_session_level_failures(exc: BaseException
 async def test_replay_next_subsession_completed_returns_stored_dict_result() -> None:
     engine = _make_engine()
     engine._replay_subsessions = [
-        {"subsession_id": "sub1", "agent": "kodo_investigator", "completed": True, "result": {"x": 1}}
+        {
+            "subsession_id": "sub1",
+            "agent": "kodo_investigator",
+            "completed": True,
+            "result": {"x": 1},
+        }
     ]
 
     result = await engine._replay_next_subsession("kodo_investigator")

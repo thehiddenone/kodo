@@ -96,7 +96,12 @@ def test_only_markers_after_last_assistant_count() -> None:
     """Markers from an earlier, already-handed-back subsession are ignored."""
     lines: list[dict[str, object]] = [
         {"type": "subsession_start", "subsession_id": "old", "agent": "kodo_coder"},
-        {"type": "subsession_end", "subsession_id": "old", "agent": "kodo_coder", "result": {"a": 1}},
+        {
+            "type": "subsession_end",
+            "subsession_id": "old",
+            "agent": "kodo_coder",
+            "result": {"a": 1},
+        },
         {"role": "assistant", "content": [{"type": "tool_use", "id": "x", "name": "run_subagent"}]},
         {"type": "subsession_start", "subsession_id": "new", "agent": "kodo_toolchain_builder"},
         {

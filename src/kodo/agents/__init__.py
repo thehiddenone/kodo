@@ -30,6 +30,19 @@ re-exporting it here would put one import away the very separation this
 layout exists to draw.
 """
 
+from ._install import (
+    KIND_AGENT,
+    KIND_SUBAGENT,
+    UNVERSIONED,
+    AgentInstallError,
+    Candidate,
+    GitNotAvailableError,
+    InstallResult,
+    SourceScan,
+    install_source,
+    require_git,
+    scan_source,
+)
 from ._loader import ROLE_CRITIC, AgentLoadError, SubAgent, load_agent
 from ._registry import (
     ALL_PHASES,
@@ -63,6 +76,17 @@ from ._userstore import (
 from .subagents import SubAgentSpec
 
 __all__: list[str] = [
+    "scan_source",
+    "require_git",
+    "install_source",
+    "SourceScan",
+    "InstallResult",
+    "GitNotAvailableError",
+    "Candidate",
+    "AgentInstallError",
+    "UNVERSIONED",
+    "KIND_SUBAGENT",
+    "KIND_AGENT",
     "ALL_PHASES",
     "BUILTIN_NAME_PREFIX",
     "PHASE_INITIAL",

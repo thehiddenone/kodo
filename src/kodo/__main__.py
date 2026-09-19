@@ -115,6 +115,10 @@ def main(argv: list[str] | None = None) -> int:
             code = _run_list_skills()
         elif args.install_skill is not None:
             code = _run_install_skill(args.install_skill, assume_yes=args.yes)
+        elif args.list_agents:
+            code = _run_list_agents()
+        elif args.install_agent is not None:
+            code = _run_install_agent(args.install_agent, assume_yes=args.yes)
         elif args.system_prompt is not None:
             code = _run_system_prompt(args.model, args.agent)
         else:
@@ -184,6 +188,22 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="List every installed Agent Skill (name and description) under ~/.kodo/skills.",
     )
     group.add_argument(
+        "--list-agents",
+        dest="list_agents",
+        action="store_true",
+        help="List every user-installed agent and sub-agent under ~/.kodo/agents, with its "
+        "version, plus any that failed to load and why.",
+    )
+    group.add_argument(
+        "--install-agent",
+        metavar="SOURCE",
+        dest="install_agent",
+        help="Install a user agent into ~/.kodo/agents. SOURCE is either a local directory or "
+        "a git repository URL; either way it holds <name>.json and agent_<name>.md at its root "
+        "and any sub-agents under ./subagents/. Anything already installed under the same name "
+        "is listed with both versions so you can choose to keep it or replace it.",
+    )
+    group.add_argument(
         "--install-skill",
         metavar="TARGET",
         dest="install_skill",
@@ -199,7 +219,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="With --install-skill, install without prompting — every valid skill found, for "
         "a repository URL, or the one skill at a local path, overwriting any same-named skill "
-        "already installed.",
+        "already installed. With --install-agent, answer the keep-or-replace question with "
+        "'replace' instead of asking.",
     )
     parsed = parser.parse_args(argv)
     parsed.agent = parsed.system_prompt if parsed.system_prompt is not None else parsed.tools
@@ -356,6 +377,94 @@ def _run_list_skills() -> int:
             print(f"{skill.name}: {skill.description}")
         else:
             print(f"{skill.name}: [broken] {skill.error}")
+    return 0
+
+
+def _run_list_agents() -> int:
+    """Print every user-installed agent and sub-agent, plus anything broken.
+
+    Reads the store directly rather than building an :class:`AgentRegistry`:
+    listing what is installed is a question about the directory, and a bundle
+    the registry would demote for a cross-agent reason is still installed and
+    still the user's to see and delete.
+
+    Returns:
+        int: 0 — an empty store is not an error.
+    """
+    from kodo.agents import KIND_AGENT, KIND_SUBAGENT, UNVERSIONED, UserAgentStore
+    from kodo.project import kodo_agents_dir
+
+    scan = UserAgentStore(kodo_agents_dir()).scan()
+    if not scan.agents and not scan.broken:
+        print(f"No user agents installed under {kodo_agents_dir()}.")
+        return 0
+    for agent in sorted(scan.agents, key=lambda a: (not a.is_top_level, a.name)):
+        kind = KIND_AGENT if agent.is_top_level else KIND_SUBAGENT
+        print(f"{kind:9} {agent.name}  {agent.version or UNVERSIONED}")
+    for entry in scan.broken:
+        kind = KIND_AGENT if entry.is_top_level else KIND_SUBAGENT
+        print(f"{kind:9} {entry.name}  BROKEN: {entry.error}")
+    return 0
+
+
+def _run_install_agent(source: str, *, assume_yes: bool) -> int:
+    """Install a user agent from a local directory or a git repository.
+
+    Scans first and installs second, so anything already installed under the
+    same name can be put to the user with both versions side by side before a
+    single byte is written (doc/USER_AGENTS.md §4).
+
+    Args:
+        source: The ``--install-agent`` argument — a local directory or a repo
+            URL.
+        assume_yes: Skip the keep-or-replace question and replace.
+
+    Returns:
+        int: 0 on success, 1 when the source could not be read or nothing in it
+        could be installed.
+    """
+    from kodo.agents import AgentInstallError, GitNotAvailableError, install_source, scan_source
+    from kodo.project import kodo_agents_dir
+
+    root = kodo_agents_dir()
+    try:
+        scan = scan_source(source, root)
+    except (AgentInstallError, GitNotAvailableError) as exc:
+        print(f"error: {exc}")
+        return 1
+
+    if not scan.candidates:
+        print(
+            f"error: {source} holds no agents — expected <name>.json and agent_<name>.md at "
+            f"its root, and/or sub-agents under ./subagents/"
+        )
+        return 1
+    for candidate in scan.candidates:
+        mark = "" if candidate.installable else f"  SKIPPED: {candidate.error}"
+        print(f"{candidate.kind:9} {candidate.name}  {candidate.version}{mark}")
+    if not scan.installable:
+        return 1
+
+    replace = True
+    if scan.conflicting and not assume_yes:
+        print("\nAlready installed:")
+        print(scan.conflict_report())
+        answer = input("\nKeep the installed versions, or replace them? [keep/replace] ").strip()
+        replace = answer.lower() in ("replace", "r")
+
+    try:
+        result = install_source(source, root, replace=replace)
+    except (AgentInstallError, GitNotAvailableError) as exc:
+        print(f"error: {exc}")
+        return 1
+    for name in result.installed:
+        print(f"installed {name}")
+    for name in result.kept:
+        print(f"kept the installed {name}")
+    for line in result.skipped:
+        print(f"skipped {line}")
+    for name in result.missing:
+        print(f"missing {name} — the source changed while installing")
     return 0
 
 

@@ -687,14 +687,16 @@ def test_clear_llm_request_logs_removes_files_and_dirs(tmp_path: Path) -> None:
         ("kodo_problem_solver", "kodo_problem_solver"),
         ("kodo_guide", "kodo_guide"),
         ("kodo_judge", "kodo_judge"),
-        # ...while the pre-``kodo_`` vocabulary now resolves to nothing: the
-        # aliases went with the rename, so these are unknown names.
-        ("problem_solving", "kodo_problem_solver"),
-        ("guided", "kodo_problem_solver"),
-        # Anything unrecognized resolves to the registry's declared default
-        # (problem_solver) rather than failing: this runs on every prompt
-        # and every resume.
-        ("anything_else", "kodo_problem_solver"),
+        # ...while a selection naming no registered agent comes back *unchanged*,
+        # so the worker can name the missing agent to the user rather than
+        # silently running the session as the default. Covers the pre-``kodo_``
+        # vocabulary, whose aliases went with the rename, and an agent the user
+        # has uninstalled.
+        ("problem_solving", "problem_solving"),
+        ("guided", "guided"),
+        ("anything_else", "anything_else"),
+        # An *empty* selection is a session that never chose, not a stale one,
+        # so it still resolves to the registry's declared default.
         ("", "kodo_problem_solver"),
     ],
 )
@@ -711,6 +713,7 @@ def test_top_agent_capability_reads_registry() -> None:
     engine._registry = SimpleNamespace(
         get=lambda name: SimpleNamespace(capability="high"),
         resolve_top_agent=lambda value: value,
+        knows_top_agent=lambda value: True,
     )
     assert engine._top_agent_capability() == "high"
 

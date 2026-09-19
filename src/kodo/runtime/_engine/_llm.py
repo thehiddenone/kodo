@@ -457,13 +457,27 @@ class LLMPlumbingMixin:
     def _top_agent_name(self: EngineHost) -> str:
         """Name of the top-level agent this session's selection resolves to.
 
-        The selection is data, not a branch: the registry maps a stored value —
-        an agent name, or a legacy alias left by a session persisted under the
-        old workflow-mode vocabulary — onto a real agent, falling back to its
-        declared default for anything it does not recognize. Adding a top-level
-        agent therefore changes nothing here.
+        The selection is data, not a branch: the registry maps the stored value
+        onto a real agent, falling back to its declared default for anything it
+        does not recognize. Adding a top-level agent therefore changes nothing
+        here.
+
+        A session that stored a value naming **no** registered agent is the one
+        case that does *not* take the fallback: it returns the stored value
+        unchanged, so the worker sees an unavailable agent and tells the user
+        which one is missing (:meth:`_handle_input_no_agent`) instead of quietly
+        continuing the session as a different agent. That matters now that a
+        user can uninstall the agent their session is running — and it is why
+        this asks :meth:`~kodo.agents.AgentRegistry.knows_top_agent` first
+        rather than reading the fallback's answer as consent.
+
+        An **empty** selection is not a stale one — it is a session that never
+        chose — so it still resolves to the default.
         """
-        return self._registry.resolve_top_agent(self._session.top_agent)
+        stored = self._session.top_agent
+        if stored and not self._registry.knows_top_agent(stored):
+            return stored
+        return self._registry.resolve_top_agent(stored)
 
     def _top_agent_capability(self: EngineHost) -> str:
         """Capability tier of the current top-level agent (defaults to medium)."""
