@@ -21,12 +21,20 @@ from ._local_llm_nanbiege42_3b import nanbiege42_3b_entries
 from ._local_llm_nemotron35_30b_a3b import nemotron35_30b_a3b_entries
 from ._local_llm_ornith10_9b import ornith10_9b_entries
 from ._local_llm_ornith10_35b_a3b import ornith10_35b_a3b_entries
+from ._local_llm_ornith15_9b import ornith15_9b_entries
+from ._local_llm_ornith15_35b_a3b import ornith15_35b_a3b_entries
 from ._local_llm_qwen3_coder_next_80b import qwen3_coder_next_80b_entries
 from ._local_llm_qwen35_9b import qwen35_9b_entries
 from ._local_llm_qwen36_27b import qwen36_27b_entries
 from ._local_llm_qwen36_35b_a3b import qwen36_35b_a3b_entries
 from ._local_llm_qwen38_27b import qwen38_27b_entries
 from ._local_llm_qwen38_flash_next import qwen38_flash_next_entries
+from ._thinking import (
+    GPT_OSS_REASONING_EFFORT_FAMILY,
+    QWEN4EXP_REASONING_EFFORT_FAMILY,
+    QWEN_REASONING_BUDGET_FAMILY,
+    QWEN_TIER_TOKEN_BUDGETS,
+)
 from ._types import LocalLLMEntry
 
 _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = tuple(
@@ -40,6 +48,8 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = tuple(
         qwen35_9b_entries(),
         laguna_s_21_entries(),
         laguna_xs_21_entries(),
+        ornith15_35b_a3b_entries(),
+        ornith15_9b_entries(),
         ornith10_35b_a3b_entries(),
         ornith10_9b_entries(),
         nemotron35_30b_a3b_entries(),
@@ -57,7 +67,7 @@ _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = tuple(
 def _validate_catalog() -> None:
     """Import-time knob checks across the whole hardcoded catalog.
 
-    Two things, both hard failures at startup rather than mysteries at launch
+    Three things, all hard failures at startup rather than mysteries at launch
     time (see :func:`~kodo.llms.local_registry._knobs.validate_knobs`):
 
     1. **Per entry** — no two of its knobs own the same llama-server flag,
@@ -67,6 +77,17 @@ def _validate_catalog() -> None:
        list the identical knob. Knob definitions are deduplicated by id into
        one table on the wire, so a same-id/different-definition pair would
        make one entry's Configure modal silently render the other's options.
+    3. **Against the thinking tables** — every ``base_llm`` slug named in
+       :mod:`._thinking` still belongs to some entry in the catalog. Those
+       tables are keyed by ``base_llm`` strings that nothing else re-checks,
+       so renaming or dropping a model family leaves a slug behind that
+       matches nothing and silently strips that family's reasoning tiers —
+       the model keeps working, just with thinking quietly unavailable.
+
+    Note that this validates *code against code*; the mirror-image cleanup of
+    a user's stored per-model state after a rename or removal is
+    :func:`~kodo.llms.local_registry.prune_unknown_model_state`, which runs
+    once per server start rather than at import.
     """
     known: dict[str, object] = {}
     for entry in _HARDCODED_LOCAL_MODELS:
@@ -91,6 +112,20 @@ def _validate_catalog() -> None:
                     f"{entry.name}: knob {knob.id!r} differs from the definition another "
                     "entry uses under the same id"
                 )
+    base_llms = {entry.base_llm for entry in _HARDCODED_LOCAL_MODELS}
+    tiered = (
+        QWEN_REASONING_BUDGET_FAMILY
+        | GPT_OSS_REASONING_EFFORT_FAMILY
+        | QWEN4EXP_REASONING_EFFORT_FAMILY
+        | frozenset(QWEN_TIER_TOKEN_BUDGETS)
+    )
+    stale = sorted(tiered - base_llms)
+    if stale:
+        raise ValueError(
+            "_thinking.py names base_llm slugs no entry in the catalog has: "
+            f"{', '.join(stale)} — drop them there, or fix the spelling to match the "
+            "renamed family"
+        )
 
 
 _validate_catalog()

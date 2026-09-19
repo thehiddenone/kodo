@@ -407,7 +407,7 @@ def test_full_regression_suite_covers_every_shipped_scenario_and_judge() -> None
     by_scenario = {e.scenario.name: e.llm_under_test for e in suite.entries}
     assert by_scenario["tictactoe-detailed-task"].llm == "unsloth-qwen35-9b-q8-k-xl"
     assert by_scenario["tictactoe-sparse-task"].llm == "unsloth-qwen36-27b-q8-k-xl"
-    assert by_scenario["toolchain-python"].llm == "deepreinforce-ornith10-35b-a3b-bf16"
+    assert by_scenario["toolchain-python"].llm == "bartowski-ornith15-35b-a3b-bf16"
     laguna = by_scenario["attachment-report"]
     assert laguna.llm == "unsloth-laguna-s-2-1-mxfp4-moe"
     assert laguna.knobs == {"tail-culling": "light", "temperature": "default"}

@@ -106,11 +106,11 @@ def laguna_xs_21_entries() -> list[LocalLLMEntry]:
             llamacpp_version=10087,
         ),
         LocalLLMEntry(
-            name="bartowski-laguna-xs-2-1-q5_k_l",
+            name="bartowski-laguna-xs-2-1-q5_k_s",
             kind="hardcoded_hf",
-            description="Laguna-XS-2.1 Q5_K_L by bartowski",
+            description="Laguna-XS-2.1 Q5_K_S by bartowski",
             repo_id="bartowski/Laguna-XS-2.1-GGUF",
-            filename="Laguna-XS-2.1-Q5_K_L.gguf",
+            filename="Laguna-XS-2.1-Q5_K_S.gguf",
             knobs=SHARED_KNOBS,
             context_window=262_144,
             base_llm="Laguna-XS-2.1",
@@ -118,13 +118,13 @@ def laguna_xs_21_entries() -> list[LocalLLMEntry]:
             license_name="OpenMDW-1.1",
             license_url="https://openmdw.ai/license/1-1/",
             quant_author="bartowski",
-            quant_type="Q5_K_L",
-            size_hint="24.1 GB",
-            gpu_tip="~31GB total at 128K context. An 8GB GPU (e.g. RTX 5060) plus a 32GB DDR5 kit "
-            "is enough — the sparse MoE architecture means offloading the inactive experts barely "
-            "costs any speed.",
-            mac_tip="Needs ~31GB — a 32GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) is right at the "
-            "limit; a 36GB config is safer if available.",
+            quant_type="Q5_K_S",
+            size_hint="23.2 GB",
+            gpu_tip="~30GB total at 128K context — the same 5-bit tier as Q5_K_L above, minus "
+            "that build's Q8_0 embedding and output weights, which buys back about a gigabyte. "
+            "An 8GB GPU (e.g. RTX 5060) plus a 32GB DDR5 kit is enough.",
+            mac_tip="Needs ~30GB — fits a 32GB MacBook Pro (M4 Pro/Max or M5 Pro/Max), though "
+            "without much to spare; a 36GB config is safer if available.",
             min_memory=32,
             memory=36,
             llamacpp_version=10087,

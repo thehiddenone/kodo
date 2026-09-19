@@ -15,9 +15,21 @@ context length under different ``--override-kv`` metadata keys
 not something derivable from the registry entry. Both scale off the same
 262144-token native context.
 
-The ``ornith10`` families are Qwen-architecture MoE builds and use
-:data:`QWEN_MOE_CONTEXT_KNOB` too — they always shared the MoE flavor builders
-for the same reason.
+The ``ornith`` families split across both knobs **by GGUF architecture key,
+not by family name** — the 35B-A3B and 9B builds of one generation are not
+the same architecture. ``Ornith-1.0-35B-A3B`` and ``Ornith-1.5-35B-A3B``
+record ``general.architecture = qwen35moe`` and take
+:data:`QWEN_MOE_CONTEXT_KNOB`; ``Ornith-1.0-9B`` and ``Ornith-1.5-9B`` are
+*dense*, record ``general.architecture = qwen35``, and take
+:data:`QWEN_CONTEXT_KNOB`.
+
+``Ornith-1.0-9B`` listed the MoE knob until 2026-09-18 — inherited from the
+era when both ornith10 sizes shared one MoE flavor builder. The symptom is
+worth remembering, because nothing fails loudly: ``--override-kv`` named
+``qwen35moe.context_length`` on a GGUF with no such key, llama.cpp dropped
+the override without a word, and the entry's 512K/1M options silently did
+not extend the KV cache past the trained 262144 tokens. Always read the
+architecture key off the GGUF header; never infer it from the entry name.
 
 Qwen3.8-Flash-Next is a third architecture again (``qwen4exp``), which is why
 it gets :data:`QWEN4EXP_CONTEXT_KNOB` rather than reusing the MoE knob above:
@@ -44,7 +56,7 @@ _QWEN_NATIVE_CONTEXT = 262_144
 #: Extended sizes offered on top of the native one, smallest first.
 _QWEN_EXTENDED_SIZES = (524_288, 1_048_576)
 
-#: Dense Qwen builds (Qwen3.5-9B, Qwen3.6-27B).
+#: Dense Qwen builds (Qwen3.5-9B, Qwen3.6-27B, Ornith-1.0-9B, Ornith-1.5-9B).
 QWEN_CONTEXT_KNOB = make_yarn_context_knob(
     knob_id="context-qwen35",
     arch_key="qwen35",
@@ -52,7 +64,8 @@ QWEN_CONTEXT_KNOB = make_yarn_context_knob(
     sizes=_QWEN_EXTENDED_SIZES,
 )
 
-#: Sparse-MoE Qwen builds (Qwen3.6-35B-A3B, Ornith10-35B-A3B, Ornith10-9B).
+#: Sparse-MoE Qwen builds (Qwen3.6-35B-A3B, Ornith10-35B-A3B,
+#: Ornith15-35B-A3B).
 QWEN_MOE_CONTEXT_KNOB = make_yarn_context_knob(
     knob_id="context-qwen35moe",
     arch_key="qwen35moe",

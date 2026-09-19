@@ -26,7 +26,7 @@ _QWEN35_9B = LLMUnderTest(llm="unsloth-qwen35-9b-q8-k-xl")
 # see that scenario file's docstring for why (ask_user needs a model that
 # reliably uses it).
 _QWEN36_27B = LLMUnderTest(llm=_JUDGE)
-_ORNITH10_35B_A3B = LLMUnderTest(llm="deepreinforce-ornith10-35b-a3b-bf16")
+_ORNITH15_35B_A3B = LLMUnderTest(llm="bartowski-ornith15-35b-a3b-bf16")
 # The sampling configuration this scenario was built to validate
 # (doc/QUANT_SAMPLING.md). Light tail culling at llama.cpp's own default
 # temperature — what used to be the "light-tail-cull" preset flavor, now the
@@ -38,7 +38,7 @@ _LAGUNA_S_2_1 = LLMUnderTest(
 
 # Every ``toolchain_<language>`` scenario (grouped under the
 # ornith10-35b-a3b/ sub-directory before scenarios were flattened into one
-# package).
+# package; the LUT is the Ornith 1.5 BF16 build now).
 _TOOLCHAIN_LANGUAGES = (
     "c",
     "cpp",
@@ -73,7 +73,7 @@ SUITE = ValidationSuite(
     entries=[
         *_entries_for(_QWEN35_9B, ["tictactoe_detailed_task"]),
         *_entries_for(_QWEN36_27B, ["tictactoe_sparse_task"]),
-        *_entries_for(_ORNITH10_35B_A3B, [f"toolchain_{lang}" for lang in _TOOLCHAIN_LANGUAGES]),
+        *_entries_for(_ORNITH15_35B_A3B, [f"toolchain_{lang}" for lang in _TOOLCHAIN_LANGUAGES]),
         *_entries_for(_LAGUNA_S_2_1, ["attachment_report"]),
     ],
     judge_llm=_JUDGE,

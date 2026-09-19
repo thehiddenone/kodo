@@ -353,6 +353,18 @@ The two call sites:
   an already-running llama-server process can be adopted — as a side effect,
   this is what makes restart reconciliation (§11) run right at startup
   rather than waiting for the first `local_llm.*` WS request.
+- `purge_unknown_local_models(kodo_dir, keep=())` (same module), which
+  `_start_background` awaits in a thread right after that adoption check.
+  This manager deliberately knows nothing about which models kodo *offers*
+  (§1) — it only knows what someone once asked it to download — so a model
+  dropped from the registry keeps its directory and its `manager-state.json`
+  record forever, invisible to every UI. The purge is the one place those two
+  views meet: it `list_models()`s this manager, asks
+  `kodo.llms.prune_unknown_model_state` which of those ids the registry has
+  lost (and drops their stored knob/profile settings while it's there), then
+  `uninstall()`s each one. The model of a running llama-server is passed in
+  `keep` and spared — its file is open, which on Windows makes the delete
+  fail outright. Full rationale: LLM_REGISTRY.md §4.1b.
 - `server/_app.py`'s `local_llm.*` WS handlers
   (`_handle_local_llm_install`/`_handle_local_llm_resume`/
   `_handle_local_llm_pause`/`_handle_local_llm_uninstall`/

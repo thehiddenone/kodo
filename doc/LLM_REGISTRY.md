@@ -1000,7 +1000,10 @@ keys in this same file, unrelated to the `entries` list — see §4.6.
 `knob_selections` is deliberately **sparse** (only knobs moved off their
 default appear, so `tail-culling` above is the one thing this user changed);
 `active_profiles` omits an entry entirely when the Default profile is
-selected.
+selected. All three are keyed by `entry.name`, so all three are cleaned up
+when that name goes away: by `remove_local_entry` for a custom entry the user
+deletes, and by the startup purge (§4.1b) for a `hardcoded_hf` entry a kodo
+release renamed or dropped.
 
 The `flavors`/`active_flavors` keys a pre-knobs kodo wrote are **not
 migrated** — matching a hand-edited arg dict back to a knob selection would
@@ -1116,6 +1119,47 @@ Uninstall, wait, click Install," reusing those two existing manager calls
 rather than a new atomic re-fetch. Full design (why ETag, why fire-and-forget,
 why uninstall+reinstall instead of an in-place overwrite) is in
 [LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md) §12.
+
+### 4.1b Retiring a model — the startup purge
+
+A `hardcoded_hf` entry is compiled in, so a kodo release can rename or drop
+one (e.g. the Ornith 1.0 builds moved from `deepreinforce-ornith10-*` to
+`ornith-ai-ornith10-*` when the publisher changed). Nothing about that reaches
+the user's disk on its own, and everything keyed by the old `entry.name`
+survives the upgrade with no UI left to reach it:
+
+- its `profiles`, `active_profiles` and `knob_selections` keys in
+  `local-llm-registry.json` (all three are name-keyed, §4.6), and
+- its downloaded GGUF plus the `manager-state.json` record pointing at it —
+  tens of GB per model, since `LocalModelManager` has no notion of a registry
+  and never expires anything on its own ([LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md)).
+
+`purge_unknown_local_models(kodo_dir, keep=())` (`kodo/llms/llamacpp/_manager.py`)
+deletes both, and runs **once per server start**, from `_start_background` in
+`_app.py`, off the event loop (it `rmtree`s whole multi-GB directories). It is
+the one layer that sees both sides: it asks
+`prune_unknown_model_state(kodo_dir, installed_model_ids)`
+(`kodo/llms/local_registry/`) to drop the stored settings and to judge the
+manager's model ids against `get_local_registry`, then uninstalls every id
+that came back. "Known" is the **merged** registry — a `custom_*` entry the
+user added is as safe as a shipped one.
+
+Two deliberate exemptions:
+
+- **`keep`** — the model of an already-adopted, still-running llama-server.
+  Its GGUF is open, and Windows refuses to delete an open file; the next
+  start that finds it idle purges it. `_start_background` passes the running
+  model's name, so the purge is sequenced *after* the adoption block.
+- **An unparseable `local-llm-registry.json`** — `_load_raw` cannot tell "no
+  file yet" from "garbage" (both are `{}`), and on garbage every `custom_*`
+  entry would look unknown, taking the user's own models and downloads with
+  it. `prune_unknown_model_state` checks this first and then does nothing at
+  all, purging neither settings nor files.
+
+The mirror image of this — code-vs-code rather than code-vs-disk — is the
+import-time check in `_catalog._validate_catalog()`, which fails the process
+outright when a rename leaves a stale `base_llm` slug behind in the thinking
+tables (§4.5).
 
 ### 4.2 llama-server binary override
 
@@ -1314,7 +1358,8 @@ before it must answer. Three mechanisms exist, keyed off `base_llm` (never
 
 - **`qwen_reasoning_budget`** (6 tiers: `minimal`, `low`, `medium`, `high`,
   `huge`, `unlimited`) — `Qwen36-27B`, `Qwen36-35B-A3B`, `Qwen35-9B`,
-  `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith10-35B-A3B`, `Ornith10-9B`,
+  `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith15-35B-A3B`, `Ornith15-9B`,
+  `Ornith10-35B-A3B`, `Ornith10-9B`,
   `Laguna-S-2.1`, `Laguna-XS-2.1`, `Nanbeige4.2-3B`
   (`QWEN_REASONING_BUDGET_FAMILY` in `kodo/llms/local_registry/`; notably
   **not** `Qwen3-Coder-Next-80B`, which despite the name shares no thinking
@@ -1397,6 +1442,19 @@ Further families exist that are *not* local and therefore not in
 launch-time flag injection and the per-request field construction — adding a
 model to a family is a one-line change to the relevant `frozenset`, never a
 per-quant `llama_args` edit.
+
+Because those `frozenset`s (and `QWEN_TIER_TOKEN_BUDGETS`) are keyed by
+`base_llm` **strings**, a slug that no catalog entry carries any more matches
+nothing and silently strips that family's thinking tiers — the model keeps
+working, just with the thinking control gone. Nothing at runtime can tell
+that apart from a model that legitimately has no family (`MuseGlimmer-30B`,
+`Qwen3-Coder-Next-80B`, every `custom_*` entry), so
+`_catalog._validate_catalog()` checks it at **import time** instead: every
+slug named in `_thinking.py` must belong to some entry in
+`_HARDCODED_LOCAL_MODELS`, or kodo fails to start with the stale slug named.
+Renaming a model family therefore means editing `_thinking.py` in the same
+commit. (The disk-side counterpart — the user's stored settings and downloads
+for that old name — is the startup purge, §4.1b.)
 
 The **current selection** is **not** a settings.json key — unlike
 `models.local`/`models.cloud`, thinking level is a **per-session** value
@@ -1645,6 +1703,41 @@ runs at its unscaled native length, so there is no "native" option to offer.
 / `1m`, where the latter two write the same explicit YaRN args as the Qwen
 knobs, computed off the real native context of 8192.
 
+**Ornith 1.5 35B-A3B ships a second private knob**, and it is the only
+non-context one in the catalog: `spec-decoding-mtp` (`ORNITH15_MTP_KNOB`,
+hand-built in `_local_llm_ornith15_35b_a3b.py`).
+
+| knob id | kind | options | flags |
+|---------|------|---------|-------|
+| `spec-decoding-mtp` | checkbox | `off` (default), `on` | `--spec-type` |
+
+`on` writes `--spec-type draft-mtp`, which tells llama.cpp to run speculative
+decoding against the Multi-Token Prediction layers baked into the GGUF
+(`qwen35moe.nextn_predict_layers`) — a built-in draft model, so unlike the
+usual speculative-decoding setup there is no second GGUF to download or
+point at. Decoding stays verified, so the sampled distribution is unchanged;
+only throughput moves. It is private rather than shared precisely because
+`--spec-type draft-mtp` is **not** a no-op on a GGUF without MTP layers, and
+no other entry in the catalog has them — including Ornith 1.5 **9B**, whose
+model card lists "Speculative decoding: no", which is why that family
+declares no MTP knob. Default `off`: this is the only place kodo launches
+`--spec-type` at all, so the speedup is opt-in. Note that bartowski stores
+the MTP layers at Q4_0 in every imatrix quant except Q8_0 (imatrix
+calibration does not exercise them, and Q4_0's speed is what makes drafting
+pay off), so draft quality is intentionally low across most of the ladder.
+
+**Which context knob an Ornith entry takes is decided by the GGUF's
+architecture key, not by the family name** — the 35B-A3B and 9B builds of
+one generation are not the same architecture. `Ornith-1.0-35B-A3B` and
+`Ornith-1.5-35B-A3B` record `general.architecture = qwen35moe` and take
+`context-qwen35moe`; `Ornith-1.0-9B` and `Ornith-1.5-9B` are *dense*, record
+`qwen35`, and take `context-qwen35`. `Ornith-1.0-9B` listed the MoE knob
+until 2026-09-18, and the symptom is worth remembering because nothing fails
+loudly: the `--override-kv` named a metadata key the GGUF does not have,
+llama.cpp dropped it silently, and the 512K/1M options appeared to work while
+the KV cache stayed capped at the trained length. Read `arch_key` off the
+GGUF header; never infer it from the entry name.
+
 #### Composition
 
 ```
@@ -1768,7 +1861,8 @@ plus, once per payload rather than per entry:
 
 - `knob_defs: {knob_id: {...}}` — every knob definition any entry offers,
   **deduplicated by id** (`_knob_defs_payload`). All 82 built-ins share the
-  same six knobs and only the three context knobs are per-family, so repeating
+  same six knobs and only the context knobs plus Ornith 1.5 35B-A3B's MTP
+  knob are per-family, so repeating
   each definition (five options, each with a paragraph of help text) on every
   entry would dominate the payload. `_validate_catalog` guarantees two entries
   never disagree about what one id means, so the flattening is lossless.
@@ -1831,8 +1925,8 @@ existing convention use of this mechanism: every hardcoded entry whose
 precision there instead of the knob's own `q8_0` default — a quantized-only
 cache would otherwise be the least precise thing in an unquantized-weight
 pipeline. As of this writing that's the `gpt-oss-120b`/`gpt-oss-20b` F16
-entries and the `laguna-xs-2.1`/`qwen35-9b`/`ornith10-9b`/`ornith10-35b-a3b`
-BF16 entries — any new F16/BF16 entry should set it too.
+entries and the `laguna-xs-2.1`/`qwen35-9b`/`ornith10-9b`/`ornith10-35b-a3b`/
+`ornith15-9b`/`ornith15-35b-a3b` BF16 entries — any new F16/BF16 entry should set it too.
 
 Because selections are stored sparsely (§4.6), changing a `knob_defaults`
 value in a later release reaches every user who never deliberately moved that

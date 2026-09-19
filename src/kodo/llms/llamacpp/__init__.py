@@ -19,7 +19,10 @@ lifecycle utilities formerly in the top-level ``kodo.llm_utils`` package:
   every caller within one server process shares the same instance. See
   ``kodo/doc/LOCAL_MODEL_MANAGER.md`` for the manager itself — download,
   pause/resume, multi-file (split GGUF) downloads, mmproj companions, and
-  HF tokens.
+  HF tokens. :func:`purge_unknown_local_models` is the one-per-server-start
+  reconciliation between that manager and the registry: it deletes the
+  downloads and the stored settings of every model this kodo release no
+  longer has an entry for (a renamed or retired ``hardcoded_hf`` model).
 * **Server** — async ``llama-server`` process manager (:class:`LlamaServer`,
   :class:`LlamaServerConfig`, :class:`RunningServer`, :func:`find_running_server`,
   :func:`ensure_llama_running`).
@@ -47,7 +50,7 @@ from ._llama_server import (
     RunningServer,
     find_running_server,
 )
-from ._manager import ensure_llama_running, get_local_model_manager
+from ._manager import ensure_llama_running, get_local_model_manager, purge_unknown_local_models
 
 __all__ = [
     "LlamaInstall",
@@ -66,6 +69,7 @@ __all__ = [
     "find_running_server",
     "get_local_model_manager",
     "install_llamacpp",
+    "purge_unknown_local_models",
     "server_executable",
     "uninstall_llamacpp",
     "update_llamacpp",

@@ -146,6 +146,27 @@ def _load_raw(kodo_dir: Path) -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
+def _registry_file_unreadable(kodo_dir: Path) -> bool:
+    """True when the registry file is present but :func:`_load_raw` cannot use it.
+
+    :func:`_load_raw` cannot tell "no file yet" from "file full of garbage" —
+    both come back as ``{}``, which is the right answer for every caller that
+    only wants to read a key. It is the wrong answer for
+    :func:`~kodo.llms.local_registry.prune_unknown_model_state`, whose whole
+    job is deleting state that the file does not vouch for: an unparseable
+    file would make every custom entry look unknown and take that user's
+    custom models (and their downloaded GGUFs) with it. The purge asks this
+    first and does nothing at all when it answers ``True``.
+    """
+    path = _registry_file(kodo_dir)
+    if not path.is_file():
+        return False
+    try:
+        return not isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
+    except (json.JSONDecodeError, OSError):
+        return True
+
+
 def _save_raw(kodo_dir: Path, data: dict[str, object]) -> None:
     path = _registry_file(kodo_dir)
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -62,7 +62,7 @@ choose the tool-call channel in the first place. So §3 is still required.
 ### 2a. Reasoning-budget launch flag (`--reasoning-budget -1`)
 
 For every `base_llm` in `QWEN_REASONING_BUDGET_FAMILY` (Qwen3.x, Gemma 4, and
-Ornith-1.0 — see doc/LLM_REGISTRY.md §4.5), `ensure_llama_running`
+Ornith-1.0/1.5 — see doc/LLM_REGISTRY.md §4.5), `ensure_llama_running`
 (`kodo/llms/llamacpp/_manager.py`) additionally launches with:
 
 ```

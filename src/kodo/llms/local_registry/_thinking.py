@@ -35,6 +35,8 @@ QWEN_REASONING_BUDGET_FAMILY: frozenset[str] = frozenset(
         "Qwen35-9B",
         "Gemma4-26B-A4B",
         "Gemma4-31B",
+        "Ornith15-35B-A3B",
+        "Ornith15-9B",
         "Ornith10-35B-A3B",
         "Ornith10-9B",
         "Laguna-S-2.1",
@@ -73,7 +75,7 @@ _QWEN4EXP_TIERS: tuple[str, ...] = ("low", "medium", "xhigh")
 #: for ``--reasoning-budget-message`` to actually print (see doc/
 #: LOCAL_INFERENCE.md §2a). Best-effort starting point, not sourced from an
 #: official per-model spec — see doc/LLM_REGISTRY.md for the rationale behind
-#: each family's scale (e.g. Ornith10-35B-A3B's RL-trained thinking efficiency vs.
+#: each family's scale (e.g. the Ornith 35B-A3B builds' RL-trained thinking efficiency vs.
 #: Qwen35-9B's smaller/weaker-model verbosity). Expect these to be retuned
 #: after real usage.
 QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
@@ -124,6 +126,22 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "high": 8192,
         "huge": 16384,
         "unlimited": 24576,
+    },
+    "Ornith15-35B-A3B": {
+        "minimal": 256,
+        "low": 768,
+        "medium": 1536,
+        "high": 3072,
+        "huge": 6144,
+        "unlimited": 9216,
+    },
+    "Ornith15-9B": {
+        "minimal": 2048,
+        "low": 4096,
+        "medium": 8192,
+        "high": 16384,
+        "huge": 32768,
+        "unlimited": 49152,
     },
     "Ornith10-35B-A3B": {
         "minimal": 256,

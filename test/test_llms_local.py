@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from kodo.llms.llamacpp import get_local_model_manager, purge_unknown_local_models
 from kodo.llms.local import (
     DownloadError,
     DownloadProgress,
@@ -32,6 +33,7 @@ from kodo.llms.local import (
     ShardResolutionError,
 )
 from kodo.llms.local._state import save_state
+from kodo.llms.local_registry import LocalLLMEntry, _catalog, add_local_entry
 
 # ---------------------------------------------------------------------------
 # A minimal HTTP server with real Range/206 support, standing in for HF's CDN.
@@ -588,3 +590,90 @@ async def test_download_speed_reported_then_cleared_on_completion(
     record = manager.get_record("m1")
     assert record is not None
     assert record.files[0].bytes_per_second is None
+
+
+# ---------------------------------------------------------------------------
+# Reconciling the manager's downloads against kodo's model registry.
+#
+# purge_unknown_local_models lives in kodo.llms.llamacpp (the one layer that
+# sees both the registry and this registry-free manager), but its whole
+# subject is downloaded files, so it is exercised here — against the real HTTP
+# fixture above — rather than with a hand-written manager-state.json.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def kodo_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A ``~/.kodo`` whose registry knows exactly one model, ``known-model``."""
+    monkeypatch.setattr(
+        _catalog,
+        "_HARDCODED_LOCAL_MODELS",
+        (
+            LocalLLMEntry(
+                name="known-model",
+                kind="hardcoded_hf",
+                repo_id="org/repo",
+                filename="model.gguf",
+            ),
+        ),
+    )
+    return tmp_path / "kodo"
+
+
+async def _install(kodo_dir: Path, model_id: str) -> Path:
+    """Download *model_id* into the manager ``purge`` will consult, return its dir."""
+    path = await get_local_model_manager(kodo_dir).download_model(
+        model_id, "org/repo", "model.gguf"
+    )
+    assert path.is_installed
+    model_path = get_local_model_manager(kodo_dir).get_model_path(model_id)
+    assert model_path is not None
+    return model_path.parent
+
+
+async def test_purge_deletes_the_download_of_a_model_the_registry_lost(
+    kodo_dir: Path, http_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rename case: last release's name is now reachable from nothing."""
+    _patch_hf(monkeypatch, http_server, {"model.gguf": _payload(100)})
+    kept = await _install(kodo_dir, "known-model")
+    orphaned = await _install(kodo_dir, "old-name-model")
+
+    assert purge_unknown_local_models(kodo_dir) == ("old-name-model",)
+
+    assert not orphaned.exists()
+    assert get_local_model_manager(kodo_dir).get_record("old-name-model") is None
+    assert kept.is_dir()
+    assert get_local_model_manager(kodo_dir).get_record("known-model") is not None
+
+
+async def test_purge_spares_a_model_the_caller_asked_to_keep(
+    kodo_dir: Path, http_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A running llama-server holds its GGUF open — deleting it would fail on Windows."""
+    _patch_hf(monkeypatch, http_server, {"model.gguf": _payload(100)})
+    in_use = await _install(kodo_dir, "old-name-model")
+
+    assert purge_unknown_local_models(kodo_dir, keep=("old-name-model",)) == ()
+
+    assert in_use.is_dir()
+
+
+async def test_purge_leaves_a_custom_entrys_download_alone(
+    kodo_dir: Path, http_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user-added entry is as known as a shipped one, however odd its name."""
+    _patch_hf(monkeypatch, http_server, {"model.gguf": _payload(100)})
+    add_local_entry(
+        kodo_dir,
+        LocalLLMEntry(name="mine", kind="custom_hf", repo_id="org/repo", filename="model.gguf"),
+    )
+    mine = await _install(kodo_dir, "mine")
+
+    assert purge_unknown_local_models(kodo_dir) == ()
+
+    assert mine.is_dir()
+
+
+async def test_purge_is_a_no_op_when_nothing_was_ever_downloaded(kodo_dir: Path) -> None:
+    assert purge_unknown_local_models(kodo_dir) == ()

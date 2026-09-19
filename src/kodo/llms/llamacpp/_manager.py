@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
+from collections.abc import Iterable
 from pathlib import Path
 
 from kodo.llms import (
@@ -12,6 +14,7 @@ from kodo.llms import (
     get_active_profile,
     get_llama_server_override_path,
     local_thinking_family,
+    prune_unknown_model_state,
     resolve_effective_llama_config,
 )
 from kodo.llms.local import LocalModelManager
@@ -19,7 +22,9 @@ from kodo.llms.local import LocalModelManager
 from ._installer import find_installed
 from ._llama_server import LlamaServer, LlamaServerConfig
 
-__all__ = ["ensure_llama_running", "get_local_model_manager"]
+__all__ = ["ensure_llama_running", "get_local_model_manager", "purge_unknown_local_models"]
+
+_log = logging.getLogger(__name__)
 
 _manager_cache: dict[Path, LocalModelManager] = {}
 _manager_cache_lock = threading.Lock()
@@ -72,6 +77,46 @@ def get_local_model_manager(kodo_dir: Path) -> LocalModelManager:
             manager = LocalModelManager(root)
             _manager_cache[root] = manager
         return manager
+
+
+def purge_unknown_local_models(kodo_dir: Path, *, keep: Iterable[str] = ()) -> tuple[str, ...]:
+    """Delete every downloaded model, and every stored setting, kodo no longer knows.
+
+    The glue between the two halves of the problem a renamed or retired
+    catalog entry leaves behind: its stored knob selections and profiles (the
+    registry's side, :func:`kodo.llms.prune_unknown_model_state`) and its
+    downloaded GGUF plus ``manager-state.json`` record (this manager's side,
+    which has no notion of a registry at all and would otherwise keep those
+    files forever, unreachable from any UI — tens of GB per model).
+
+    Meant to be called exactly once per server start, off the event loop: a
+    purge deletes whole model directories, so it blocks for as long as the
+    filesystem takes. Blocks nothing else — everything it deletes is by
+    definition unreachable from the current catalog.
+
+    Args:
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+        keep (Iterable[str]): Model ids to leave alone even when unknown —
+            the model of an already-running llama-server, whose file is open
+            (deleting it mid-flight fails outright on Windows). A kept model
+            is simply purged by the next start that finds it idle.
+
+    Returns:
+        tuple[str, ...]: The model ids purged, sorted. Empty when there was
+        nothing stale to remove.
+    """
+    manager = get_local_model_manager(kodo_dir)
+    installed = {record.model_id for record in manager.list_models()}
+    spared = set(keep)
+    unknown = [
+        name for name in prune_unknown_model_state(kodo_dir, installed) if name not in spared
+    ]
+    for name in unknown:
+        if name in installed:
+            manager.uninstall(name)
+    if unknown:
+        _log.info("Purged local models kodo no longer knows: %s", ", ".join(unknown))
+    return tuple(unknown)
 
 
 async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaServer:

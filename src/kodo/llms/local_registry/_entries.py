@@ -10,6 +10,7 @@ the patched value.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from ._io import (
     _all_profiles,
     _load_external,
     _load_raw,
+    _registry_file_unreadable,
     _save_external,
     _save_raw,
     _write_knob_selections,
@@ -36,6 +38,7 @@ __all__ = [
     "clear_llama_server_override_path",
     "get_llama_server_override_path",
     "get_local_registry",
+    "prune_unknown_model_state",
     "remove_local_entry",
     "set_llama_server_override_path",
 ]
@@ -161,6 +164,66 @@ def remove_local_entry(kodo_dir: Path, name: str) -> None:
         changed = True
     if changed:
         _save_raw(kodo_dir, data)
+
+
+def prune_unknown_model_state(
+    kodo_dir: Path, installed_model_ids: Iterable[str] = ()
+) -> tuple[str, ...]:
+    """Forget every stored per-model setting whose model the registry no longer knows.
+
+    The counterpart to :func:`remove_local_entry`'s cleanup, for the models
+    *it* cannot reach: a ``hardcoded_hf`` entry that a kodo release renamed or
+    dropped. Its ``profiles``/``active_profiles``/``knob_selections`` keys are
+    keyed by entry name, so the old name keeps its knob selections and
+    user-defined profiles in ``local-llm-registry.json`` forever, and a later
+    release that reuses the name would silently inherit them.
+
+    Names in *installed_model_ids* that the registry does not know are
+    reported in the return value even when they carry no stored settings —
+    that is how the caller that owns the downloaded files
+    (:func:`kodo.llms.llamacpp.purge_unknown_local_models`) learns which GGUFs
+    are now unreachable. This function itself never touches a file on disk
+    outside ``local-llm-registry.json``.
+
+    Does nothing at all — and reports nothing to uninstall — when the registry
+    file exists but does not parse: every ``custom_*`` entry would look
+    unknown, and the purge would take the user's own models with it.
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        installed_model_ids: Model ids the caller has files for, to be judged
+            against the registry alongside the stored settings.
+
+    Returns:
+        tuple[str, ...]: Every unknown name seen, sorted — those whose stored
+        settings were just dropped plus those from *installed_model_ids*.
+    """
+    if _registry_file_unreadable(kodo_dir):
+        _log.warning("local-llm-registry.json does not parse — skipping the unknown-model purge")
+        return ()
+    known = set(get_local_registry(kodo_dir))
+    data = _load_raw(kodo_dir)
+    all_profiles = _all_profiles(data)
+    active = _all_active_profiles(data)
+    selections = _all_knob_selections(data)
+    unknown = sorted(
+        (set(all_profiles) | set(active) | set(selections) | set(installed_model_ids)) - known
+    )
+    changed = False
+    for name in unknown:
+        if all_profiles.pop(name, None) is not None:
+            _write_profiles(data, all_profiles)
+            changed = True
+        if active.pop(name, None) is not None:
+            data["active_profiles"] = active
+            changed = True
+        if selections.pop(name, None) is not None:
+            _write_knob_selections(data, selections)
+            changed = True
+    if changed:
+        _save_raw(kodo_dir, data)
+        _log.info("Dropped stored settings for unknown local models: %s", ", ".join(unknown))
+    return tuple(unknown)
 
 
 def get_llama_server_override_path(kodo_dir: Path) -> str | None:

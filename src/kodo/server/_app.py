@@ -79,6 +79,7 @@ from kodo.llms.llamacpp import (
     find_running_server,
     get_local_model_manager,
     install_llamacpp,
+    purge_unknown_local_models,
     uninstall_llamacpp,
     update_llamacpp,
 )
@@ -2720,6 +2721,19 @@ async def _start_background(app: web.Application) -> None:
                 port=running.port,
             )
             LlamaServer(cfg).adopt(running)
+
+    # Reconcile this release's catalog with what the last one left on disk:
+    # a renamed or retired hardcoded entry's knob selections, profiles and
+    # downloaded GGUF are unreachable from every UI, so they are deleted here
+    # (kodo.llms.llamacpp.purge_unknown_local_models). Once per start, after
+    # the adoption above so an already-running llama-server's own model is
+    # spared — its file is open, and Windows refuses to delete an open file.
+    # Off the event loop: it rmtree's whole multi-GB model directories.
+    await asyncio.to_thread(
+        purge_unknown_local_models,
+        user_dir,
+        keep=(running.model,) if running is not None and running.model else (),
+    )
 
 
 async def _stop_background(app: web.Application) -> None:

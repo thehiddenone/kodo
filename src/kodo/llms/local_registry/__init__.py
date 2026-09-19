@@ -63,7 +63,9 @@ Submodules:
     ``_io`` — ``local-llm-registry.json`` file I/O and JSON (de)serialization.
     ``_profiles`` — profile CRUD, knob state, and launch-config resolution.
         Depends on ``_entries``.
-    ``_entries`` — the merged registry map, custom-entry CRUD, override path.
+    ``_entries`` — the merged registry map, custom-entry CRUD, override path,
+        and the startup purge of state left behind by models this kodo
+        release no longer has (``prune_unknown_model_state``).
 """
 
 from __future__ import annotations
@@ -73,6 +75,7 @@ from ._entries import (
     clear_llama_server_override_path,
     get_llama_server_override_path,
     get_local_registry,
+    prune_unknown_model_state,
     remove_local_entry,
     set_llama_server_override_path,
 )
@@ -146,6 +149,7 @@ __all__ = [
     "make_yarn_context_knob",
     "parse_llama_args",
     "parse_llama_args_text",
+    "prune_unknown_model_state",
     "remove_local_entry",
     "remove_profile",
     "resolve_context_window",

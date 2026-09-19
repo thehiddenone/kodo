@@ -12,12 +12,18 @@ restart-on-change) is covered separately in test_server_integration.py.
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from kodo.llms.llamacpp._llama_server import LlamaServer, LlamaServerConfig
 from kodo.llms.local_registry import (
+    GPT_OSS_REASONING_EFFORT_FAMILY,
+    QWEN4EXP_REASONING_EFFORT_FAMILY,
+    QWEN_REASONING_BUDGET_FAMILY,
+    QWEN_TIER_TOKEN_BUDGETS,
     RESERVED_REASONING_CAP_ARGS,
     SHARED_KNOBS,
     KnobKind,
@@ -36,6 +42,7 @@ from kodo.llms.local_registry import (
     knob_selection_args,
     make_yarn_context_knob,
     parse_llama_args_text,
+    prune_unknown_model_state,
     remove_local_entry,
     remove_profile,
     resolve_context_window,
@@ -46,6 +53,10 @@ from kodo.llms.local_registry import (
     update_profile,
     validate_knobs,
 )
+
+#: The real shipped catalog, bound at import — before the autouse fixture
+#: below swaps ``_catalog._HARDCODED_LOCAL_MODELS`` out for the toy one.
+_SHIPPED_CATALOG = _catalog._HARDCODED_LOCAL_MODELS
 
 #: A two-option dropdown owning one flag — the smallest knob that can be
 #: switched, used wherever a test only needs "some knob that changes an arg".
@@ -805,3 +816,151 @@ def test_build_command_bare_flag_has_no_trailing_empty_value() -> None:
 def test_build_command_carries_the_default_profiles_jinja_flag(tmp_path: Path) -> None:
     args, _ = resolve_effective_llama_config(tmp_path, _entry(tmp_path))
     assert "--jinja" in _cmd(args)
+
+
+# ---------------------------------------------------------------------------
+# Catalog vs. the thinking tables — the third import-time check
+# ---------------------------------------------------------------------------
+
+
+def test_no_thinking_slug_outlives_the_shipped_catalog() -> None:
+    """The real catalog, not the fixture's — the import-time check, re-asserted."""
+    shipped = {entry.base_llm for entry in _SHIPPED_CATALOG}
+    tiered = (
+        QWEN_REASONING_BUDGET_FAMILY
+        | GPT_OSS_REASONING_EFFORT_FAMILY
+        | QWEN4EXP_REASONING_EFFORT_FAMILY
+        | frozenset(QWEN_TIER_TOKEN_BUDGETS)
+    )
+    assert not tiered - shipped
+
+
+def _one_slug_catalog(monkeypatch: pytest.MonkeyPatch, slug: str) -> None:
+    """A catalog and thinking tables that agree, naming *slug* and nothing else."""
+    monkeypatch.setattr(_catalog, "_HARDCODED_LOCAL_MODELS", (replace(_BASE_ENTRY, base_llm=slug),))
+    for table in (
+        "QWEN_REASONING_BUDGET_FAMILY",
+        "GPT_OSS_REASONING_EFFORT_FAMILY",
+        "QWEN4EXP_REASONING_EFFORT_FAMILY",
+    ):
+        monkeypatch.setattr(_catalog, table, frozenset({slug}))
+    monkeypatch.setattr(_catalog, "QWEN_TIER_TOKEN_BUDGETS", {slug: {"low": 1}})
+
+
+def test_validate_catalog_accepts_thinking_tables_that_match_the_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _one_slug_catalog(monkeypatch, "Fake-1B")
+    _catalog._validate_catalog()
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "QWEN_REASONING_BUDGET_FAMILY",
+        "GPT_OSS_REASONING_EFFORT_FAMILY",
+        "QWEN4EXP_REASONING_EFFORT_FAMILY",
+    ],
+)
+def test_validate_catalog_rejects_a_thinking_family_slug_no_entry_has(
+    table: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A renamed family must not leave its old slug tiering nothing."""
+    _one_slug_catalog(monkeypatch, "Fake-1B")
+    monkeypatch.setattr(_catalog, table, frozenset({"Fake-1B", "Renamed-Away-2B"}))
+    with pytest.raises(ValueError, match="Renamed-Away-2B"):
+        _catalog._validate_catalog()
+
+
+def test_validate_catalog_rejects_a_tier_budget_slug_no_entry_has(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _one_slug_catalog(monkeypatch, "Fake-1B")
+    monkeypatch.setattr(
+        _catalog, "QWEN_TIER_TOKEN_BUDGETS", {"Fake-1B": {"low": 1}, "Renamed-Away-2B": {"low": 1}}
+    )
+    with pytest.raises(ValueError, match="Renamed-Away-2B"):
+        _catalog._validate_catalog()
+
+
+# ---------------------------------------------------------------------------
+# prune_unknown_model_state — what a renamed or retired entry leaves behind
+# ---------------------------------------------------------------------------
+
+
+def _stored(kodo_dir: Path) -> dict[str, object]:
+    return json.loads((kodo_dir / "etc" / "local-llm-registry.json").read_text())
+
+
+def _give_every_kind_of_state(kodo_dir: Path, name: str) -> None:
+    """Profiles, an active selection and knob selections, all under *name*."""
+    created = add_profile(kodo_dir, name, "P")
+    set_active_profile(kodo_dir, name, created.id)
+    set_knobs(kodo_dir, name, {"test-mode": "fast"})
+
+
+def test_prune_drops_the_state_of_a_model_the_catalog_no_longer_has(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rename case: state written under the old name, catalog now on the new one."""
+    _give_every_kind_of_state(tmp_path, "fake-model")
+    monkeypatch.setattr(
+        _catalog, "_HARDCODED_LOCAL_MODELS", (replace(_BASE_ENTRY, name="renamed"),)
+    )
+
+    assert prune_unknown_model_state(tmp_path) == ("fake-model",)
+
+    stored = _stored(tmp_path)
+    assert "fake-model" not in stored.get("profiles", {})
+    assert "fake-model" not in stored.get("active_profiles", {})
+    assert "fake-model" not in stored.get("knob_selections", {})
+
+
+def test_prune_keeps_the_state_of_every_model_still_in_the_catalog(tmp_path: Path) -> None:
+    _give_every_kind_of_state(tmp_path, "fake-model")
+
+    assert prune_unknown_model_state(tmp_path) == ()
+
+    assert get_profiles(tmp_path, _entry(tmp_path, "fake-model"))
+    assert get_knob_selections(tmp_path, _entry(tmp_path, "fake-model"))["test-mode"] == "fast"
+
+
+def test_prune_keeps_a_custom_entrys_state(tmp_path: Path) -> None:
+    """A custom entry is as "known" as a hardcoded one — the user added it."""
+    add_local_entry(
+        tmp_path,
+        LocalLLMEntry(name="mine", kind="custom_hf", repo_id="a/b", filename="c.gguf"),
+    )
+    _give_every_kind_of_state(tmp_path, "mine")
+
+    assert prune_unknown_model_state(tmp_path) == ()
+
+    assert get_profiles(tmp_path, _entry(tmp_path, "mine"))
+
+
+def test_prune_reports_an_unknown_installed_model_with_no_stored_state(tmp_path: Path) -> None:
+    """How the file-owning caller learns which downloads are now unreachable."""
+    assert prune_unknown_model_state(tmp_path, ["gone-model"]) == ("gone-model",)
+
+
+def test_prune_does_not_report_an_installed_model_still_in_the_catalog(tmp_path: Path) -> None:
+    assert prune_unknown_model_state(tmp_path, ["fake-model"]) == ()
+
+
+def test_prune_does_nothing_at_all_when_the_registry_file_does_not_parse(tmp_path: Path) -> None:
+    """An unparseable file would make every custom entry look unknown."""
+    registry = tmp_path / "etc" / "local-llm-registry.json"
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text("{ this is not json")
+
+    assert prune_unknown_model_state(tmp_path, ["gone-model"]) == ()
+    assert registry.read_text() == "{ this is not json"
+
+
+def test_prune_leaves_the_file_untouched_when_there_is_nothing_to_drop(tmp_path: Path) -> None:
+    _give_every_kind_of_state(tmp_path, "fake-model")
+    before = (tmp_path / "etc" / "local-llm-registry.json").read_text()
+
+    assert prune_unknown_model_state(tmp_path) == ()
+
+    assert (tmp_path / "etc" / "local-llm-registry.json").read_text() == before
