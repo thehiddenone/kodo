@@ -38,20 +38,20 @@ default) or `"problem_solving"`. Like Autonomous mode, it is a **frozen toggle**
 `effective_top_agent` is snapshotted when a prompt starts, so flipping the
 switch mid-turn never changes the mode a running turn is already executing under.
 
-The mode picks the top-level agent — `agent_guide.md` for Guided, and it is that
+The mode picks the top-level agent — `agent_kodo_guide.md` for Guided, and it is that
 prompt, not the engine, that encodes the pipeline order.
 
-A third mode, `"judge"`, exists for the validator (`agent_judge.md`) and is
+A third mode, `"judge"`, exists for the validator (`agent_kodo_judge.md`) and is
 reachable only over the wire; the extension's picker never offers it.
 
 ## 3. The cast
 
 | Role | Who | Invoked by |
 | --- | --- | --- |
-| **Entry agent** | `guide` | the user's prompt |
-| **Authors** | `narrative_author`, `architect`, `requirements_author`, `functional_designer`, `test_designer`, `test_coder`, `coder`, `e2e_test_designer`, `e2e_test_coder` | the Guide, one `run_subagent_<name>` call each |
-| **Critics** | `architect_critic`, `requirements_critic`, `functional_design_critic`, `test_design_critic`, `code_critic`, `e2e_test_design_critic`, `e2e_test_code_critic` | **the engine**, inside their author's call |
-| **Adjuncts** | `toolchain_builder`, `investigator` | the Guide, outside the pipeline |
+| **Entry agent** | `kodo_guide` | the user's prompt |
+| **Authors** | `kodo_narrative_author`, `kodo_architect`, `kodo_requirements_author`, `kodo_functional_designer`, `kodo_test_designer`, `kodo_test_coder`, `kodo_coder`, `kodo_e2e_test_designer`, `kodo_e2e_test_coder` | the Guide, one `run_subagent_<name>` call each |
+| **Critics** | `kodo_architect_critic`, `kodo_requirements_critic`, `kodo_functional_design_critic`, `kodo_test_design_critic`, `kodo_code_critic`, `kodo_e2e_test_design_critic`, `kodo_e2e_test_code_critic` | **the engine**, inside their author's call |
+| **Adjuncts** | `kodo_toolchain_builder`, `kodo_investigator` | the Guide, outside the pipeline |
 
 A critic declares `role: critic` in its frontmatter and gets **no**
 `run_subagent_<name>` tool: `AgentRegistry.run_subagent_specs` skips it. The
@@ -97,7 +97,7 @@ once each. The pipeline is single-threaded: one sub-agent invocation at
 a time, no parallelism.
 
 > **Stage 4 is product-level, despite writing per-component documents.**
-> `functional_designer` decides the component *order*, so it cannot be run one
+> `kodo_functional_designer` decides the component *order*, so it cannot be run one
 > component at a time: it writes the Design Plan and every codename's Functional
 > Design in a single call, and its spec does not require a `responsibility_code`.
 > That is why its work product needs the per-file `designs: {codename: path}`
@@ -108,7 +108,7 @@ a time, no parallelism.
 > *every* stage's tool, and it feeds the work-product id, so a stray one on
 > stage 4 split its record across calls and every later stage asking for "this
 > component's Functional Design" stopped finding one. The only guard was a line
-> in `agent_guide.md` telling the Guide not to. It is now the engine's, not the
+> in `agent_kodo_guide.md` telling the Guide not to. It is now the engine's, not the
 > model's: the field exists only on a per-component stage's tool, and a stray
 > one is dropped before anything reads it (§6).
 
@@ -126,7 +126,7 @@ is one of the invalidation-cascade cases in §9.
 
 ### Stage 6 is deliberately red
 
-`test_coder` writes the tests **and** minimal production stubs so that every
+`kodo_test_coder` writes the tests **and** minimal production stubs so that every
 test *fails* — the TDD-correct starting state for stage 7, whose contract is to
 make them pass. Any tooling that judges "did the build succeed?" between stages
 has to know this; it is why the engine-run build gate is still unbuilt (§12).
@@ -195,7 +195,7 @@ caller:
 `user_review` is **opt-in and off by default**. Before it existed, whether a
 human saw an artifact was decided by whether somebody had paired a critic with
 its author: `_finalize_work_product` only ever ran from the critic path, so every
-critic-reviewed work product was gated and `narrative_author` — the one document
+critic-reviewed work product was gated and `kodo_narrative_author` — the one document
 written *with* the user, and the one every later stage derives from — never was.
 That is a question about the artifact, and it now gets asked about the artifact.
 
@@ -205,7 +205,7 @@ rejection is minted as a `user_feedback` finding, so round two's author reaches
 the objection through the same `get_findings` call it would use for a critic's,
 and `not_converging`/`max_rounds` bound it exactly as they bound a critic loop.
 Such an author therefore needs `get_findings` and `{SHARED:findings_author}` in
-its own frontmatter and body — `narrative_author` gained both here.
+its own frontmatter and body — `kodo_narrative_author` gained both here.
 
 Two load-bearing consequences:
 
@@ -319,12 +319,12 @@ REQUIREMENTS_CRITIC = SubAgentSpec(
 | `UNDER_REVIEW` | The work product this critic round is reviewing — supplied by the round, never looked up. |
 
 `produces` maps a role to the **output field** carrying its paths, because one
-agent may fill two: `narrative_author` writes the Narrative *and* the Tech
-Stack; `functional_designer` writes the Design Plan *and* every Functional
+agent may fill two: `kodo_narrative_author` writes the Narrative *and* the Tech
+Stack; `kodo_functional_designer` writes the Design Plan *and* every Functional
 Design. The role mapped to `PRODUCES_REMAINDER` (`"paths"`) takes whatever no
 named field claimed — which keeps the Plan out of the pile of designs.
 
-Attribution is per **file** where it has to be: `functional_designer` runs once
+Attribution is per **file** where it has to be: `kodo_functional_designer` runs once
 for the whole product, so its `designs: {codename: path}` output is what lets
 `SELF` and `DEPENDENCIES` narrow to one design rather than matching all or none.
 
@@ -334,7 +334,7 @@ for the whole product, so its `designs: {codename: path}` output is what lets
 sub-agent's own `input_schema` so the rendered task brief still describes them.
 This mirrors `schema_compliance` on the output side. It holds for every agent in
 this pipeline because every one of them declares roles; the stripping follows
-that declaration, so an agent with none (the Problem Solver's `developer`, which
+that declaration, so an agent with none (the Problem Solver's `kodo_developer`, which
 is not part of Guided mode) keeps its caller-supplied `input_paths` — hiding a
 field is only right where resolution replaces it.
 
@@ -359,7 +359,7 @@ layers:
 A **critic** never declares it: its task is built entirely by the engine
 (`instructions` plus resolved `input_paths`), and its `SELF` needs are narrowed
 from the work product under review, whose own `responsibility_code` the round
-already knows. `test_design_critic` declared it until 2026-09-05 and was never
+already knows. `kodo_test_design_critic` declared it until 2026-09-05 and was never
 handed one.
 
 **An unmet required need refuses the spawn**, returning a
@@ -563,7 +563,7 @@ same tool call, with the same arguments, returning the same result, three times
 in a row.
 
 That last detector exists because of one incident worth remembering here. A
-`requirements_critic` whose contract promised it the architecture was handed only
+`kodo_requirements_critic` whose contract promised it the architecture was handed only
 the document under review — the engine hardcoded `{"target": path}` for every
 critic — and reconstructed the architecture's path from the **worked example in
 its own schema description**, whose nested layout the pipeline never produces. It
@@ -592,7 +592,7 @@ building per iteration is too expensive to be worth it.
 
 | File | What it owns |
 | --- | --- |
-| [subagents/agent_guide.md](../src/kodo/agents/agent_guide.md) | The pipeline order, triage rules, cascade, forward-progress layers |
+| [subagents/agent_kodo_guide.md](../src/kodo/agents/agent_kodo_guide.md) | The pipeline order, triage rules, cascade, forward-progress layers |
 | [subagents/_artifacts.py](../src/kodo/agents/_artifacts.py) | Artifact roles, scopes, `Need` |
 | [subagents/_subagentspec.py](../src/kodo/agents/_subagentspec.py) | `produces` / `consumes` / `component_paths` |
 | [subagents/specs/](../src/kodo/agents/subagents/specs/) | One `<name>.json` spec per sub-agent, loaded by `_loader.py`; `_shapes.py` builds the shared envelopes a spec names as a *shape*, including which stages declare a `responsibility_code`; `_order.py` derives the catalog order from `produces`/`consumes` |

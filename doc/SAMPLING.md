@@ -847,6 +847,6 @@ cloud-resident, and no sampling fields are ever added to an Anthropic request.
 
 **Scope within a session.** Like `thinking_level` (SESSIONS.md), a session's
 sampling overrides apply to *every* local LLM call the session makes — the
-main turn, auto-compaction, and the `web_search` tool loop — not just the
+main turn, auto-compaction, and the `kodo_web_search` tool loop — not just the
 prompt the user typed. The session titler runs its own dedicated
 `llama-server` with its own fixed parameters and is unaffected.

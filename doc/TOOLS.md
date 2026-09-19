@@ -56,7 +56,7 @@ place — the dispatch table in [tools/_dispatch.py](../src/kodo/tools/_dispatch
 
 **Hard rule:** `kodo.tools` may import only from T0/T1/T2 — in practice
 `kodo.guided_state`, `kodo.project`, `kodo.websearch` (the Playwright- and
-`curl_cffi`-backed fetch engine behind `query_search_engine`/`web_search` —
+`curl_cffi`-backed fetch engine behind `query_search_engine`/`kodo_web_search` —
 doc/WEB_SEARCH.md — and the single-page fetch behind `read_webpage` —
 doc/READ_WEBPAGE.md), and
 `kodo.toolspecs`. It must **never**
@@ -275,10 +275,10 @@ Protocols**, also defined in `_context.py`:
   a tool can delegate upward: `run_subagent(caller, name, task_input, max_rounds)`
   (one pass, or the whole author/critic loop when the named sub-agent declares
   a `critic:` — §5A),
-  `run_dependency_manager(task_input)` (ungated `toolchain_depsmgr` spawn for
+  `run_dependency_manager(task_input)` (ungated `kodo_toolchain_depsmgr` spawn for
   `toolchain_deps`), `run_web_search_agent(task_input)` (ungated *silent,
-  multi-round tool-calling* `web_search` agent turn — no subsession, since
-  `web_search` is typically called from a sub-agent; doc/WEB_SEARCH.md),
+  multi-round tool-calling* `kodo_web_search` agent turn — no subsession, since
+  `kodo_web_search` is typically called from a sub-agent; doc/WEB_SEARCH.md),
   `rollback(...)`, `disable_autonomous_mode(...)`,
   `create_project(name)`, `init_project(path)`, `bootstrap_project(name)`, and the three **live
   workspace-state reads** `has_workspace()`, `root_paths()`, `project_root()`
@@ -463,7 +463,7 @@ A caller does not get a generic `run_subagent(name, task_input)` with an opaque
 each declaring that sub-agent's own fields, flattened to the top level:
 
 ```
-run_subagent_coder(instructions, project_code, responsibility_code, max_rounds)
+run_subagent_kodo_coder(instructions, project_code, responsibility_code, max_rounds)
 ```
 
 `AgentRegistry.run_subagent_specs(caller)` mints them from the caller's
@@ -473,9 +473,9 @@ ever spawns one, so no tool is minted for it.
 What is *not* on that signature matters as much as what is. `input_paths` and
 `for_revision_paths` are stripped from every such tool
 (`kodo.toolspecs.ENGINE_OWNED_TASK_FIELDS` — the engine resolves them), and
-`responsibility_code` appears only for a **per-component** stage: `coder` has
-one because it runs once per component, while `run_subagent_architect` and
-`run_subagent_functional_designer` do not offer the field at all. A caller
+`responsibility_code` appears only for a **per-component** stage: `kodo_coder` has
+one because it runs once per component, while `run_subagent_kodo_architect` and
+`run_subagent_kodo_functional_designer` do not offer the field at all. A caller
 cannot set what it is never shown, and the engine drops a stray one anyway
 (doc/GUIDED_DEV_MODE.md §6).
 
@@ -518,7 +518,7 @@ is what every variant call is folded back to by
 `_dispatch_tool_calls`:
 
 ```
-("run_subagent_coder", {"instructions": "...", "max_rounds": 3})
+("run_subagent_kodo_coder", {"instructions": "...", "max_rounds": 3})
   → ("run_subagent", {"name": "coder",
                       "task_input": {"instructions": "..."},
                       "max_rounds": 3})
@@ -548,7 +548,7 @@ target's own `run_subagent_<name>` variant via
 `AgentRegistry.run_subagent_specs(agent_name)` — the exact schema that
 sub-agent's caller was shown, review-block-merged when it has a critic — and
 validates against that instead, falling back to the canonical placeholder only
-if the variant can't be found. (Traced in session `1785719012`: `toolchain_builder`
+if the variant can't be found. (Traced in session `1785719012`: `kodo_toolchain_builder`
 did all its real work correctly, then ended its turn with a plain-text summary
 instead of calling `return_result`; the caller's tool result read
 `{"schema_compliance": true}` with none of the actual data, even though the
@@ -577,7 +577,7 @@ rendered into the task; both halves read them through `get_findings`
 | `not_converging` | a round closed nothing *and* opened nothing — exact no-progress, so the engine stopped early rather than orbit to the cap |
 | `not_reviewed` | the author reported no `paths` to review |
 
-A pipeline `run_subagent_<name>` tool carries **no file paths**: `input_paths` and `for_revision_paths` are `ENGINE_OWNED_TASK_FIELDS` (`kodo.toolspecs`), stripped from the generated tool and resolved by the engine from the callee's declared artifact roles against the work-product ledger (doc/FINDINGS.md). A caller supplies `instructions`; a stage invoked before something it requires exists is refused with a `missing_required_input` escalation naming the artifact. The stripping applies only where resolution replaces it — an agent that declares no roles (`developer`) keeps `input_paths`, since its caller is still the one that knows which files it means.
+A pipeline `run_subagent_<name>` tool carries **no file paths**: `input_paths` and `for_revision_paths` are `ENGINE_OWNED_TASK_FIELDS` (`kodo.toolspecs`), stripped from the generated tool and resolved by the engine from the callee's declared artifact roles against the work-product ledger (doc/FINDINGS.md). A caller supplies `instructions`; a stage invoked before something it requires exists is refused with a `missing_required_input` escalation naming the artifact. The stripping applies only where resolution replaces it — an agent that declares no roles (`kodo_developer`) keeps `input_paths`, since its caller is still the one that knows which files it means.
 
 The **stores are authoritative**, not the critic's return value: the user's own
 review decision lands in them too (see *A critic's findings* below) and can turn
@@ -881,7 +881,7 @@ Why: a bound root is what `get_root_paths` reports, what every logical path
 resolves through, what the checkpoint mirrors track, and what
 `TransientStore.lock_workspace_path` has permanently written into the session's
 remembered workspace shape. Removing one from underneath all of that leaves
-nothing recoverable. This is not hypothetical — a `toolchain_builder`
+nothing recoverable. This is not hypothetical — a `kodo_toolchain_builder`
 sub-agent issued `{operation: "delete_dir", path: "<its own project root>"}`
 with an `intent` reading *"List the project root directory to see current
 state"*; the model had simply picked the wrong operation, and permissive

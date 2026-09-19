@@ -3,9 +3,23 @@
 > The pipeline these agents run in, end to end: [GUIDED_DEV_MODE.md](GUIDED_DEV_MODE.md).
 > How a session drives them: [SESSIONS.md](SESSIONS.md). The tool layer they
 > call through: [TOOLS.md](TOOLS.md).
+>
+> **This document is about agents that ship *in the repo*.** To add an agent
+> without touching the repo at all — a bundle a user drops in `~/.kodo/agents/`
+> — read [USER_AGENTS.md](USER_AGENTS.md) instead. Everything below about
+> frontmatter, specs, artifact roles and phase blocks applies to both; what
+> differs is where the files live, which rules are relaxed, and how failure is
+> reported.
 
 A working guide to Kōdo's two kinds of agent — how to add one, how to edit one,
 and which of the two you actually want. Distilled from real changes.
+
+**Every agent that ships in the repo is named `kodo_<something>`.** The prefix
+is reserved: it is what lets a user-installed agent share one flat namespace
+with the packaged set and never collide with it
+([USER_AGENTS.md](USER_AGENTS.md) §1). A new packaged agent must carry it — the
+filename, the spec, and the generated `run_subagent_kodo_<name>` tool all follow
+the name.
 
 The two repos: prompts, specs and engine live in **`kodo`** (`src/kodo/...`); the
 VSIX front-end lives in **`kodo-vsix`**. Adding a **sub-agent** is entirely a
@@ -42,7 +56,7 @@ one requires touching the engine at all.
 | `## Purpose` section | not needed (nobody delegates to it) | **required** if any caller lists it; it becomes the tool description |
 | Conversation | multi-turn, persisted to `session.jsonl`, survives mode switches | one subsession, collapsed in the UI, result handed back to the caller |
 | Engine changes to add one | **yes** — ~6 edits across `kodo`, plus `kodo-vsix` if user-selectable | **none** — drop in two files |
-| Live examples | `guide`, `problem_solver`, `judge` | the other 23 |
+| Live examples | `kodo_guide`, `kodo_problem_solver`, `kodo_judge` | the other 23 |
 
 **Rule of thumb:** if a *human* picks it from the UI, it is an entry agent. If an
 *agent* decides to delegate to it, it is a sub-agent. When in doubt build a
@@ -51,7 +65,7 @@ costs no engine surface. There are three entry agents and there has not been a
 new one in a long time; there are 23 sub-agents.
 
 A third category exists but is not a third kind: **engine-driven sub-agents**
-(`compactor`, `web_search`, `toolchain_depsmgr`). They are ordinary sub-agents
+(`kodo_compactor`, `kodo_web_search`, `kodo_toolchain_depsmgr`). They are ordinary sub-agents
 with ordinary specs, but the engine spawns them from a dedicated service instead
 of a caller's tool — see [recipe 5.6](#56-an-engine-driven-sub-agent-no-caller).
 
@@ -140,7 +154,7 @@ so naming the shape is what keeps your agent in step when the envelope changes.
 The four shapes are in the [shape table](#schema-shapes) in §11.
 
 Use `{"shape": "raw", "schema": {…}}` **only** when the contract genuinely is
-your agent's own, as `planner`, `investigator` and `web_search` do. Don't
+your agent's own, as `kodo_planner`, `kodo_investigator` and `kodo_web_search` do. Don't
 hand-roll a shared envelope, and never declare `schema_compliance` — the engine
 injects it.
 
@@ -188,7 +202,7 @@ declaration. A cycle is a startup error.
 ### 3.4 Caller wiring
 
 The agent(s) that may spawn `foo` list it in their frontmatter `subagents:`
-allow-list (e.g. `agent_guide.md`, `agent_problem_solver.md`), **and** must
+allow-list (e.g. `agent_kodo_guide.md`, `agent_kodo_problem_solver.md`), **and** must
 declare the `run_subagent` tool — the registry rejects either half without the
 other.
 
@@ -312,7 +326,7 @@ before acting on it; act on its recommendations yourself.
 {SHARED:security}
 ````
 
-**Caller wiring** — in `agent_problem_solver.md`'s frontmatter:
+**Caller wiring** — in `agent_kodo_problem_solver.md`'s frontmatter:
 
 ```yaml
 subagents:
@@ -399,7 +413,7 @@ Your wrapper should add nothing but the name.
 
 ### 4.4 The front-end wiring (`kodo-vsix`)
 
-Only if the mode is **user-selectable**. `judge` is the worked counter-example:
+Only if the mode is **user-selectable**. `kodo_judge` is the worked counter-example:
 it is reachable solely by sending `agent.set` with `name: "judge"` over the
 wire (which `kodo.validator` does), and kodo-vsix's picker never offers it — so
 it needed **zero** VSIX changes.
@@ -469,7 +483,7 @@ A critic additionally keeps its own `### Concern vocabulary` section — the `ki
 values it may use — which the schema points at rather than duplicating.
 
 ```jsonc
-// specs/architect_critic.json — every critic looks like this
+// specs/kodo_architect_critic.json — every critic looks like this
 {
   "name": "architect_critic",
   "notes": "Stage 2 critic.",
@@ -504,7 +518,7 @@ that commissioned the plan then tracks it with `get_plan` / `plan_step_forward`
 instead of restating it every round. Full spec: [PLANNING.md](PLANNING.md).
 
 **It is a declaration, never an inference.** Nothing in the engine knows that the
-agent *named* `planner` plans; a second or third planner needs no engine change.
+agent *named* `kodo_planner` plans; a second or third planner needs no engine change.
 
 What the flag costs you is a **contract on the spec**. `kodo.plan`'s
 `PLAN_OUTPUT_FIELDS` fixes the two output field names, and the `output_schema`
@@ -513,7 +527,7 @@ carrying a `title`, `codebase_context` a string. `AgentRegistry` checks all of
 that at load time, because `normalize_output` type-checks nothing at run time: a
 mis-typed declaration would yield no plan, silently.
 
-The shipped `planner` (abridged — see `specs/planner.json`):
+The shipped `kodo_planner` (abridged — see `specs/kodo_planner.json`):
 
 ```jsonc
 {
@@ -584,19 +598,19 @@ matters.
 
 ### 5.6 An engine-driven sub-agent (no caller)
 
-`compactor`, `web_search` and `toolchain_depsmgr` have ordinary specs but no
+`kodo_compactor`, `kodo_web_search` and `kodo_toolchain_depsmgr` have ordinary specs but no
 caller: the engine spawns them from a dedicated service. Three consequences:
 
 - They are in **no** agent's `subagents:` list, so they get no
   `run_subagent_<name>` tool.
-- `compactor` and `web_search` are additionally listed in `_DIRECT_ONLY_AGENTS`
+- `kodo_compactor` and `kodo_web_search` are additionally listed in `_DIRECT_ONLY_AGENTS`
   (`runtime/_engine/_shared.py`), which makes `_spawn_subagent` short-circuit
   them — they can never be reached through `run_subagent` even by accident.
-  `toolchain_depsmgr` deliberately is *not*: its ungated tool service is the only
+  `kodo_toolchain_depsmgr` deliberately is *not*: its ungated tool service is the only
   path to it anyway.
 - They may omit `## Purpose` (nobody reads a description for them) and, if the
   engine seeds them some way other than `_render_task_input`,
-  `{SHARED:task_input}` too — `compactor` is the one agent that describes its own
+  `{SHARED:task_input}` too — `kodo_compactor` is the one agent that describes its own
   input instead.
 
 Adding one is an engine change (a service that spawns it), not just a spec.
@@ -616,7 +630,7 @@ critic never declares it: the engine builds a critic's whole task, and its
 If your agent writes artifacts for **several** components in one run, also set
 `component_paths` to the name of an output field holding `{codename: path}` —
 without it, `self` and `dependencies` can only match all of its files or none.
-Only `functional_designer` needs this today.
+Only `kodo_functional_designer` needs this today.
 
 ---
 
@@ -628,7 +642,7 @@ the engine resolves those needs against the session's work-product ledger
 (`kodo.workproducts`) to hand the agent a fully-formed `input_paths`.
 
 ```jsonc
-// specs/requirements_critic.json
+// specs/kodo_requirements_critic.json
 {
   "produces": {},                                    // critics write findings, not artifacts
   "consumes": [
@@ -643,14 +657,14 @@ the engine resolves those needs against the session's work-product ledger
   author maps its one role to `"paths"` (`PRODUCES_REMAINDER`) — "everything I
   reported". An agent filling two roles names a field per role, and the role
   mapped to the remainder gets whatever no named field claimed; that is how
-  `functional_designer` keeps the Design Plan out of the pile of Functional
+  `kodo_functional_designer` keeps the Design Plan out of the pile of Functional
   Designs it wrote in the same run.
 - **`consumes`** is a list of `{role, scope, required}`. `required` defaults to
   `true` and `scope` to `"global"`. The scopes are in the
   [scope table](#artifact-scopes) in §11. Declare a scope that can legitimately
   be empty as `"required": false`.
 - Labels are the role itself for a single file, `<role>_<basename>` for several.
-  A role declared at two scopes (`coder` wants its own design *and* its
+  A role declared at two scopes (`kodo_coder` wants its own design *and* its
   neighbours') is accumulated into one labelled group, not labelled twice.
 - **Callers never pass paths.** `input_paths` and `for_revision_paths` are in
   `kodo.toolspecs.ENGINE_OWNED_TASK_FIELDS`: declared on your agent's
@@ -659,7 +673,7 @@ the engine resolves those needs against the session's work-product ledger
   Do not write a prompt that tells a caller to supply a path. The stripping
   follows the declaration: an agent with an empty `consumes` has no resolution
   behind it, so it keeps a caller-supplied `input_paths` (the non-pipeline
-  `developer` is the only one today). **Declare roles or own your paths — never
+  `kodo_developer` is the only one today). **Declare roles or own your paths — never
   neither.**
 
 **The role vocabulary is closed.** `ALL_ROLES` in `_artifacts.py` lists every
@@ -686,7 +700,7 @@ required role really does run first.
 
 > Until 2026-09-04 the engine passed a hardcoded `{"target": <path>}` — one path,
 > under a label in no agent's vocabulary — to every critic. Six of the seven
-> declared more inputs than they received; `requirements_critic`, promised the
+> declared more inputs than they received; `kodo_requirements_critic`, promised the
 > architecture and given only the document, reconstructed the architecture's path
 > from the worked example in its own schema description and read the resulting
 > nonexistent file ~1133 times. A short-lived `inherit_author_inputs` stopgap
@@ -737,7 +751,7 @@ requires exactly one of `{SHARED:findings_author}` / `{SHARED:findings_critic}`;
 `use_skill` requires `{SKILLS}`.
 
 **Moving a responsibility to a new agent** (as when the Test Plan behavioral
-review was split out of `test_coder` into the new `test_design_critic`):
+review was split out of `kodo_test_coder` into the new `kodo_test_design_critic`):
 
 - **Re-point the pairing**: change the author's `critic:` to the new critic.
 - **Strip the moved role** from the old agent — its prompt sections, its
@@ -761,7 +775,7 @@ error, which is how you find the half you forgot.
 ### Pipeline placement (guide prompt)
 
 If your agent is a pipeline stage (not `standalone`), update
-**`agent_guide.md`**: the numbered **"The Pipeline You Run"** list, the **Stage →
+**`agent_kodo_guide.md`**: the numbered **"The Pipeline You Run"** list, the **Stage →
 agent map** table, and any cascade/escalation prose that names the stage. The
 guide prompt is the source of truth for stage order; a tool description says what
 its agent does, never where it sits in the sequence. Keep author and critic
@@ -873,7 +887,7 @@ identity paragraph, and the rule blocks closing the file.
 | `working_rules` | **Mandatory**, second-to-last. |
 | `security` | **Mandatory**, last. |
 | `editing` | **Mandatory iff** you granted a tool whose `ToolSpec.modifies_files` is true. Forbidden otherwise. |
-| `task_input` | Sub-agents with a spec. **Forbidden** on an entry agent. Omit only if the engine seeds the agent some other way (today: `compactor`). |
+| `task_input` | Sub-agents with a spec. **Forbidden** on an entry agent. Omit only if the engine seeds the agent some other way (today: `kodo_compactor`). |
 | `findings_author` / `findings_critic` | **Exactly one, iff** you granted `get_findings`. |
 | `escalation` | If the agent can hand a blocker back. Pairs with `author_output`. |
 | `dependencies` | If the agent reads or writes `DEPENDENCIES.md`. |

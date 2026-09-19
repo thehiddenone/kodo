@@ -239,7 +239,7 @@ no dedicated WS command. Read fresh, per LLM dispatch, by
 
 ### 2.3 Context limit (per-model — not a setting)
 
-The token budget for a top-level agent's **main context** (the shared Guide / Problem Solver conversation) is **not** a global setting. It is the **current model's context window**, defined per model as `context_window` in `kodo/llms/_cloud_registry.py` or `kodo/llms/_local_registry.py` (for the two fetched-catalog vendors, from the catalog entry instead — OpenRouter reports a real `context_length`, while Bedrock reports none at all and falls back to a best-effort per-family table, doc/LLM_REGISTRY.md §3b) (e.g. Claude Opus/Sonnet/Fable = 1,000,000; Haiku 4.5 = 200,000; local Qwen3 = 262,144; local Gemma = 131,072), resolved via `kodo.llms.get_context_window`. After every top-level agent turn the engine measures the context (last call's input + cache + output tokens); once it reaches **90%** of the current model's window it automatically runs the `compactor` sub-agent, which condenses the conversation into a shorter transcript — same turns, user prompts verbatim, no facts dropped — and resets the live context in place (a `compaction` marker is written to `session.jsonl`; the full log is kept as audit). The user can also trigger this at any idle moment via the header's **Compact now** button (`compact.now`).
+The token budget for a top-level agent's **main context** (the shared Guide / Problem Solver conversation) is **not** a global setting. It is the **current model's context window**, defined per model as `context_window` in `kodo/llms/_cloud_registry.py` or `kodo/llms/_local_registry.py` (for the two fetched-catalog vendors, from the catalog entry instead — OpenRouter reports a real `context_length`, while Bedrock reports none at all and falls back to a best-effort per-family table, doc/LLM_REGISTRY.md §3b) (e.g. Claude Opus/Sonnet/Fable = 1,000,000; Haiku 4.5 = 200,000; local Qwen3 = 262,144; local Gemma = 131,072), resolved via `kodo.llms.get_context_window`. After every top-level agent turn the engine measures the context (last call's input + cache + output tokens); once it reaches **90%** of the current model's window it automatically runs the `kodo_compactor` sub-agent, which condenses the conversation into a shorter transcript — same turns, user prompts verbatim, no facts dropped — and resets the live context in place (a `compaction` marker is written to `session.jsonl`; the full log is kept as audit). The user can also trigger this at any idle moment via the header's **Compact now** button (`compact.now`).
 
 Because the limit follows the model, **switching the model changes it immediately** (`config.reload` notifies every live session). Switching to a model whose window is **smaller than the live context** triggers an auto-compaction *using the outgoing model* before the switch takes effect (see STATE_AND_LIFECYCLE.md §4.5). The legacy `context_limit` setting was **removed**; to change the budget, change the model or edit its `context_window` in the registry.
 
@@ -310,22 +310,28 @@ housekeeper LLM" webview action.
 ### 2.8 `default_agent`
 
 Which top-level agent a brand-new session starts on, overriding the one the
-shipped configs declare. An agent **name** (`"guide"`, `"problem_solver"`, …) or
-`""` for "no preference — use Kōdo's default".
+shipped configs declare. An agent **name** (`"kodo_guide"`,
+`"kodo_problem_solver"`, a user-installed agent's name — see
+[USER_AGENTS.md](USER_AGENTS.md)) or `""` for "no preference — use Kōdo's
+default".
 
 ```json
-{ "default_agent": "guide" }
+{ "default_agent": "kodo_guide" }
 ```
 
 Resolved by `AgentRegistry.default_top_agent()`, highest priority first:
 
-1. this key, if it names a registered **selectable** agent (a legacy alias such
-   as `"guided"` is accepted too);
-2. the agent whose config declares `"default": true`.
+1. this key, if it names a registered **selectable** agent;
+2. the agent whose config declares `"default": true` — always a built-in one,
+   since a user-installed agent claiming the default is refused.
 
 A value that is unknown, non-selectable, or names an agent that has since been
-removed falls through to (2) rather than erroring — a stale settings file must
-never stop a session from starting. `judge` is rejected for the same reason it
+uninstalled falls through to (2) rather than erroring — a stale settings file
+must never stop a session from starting. (Resuming an *existing* session whose
+stored agent is gone behaves differently, and deliberately: it reports the
+missing agent rather than quietly starting on another — USER_AGENTS.md §7.)
+There are no aliases: the pre-rename vocabulary (`"guided"`,
+`"problem_solving"`) names no agent and simply falls through. `kodo_judge` is rejected for the same reason it
 is absent from the picker: it has no interactive prompt, so a session must not
 begin there.
 

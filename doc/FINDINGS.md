@@ -169,8 +169,8 @@ REQUIREMENTS_CRITIC = SubAgentSpec(
 ```
 
 `produces` maps a role to the **output field** carrying its paths, because one
-agent may fill several roles: `narrative_author` writes the Narrative and the
-Tech Stack, `functional_designer` the Design Plan and every Functional Design.
+agent may fill several roles: `kodo_narrative_author` writes the Narrative and the
+Tech Stack, `kodo_functional_designer` the Design Plan and every Functional Design.
 The role mapped to `PRODUCES_REMAINDER` (`"paths"`) takes whatever no named
 field claimed — which is how the Design Plan stays out of the pile of designs
 written in the same run. The engine derives the ledger's `roles` map from this
@@ -185,12 +185,12 @@ the architect's `components` graph. Both directions, deliberately: an interface
 has two sides, and changing one without seeing the other is how cross-file drift
 gets written in the first place.
 
-Attribution is per **file**, not per work product. `functional_designer` writes
+Attribution is per **file**, not per work product. `kodo_functional_designer` writes
 every component's design in one whole-product run, so its work product carries no
 `responsibility_code`; its `designs: {codename: path}` output supplies the map,
 and `WorkProduct.component_of()` falls back to the work product's own code for
 the ordinary per-component stage. One role may legitimately be declared at two
-scopes — `coder` asks for its own design *and* its neighbours' — so paths are
+scopes — `kodo_coder` asks for its own design *and* its neighbours' — so paths are
 accumulated per role before labelling rather than labelled per need.
 
 **A caller cannot write a path at all** (2026-09-05). `input_paths` and
@@ -241,7 +241,7 @@ legitimately be empty is declared `required=False` and is simply left out.
 `input_paths` and `for_revision_paths` are off the caller-facing schema
 entirely: `kodo.toolspecs.ENGINE_OWNED_TASK_FIELDS`, stripped from the generated
 `run_subagent_<name>` tool of every agent whose inputs the engine resolves. The
-one exception is an agent that declares **no** roles at all — `developer`, driven
+one exception is an agent that declares **no** roles at all — `kodo_developer`, driven
 by the Problem Solver, which has already read the tree and knows the files it
 means. Nothing would resolve its `input_paths`, so hiding the field would take
 away the only way to point it at one; its tool keeps it, and resolution leaves

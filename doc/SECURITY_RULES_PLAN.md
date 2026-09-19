@@ -891,7 +891,7 @@ a pure allow/ask shift inside the existing `RuleDecision` shape.
 
 ## Inline `cd <dir> && …` chains shift the effective cwd (post-launch, 2026-07-31)
 
-Reported alongside the above: a `toolchain_builder`-generated
+Reported alongside the above: a `kodo_toolchain_builder`-generated
 `./scripts/build.sh` / `./scripts/format.sh`, invoked as `cd
 <project-dir> && ./scripts/build.sh` in one `run_command` call, alarmed as
 "not in the known-safe command set" instead of hitting the toolchain-script

@@ -411,7 +411,7 @@ losing the turn.
 
 ### What went wrong
 
-A `toolchain_builder` sub-agent called
+A `kodo_toolchain_builder` sub-agent called
 `filesystem {operation: "delete_dir", path: "<its own project root>"}` — with
 an `intent` that read *"List the project root directory to see current
 state"*, so the model had simply picked the wrong operation; permissive

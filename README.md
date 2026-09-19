@@ -105,6 +105,8 @@ The list below describes what's implemented, not a review score of how well each
 
 **Security layer** — every tool call passes through a per-call allow-or-ask judgement driven by the Tool Control posture (permissive / defensive / smart). Smart mode statically analyzes shell commands for targets outside the workspace and runs an LLM intent judge over high-impact calls; anything it can't clear raises a permission prompt. See [`doc/SECURITY.md`](doc/SECURITY.md).
 
+**Your own agents** — drop a bundle into `~/.kodo/agents` and it appears in the agent picker: a prompt, a small JSON saying how it is chosen, and any sub-agents it drives. Install one from a local folder or a git repository with `python -m kodo --install-agent`, or from Kōdo Settings → Agents; if a version is already installed you are shown both and choose which to keep. No restart, no code change. Names beginning `kodo_` are reserved for the built-in agents, so yours can never collide with them. See [`doc/USER_AGENTS.md`](doc/USER_AGENTS.md).
+
 **Agent Skills** — drop a skill directory into `~/.kodo/skills` and agents follow it. Kōdo reads the open [Agent Skill](https://github.com/anthropics/skills) `SKILL.md` format, so skills written for other agent runtimes work unchanged. Each installed skill's description sits in the prompt; an agent loads the full instructions on demand when a task matches. Browse and remove them from Kōdo Settings → Skills. See [`doc/SKILLS.md`](doc/SKILLS.md).
 
 **Web-capable research** — an agent-driven web search that paces its own discovery/read/synthesis loop, with browser-backed and static page extraction. See [`doc/WEB_SEARCH.md`](doc/WEB_SEARCH.md).

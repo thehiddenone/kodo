@@ -369,7 +369,7 @@ The header toggles split into **two frozen** and **three never-frozen**:
 **Frozen toggles** (`autonomous`, `top_agent`) are reported as a **pair**: the user-facing *selected* value and its per-turn frozen *effective* twin (`effective_*`). The selected value flips the instant the user clicks; the effective value is the one the **in-flight prompt** actually runs under — the engine freezes both from their selected values when it dequeues a prompt (`_freeze_effective_modes`), so a toggle flipped mid-run takes effect only on the *next* prompt. The client renders each as "in effect" (selected == effective, or idle) or "queued for the next prompt" (a turn is running and they differ).
 
 - `autonomous` — Autonomous/Interactive mode. Toggled via `mode.set` (§7.5).
-- `top_agent` — the name of the top-level agent driving prompts, always one the server has registered. Not a fixed set: it is whatever `hello.ack`'s `agents` catalog lists, plus any non-selectable agent (`judge`) reachable only by sending it explicitly. Toggled via `agent.set` (§7.4).
+- `top_agent` — the name of the top-level agent driving prompts, always one the server has registered. Not a fixed set: it is whatever `hello.ack`'s `agents` catalog lists, plus any non-selectable agent (`kodo_judge`) reachable only by sending it explicitly. Toggled via `agent.set` (§7.4).
 
 **Never-frozen toggles** (`edit_control`, `command_control`, `thinking_level`) carry a **single** value and **no `effective_*` twin** — a flip applies to the next LLM call, not the next prompt.
 
@@ -443,11 +443,11 @@ Emitted before **every** dispatched tool call so the panel can show a one-line a
   "tool_call_id": "<tool_use block id>" }
 ```
 
-`description` is the tool's `user_description` (a short UI label from the `ToolSpec`), never the model-facing schema. The panel decides which tool calls are worth surfacing. `tool_call_id` is the LLM `tool_use` block id; it correlates this event with the follow-up `agent.tool_call_in_progress` (§5.5a), `agent.tool_call_detail` (§5.5b), and with the persisted tool-call document. `run_command` and `web_search` additionally carry `timeout_seconds` (for `web_search`, the caller's `timeout` input or `_DEFAULT_WEB_SEARCH_TIMEOUT_S` when omitted), driving each one's elapsed-vs-timeout progress bar.
+`description` is the tool's `user_description` (a short UI label from the `ToolSpec`), never the model-facing schema. The panel decides which tool calls are worth surfacing. `tool_call_id` is the LLM `tool_use` block id; it correlates this event with the follow-up `agent.tool_call_in_progress` (§5.5a), `agent.tool_call_detail` (§5.5b), and with the persisted tool-call document. `run_command` and `kodo_web_search` additionally carry `timeout_seconds` (for `kodo_web_search`, the caller's `timeout` input or `_DEFAULT_WEB_SEARCH_TIMEOUT_S` when omitted), driving each one's elapsed-vs-timeout progress bar.
 
 ### 5.5a `agent.tool_call_in_progress` — execution genuinely starting
 
-Emitted for `run_command` and `web_search` only, right after the security gate clears (allowed outright, or the user granted permission via `prompt.permission`) and immediately before the tool handler actually runs.
+Emitted for `run_command` and `kodo_web_search` only, right after the security gate clears (allowed outright, or the user granted permission via `prompt.permission`) and immediately before the tool handler actually runs.
 
 ```json
 { "type": "agent.tool_call_in_progress", "tool_call_id": "<tool_use block id>" }
@@ -513,7 +513,7 @@ Pushed after any successful `checkpoint.undo`/`.redo`/`.rollback`/`.roll_forward
 
 ### 5.5e `web_search.note` — live narration from the web_search agent
 
-Emitted by `_run_web_search_agent` (doc/WEB_SEARCH.md §6) once per tool-loop round in which the agent produced free text — its own account of what it just decided/did, required by its prompt ("Narrating Your Work"). Drives the "Web Search is in progress" collapsible block shown beneath the `web_search` call's card.
+Emitted by `_run_web_search_agent` (doc/WEB_SEARCH.md §6) once per tool-loop round in which the agent produced free text — its own account of what it just decided/did, required by its prompt ("Narrating Your Work"). Drives the "Web Search is in progress" collapsible block shown beneath the `kodo_web_search` call's card.
 
 ```json
 { "type": "web_search.note",
@@ -521,7 +521,7 @@ Emitted by `_run_web_search_agent` (doc/WEB_SEARCH.md §6) once per tool-loop ro
   "text": "Google looks the most promising for this query; trying it first." }
 ```
 
-`tool_call_id` correlates this event with the `web_search` call's own `agent.tool_call_prep` (§5.5) and, like `run_command`, its `agent.tool_call_prep` also carries `timeout_seconds` and it receives `agent.tool_call_in_progress` (§5.5a) — so the panel can show the same elapsed-vs-timeout progress bar below the narration block.
+`tool_call_id` correlates this event with the `kodo_web_search` call's own `agent.tool_call_prep` (§5.5) and, like `run_command`, its `agent.tool_call_prep` also carries `timeout_seconds` and it receives `agent.tool_call_in_progress` (§5.5a) — so the panel can show the same elapsed-vs-timeout progress bar below the narration block.
 
 Live-only on the wire: a crash mid-run loses whatever notes weren't flushed yet. The durable copy is a best-effort sidecar file the engine writes once the run ends (`TransientStore.write_web_search_notes`, keyed by `tool_call_id`, never `session.jsonl`/the subsession log — see doc/WEB_SEARCH.md §6 for why), replayed on reload as the `tool_call` entry's `webSearchNotes: string[]` field (§5.11) rather than by replaying this event.
 
@@ -660,7 +660,7 @@ The engine measures the top-level agent's main context after every turn and push
   "subsession": { "current_tokens": 38912, "limit_tokens": 131072, "percent": 29.7 } }
 ```
 
-`current_tokens` = the last turn's `input + cache_read + cache_write + output` (≈ the next call's context), or a char-based estimate right after a compaction. `limit_tokens` is the **current model's** context window (per-model `context_window` in the LLM registry — *not* a global setting), so it changes when the model changes. `can_compact` is `true` only while the top-level agent is idle (`phase == "awaiting_user"`), no compaction is running, there is context, and the `compactor` agent is registered — the client gates its **Compact now** button on it.
+`current_tokens` = the last turn's `input + cache_read + cache_write + output` (≈ the next call's context), or a char-based estimate right after a compaction. `limit_tokens` is the **current model's** context window (per-model `context_window` in the LLM registry — *not* a global setting), so it changes when the model changes. `can_compact` is `true` only while the top-level agent is idle (`phase == "awaiting_user"`), no compaction is running, there is context, and the `kodo_compactor` agent is registered — the client gates its **Compact now** button on it.
 
 `subsession` mirrors the same three fields (never `can_compact` — compaction only ever applies to the main context) for whichever sub-agent subsession is currently running, measured against *that subsession's own model's* context window (a sub-agent can run on a different model than the main top-level agent). It is `null` whenever no subsession is active. The client shows a second "subsession context: …" readout next to the main gauge exactly while this is non-null, and hides it the instant the subsession ends (`subsession.ended`, §5.x) — see `ContextCompactor.note_subsession_context`/`clear_subsession_context` in `_compaction.py`.
 
@@ -834,7 +834,7 @@ Pushed once after `hello.ack` when the resumed session has prior turns, so a fre
 
 Entries mirror the WebView's session model. `user_message`, `assistant_response`, and `tool_call` entries additionally carry `ts` — the persisted line's ISO-8601 UTC timestamp (`TransientStore.__append_line` stamps every line with one on write; `HistoryProjector._message_to_entries` passes it straight through). It exists solely for kodo-vsix's opt-in "Show Timestamps" display (its own `~/.kodo/etc/ui-settings.json`, never sent to or read by the server) — no other entry kind carries it, and nothing server-side reads it back. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers, now also carrying `subsessionId`) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed, as is `nudge` (`{uiText, reasons, mode, source}` — reconstructed from its `kind="nudge"` message the same way, §5.9e; a legacy session persisted under either former `kind` — `agent_unstuck_nudge` or `cyclic_thinking_notice` — reshapes into this same entry, backward-compatibly), `agent_stuck_critical` (`{message}` — reconstructed from its bare `agent_stuck_critical` marker, §5.9f), `agent_cyclic_thinking_critical` (`{message}` — reconstructed from its bare `agent_cyclic_thinking_critical` marker, §5.9g), and `agent_think_in_tool_call_critical` / `agent_tool_call_cyclic_critical` (`{message}` — reconstructed the same way, §5.9h). Other display-only entries (status) are still ephemeral and dropped on rehydrate.
 
-A `web_search` `tool_call` entry additionally carries `webSearchNotes: string[]` — its live narration (§5.5e), read back from the best-effort sidecar file rather than from `session.jsonl` (empty if the run was aborted before it flushed, or for every non-`web_search` tool call).
+A `kodo_web_search` `tool_call` entry additionally carries `webSearchNotes: string[]` — its live narration (§5.5e), read back from the best-effort sidecar file rather than from `session.jsonl` (empty if the run was aborted before it flushed, or for every non-`kodo_web_search` tool call).
 
 The one thing hydration never represents — by construction, not merge logic — is a **dangling tool call**: a `tool_call`/`ask_user` not yet resolved because it's still genuinely in flight (e.g. inside the currently active subsession, which only flushes at turn boundaries). The client keeps carrying that forward from its own live state, unchanged from before (kodo-vsix `reducer.ts`'s `session_history` case, the `liveOnly` carry-forward).
 
@@ -1395,7 +1395,7 @@ The server (a localhost singleton co-located with the files) parses + strips thi
 <ATTACHMENT ID="c1a5e0b2-9e3d-4f1a-8b2c-7d6e5f4a3b21" filename="b.md"/>
 ```
 
-File content is **never inlined** into the prompt. The `problem_solver` and `guide` agents hold the `read_attachment` tool, which takes a tag's `attachment_id` and returns that file's `{filename, content}`; the tool's own description tells the model to look for these tags. This (attachments manifested *after* the prompt, plus an explicit fetch step) replaced an earlier scheme that inlined full content *before* the prompt under `## Attached file: <name>` headings — models routinely failed to notice or act on attachments injected that way.
+File content is **never inlined** into the prompt. The `kodo_problem_solver` and `kodo_guide` agents hold the `read_attachment` tool, which takes a tag's `attachment_id` and returns that file's `{filename, content}`; the tool's own description tells the model to look for these tags. This (attachments manifested *after* the prompt, plus an explicit fetch step) replaced an earlier scheme that inlined full content *before* the prompt under `## Attached file: <name>` headings — models routinely failed to notice or act on attachments injected that way.
 
 Crucially, **file content is never written to `session.jsonl`.** The persisted user message stores the *clean* prompt plus opaque links (`attachments: [{id, name, stored}]`, `stored` relative to the session dir). On resume the links are re-expanded into the same `<ATTACHMENT>` tags (`HistoryProjector.load_main_messages`) — no file re-read needed, since the tags don't carry content — so the reconstructed LLM context is byte-identical. A link persisted before `id` existed gets a freshly minted one on resume so it still renders a tag, though `read_attachment` will report it unavailable (its on-disk copy predates the ID-keyed filename).
 
@@ -1523,7 +1523,7 @@ Selects which top-level agent drives the next prompt. Like `mode.set`, it applie
 
 `name` is an entry from `hello.ack`'s `agents` catalog (§4.1), **or** a legacy workflow-mode value (`guided` / `problem_solving`) left in a session persisted before the rename — both resolve to the same agent. Anything unrecognized falls back to `hello.ack`'s `default_agent`, so a stale stored selection keeps working rather than failing the prompt.
 
-The accepted set is whatever top-level agents the server has registered; there is no fixed list of modes any more. A non-selectable agent is absent from the catalog but still accepted here — which is how `judge` is reached.
+The accepted set is whatever top-level agents the server has registered; there is no fixed list of modes any more. A non-selectable agent is absent from the catalog but still accepted here — which is how `kodo_judge` is reached.
 
 Response:
 
@@ -1533,7 +1533,7 @@ Response:
 
 A `state` event follows, whose `top_agent` carries the **resolved** name — so a client that sent an alias sees the agent it actually got, not the value it typed.
 
-`judge` is **validator-only**: `kodo.validator._evaluate` sends it when it opens the second, judge session over a finished run; it is marked non-selectable so it never appears in a user-facing picker. It exists so judging a validation run doesn't go through the Problem Solver's full read/write/execute/sub-agent tool set — Problem Solver's purpose is solving user problems, not judging validator runs, so it carries none of the scoring machinery.
+`kodo_judge` is **validator-only**: `kodo.validator._evaluate` sends it when it opens the second, judge session over a finished run; it is marked non-selectable so it never appears in a user-facing picker. It exists so judging a validation run doesn't go through the Problem Solver's full read/write/execute/sub-agent tool set — Problem Solver's purpose is solving user problems, not judging validator runs, so it carries none of the scoring machinery.
 
 > Replaced `workflow.set {mode}` (removed, not deprecated — nothing accepts it). The old names live on only as read-time fallbacks for data already on disk: the `workflow_mode` key in a session's `transient.json` and the `entry_agent` tag on a `session.jsonl` line.
 
@@ -2170,7 +2170,7 @@ Control connection only. Backs the Kōdo Settings panel's "General" section's "D
   "selected": "guide", "effective": "guide", "agents": [ … ] }
 ```
 
-The ack carries the whole `.get` shape, so the panel refreshes from the response with no follow-up round trip. A `name` that is neither empty nor a **selectable** agent replies `{ "ok": false, "error": "…" }` and persists nothing — a session must not be able to start on an agent with no interactive prompt, which is what rules out `judge`.
+The ack carries the whole `.get` shape, so the panel refreshes from the response with no follow-up round trip. A `name` that is neither empty nor a **selectable** agent replies `{ "ok": false, "error": "…" }` and persists nothing — a session must not be able to start on an agent with no interactive prompt, which is what rules out `kodo_judge`.
 
 Persisted as `default_agent` in `~/.kodo/etc/settings.json` and read fresh each time the default is resolved, so live sessions see the change on their next new session without a reload.
 
@@ -2443,6 +2443,115 @@ Nor is there an invalidation event for any of the three install flows: the
 prompt catalog is re-rendered from disk on every agent turn, so a skill added
 or deleted here takes effect on the next turn with no `config.reload`
 follow-up and no push to live sessions.
+
+### 7.6l `agents.list` / `agents.delete` / `agents.install_scan` / `agents.install` / `agents.reload` — user-installed agents
+
+Control connection only, same framing as §7.6c — backs the **Kōdo Settings**
+panel's "Agents" section (kodo-vsix `AgentsSection.tsx`, `InstallAgentsModal.tsx`).
+Reads, installs and deletes the agents the user has installed under
+`~/.kodo/agents` (doc/USER_AGENTS.md).
+
+**Built-in agents are deliberately absent from every payload here.** They are
+not the user's to delete, and the picker already publishes them through
+`hello.ack`'s `agents` catalog (§7.6k).
+
+```json
+{ "type": "agents.list" }
+```
+
+→ `agents.list.ack`:
+
+```json
+{ "ok": true,
+  "root": "/home/u/.kodo/agents",
+  "agents": [
+    { "name": "reviewer", "kind": "agent", "version": "3.1.0",
+      "label": "Reviewer", "description": "Audits an existing codebase…",
+      "path": "/home/u/.kodo/agents/reviewer", "error": "" },
+    { "name": "scanner", "kind": "subagent", "version": "1.6.0",
+      "label": "Scanner", "description": "",
+      "path": "/home/u/.kodo/agents/subagents", "error": "" }
+  ] }
+```
+
+`kind` is `"agent"` (a top-level agent the user selects) or `"subagent"` (one
+another agent delegates to). A non-empty `error` is a bundle that failed to
+load, listed deliberately so a broken one is visible and deletable rather than
+silently missing — the same contract `skills.list` has (§7.6j). Top-level
+agents are listed before sub-agents, name-sorted within each kind.
+
+```json
+{ "type": "agents.install_scan", "source": "https://github.com/owner/repo" }
+```
+
+→ `agents.install_scan.ack`:
+
+```json
+{ "ok": true,
+  "candidates": [
+    { "name": "reviewer", "kind": "agent", "version": "3.1.0",
+      "installed_version": "2.0.0", "error": "" },
+    { "name": "scanner", "kind": "subagent", "version": "1.6.0",
+      "installed_version": "", "error": "" }
+  ],
+  "conflicts": "  agent reviewer   installed: 2.0.0   incoming: 3.1.0" }
+```
+
+`source` is a local directory **or** a git URL — one message for both, because
+the layout it must hold is the same either way. Nothing is written: a cloned
+source goes to a throwaway temp directory deleted before this replies.
+
+A non-empty `installed_version` is the existing-vs-incoming decision the client
+puts to the user; `conflicts` is that same set pre-rendered as the multi-line
+list to show (`SourceScan.conflict_report()`), so the panel and the CLI ask the
+question with identical words. A non-empty `error` on a candidate is an entry
+that cannot be installed at all — reported rather than dropped, so the user can
+see why the bundle they downloaded is one agent short.
+
+`{ "ok": false, "error": "…" }` when the source is unreadable, the `git` CLI is
+missing, or the clone failed.
+
+```json
+{ "type": "agents.install", "source": "https://github.com/owner/repo",
+  "replace": true, "names": ["reviewer"] }
+```
+
+→ `agents.install.ack` — `{ ok, error, installed, kept, skipped, missing }`
+plus the same `agents`/`root` listing `agents.list` returns.
+
+`replace` is the user's answer to the keep-or-replace question and applies to
+**every** conflicting entry; `names` narrows the install to a subset (omit it to
+install everything). The source is re-read rather than trusting the prior
+`agents.install_scan` — nothing is cached between the two — which is what makes
+`missing` meaningful: a source that changed in between is reported, not silently
+half-installed.
+
+```json
+{ "type": "agents.delete", "name": "reviewer", "kind": "agent" }
+```
+
+→ `agents.delete.ack` — `{ ok, error }` plus the post-deletion listing.
+`kind: "agent"` deletes the whole bundle directory; `"subagent"` deletes that
+sub-agent's prompt and contract from the shared directory. `UserAgentStore`
+re-validates that `name` is a single path component resolving inside the agents
+root, so a crafted name cannot reach outside it. A failure still carries the
+refreshed listing — the likeliest cause is a panel showing something already
+removed from disk, and the refreshed table is what makes that obvious.
+
+```json
+{ "type": "agents.reload" }
+```
+
+→ `agents.reload.ack` — `{ ok, error }` plus the listing. For the user who
+edited a bundle by hand rather than installing it.
+
+**Every mutating message above reloads the registry before replying**, so a
+newly installed agent is selectable with no server restart and the ack's listing
+is already current. `ok: false` from a reload means the rebuild failed on a
+*packaged* agent; `AgentRegistry.reload()` swaps only on success, so the
+previous working set is still live and the session the user is in keeps working.
+
+---
 
 ### 7.7 ⟪planned⟫ — standalone rules management, credential push
 

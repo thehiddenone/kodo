@@ -246,7 +246,7 @@ What is missing, in all options:
 - **A model-selection mapping** from Harbor's `provider/model` string onto
   Kōdo's `settings.json` shape.
 - **No MCP support** (planned post-MVP) → `AgentCapabilities(mcp_servers=False)`.
-- **No global kill switch for the web tools.** `web_search` / `read_webpage` /
+- **No global kill switch for the web tools.** `kodo_web_search` / `read_webpage` /
   `query_search_engine` are granted purely by agent frontmatter; there is no
   setting that disables them. In a network-disabled Harbor task they fail at
   call time rather than being withheld (see §10, R4).
@@ -542,7 +542,7 @@ Sequence, all of it protocol calls that already exist:
 2. `hello` (`MSG_HELLO`) with `client: "kodo-headless"` → `hello.ack` gives
    `session_id` and the served agent catalog.
 3. `agent.set` (`MSG_AGENT_SET`) to the requested top-level agent — default
-   `problem_solver`; `guide` is the multi-sub-agent pipeline and should be a
+   `kodo_problem_solver`; `kodo_guide` is the multi-sub-agent pipeline and should be a
    separate Harbor agent row, not a hidden default.
 4. `workspace.folders` (`MSG_WORKSPACE_FOLDERS`) binding `--root` (repeatable;
    multi-root is supported and is a Kōdo differentiator worth measuring).
@@ -637,7 +637,7 @@ so `harbor agent schema kodo.harbor:KodoAgent` documents itself:
 
 | kwarg | default | meaning |
 |---|---|---|
-| `top_agent` | `problem_solver` | which top-level agent (`agent.set`) |
+| `top_agent` | `kodo_problem_solver` | which top-level agent (`agent.set`) |
 | `turn_timeout_sec` | `3000` | Kōdo-side turn bound; **must** be < Harbor's agent timeout |
 | `autonomous` | `true` | leaving it settable makes the interactive-gate cost measurable |
 | `model_url` | `None` | OpenAI-compatible base URL → `custom_server_url` local entry (Option C) |
@@ -857,7 +857,7 @@ Harbor kills the process before `kodo-result.json` is written and the trial
 reports nothing. `preflight()` cannot see Harbor's timeout, so document the
 constraint and default `turn_timeout_sec` conservatively.
 
-**R4 — Web tools in a network-restricted task.** `web_search`, `read_webpage`
+**R4 — Web tools in a network-restricted task.** `kodo_web_search`, `read_webpage`
 and `query_search_engine` are granted by agent frontmatter with no settings-level
 kill switch today, and `read_webpage` additionally wants a Playwright browser
 the container will not have. In a `network_policy: disabled` task they fail at
@@ -872,7 +872,7 @@ with a cloud arm's.
 **R6 — What does "success" mean for Guide mode?** Harbor tasks are verified by
 tests. Kōdo's Guide pipeline produces specs, reviews and plans as real files
 under `specs/` on the way to code. A task whose verifier only runs `pytest`
-scores that work at zero. Two Harbor agent rows (`problem_solver`, `guide`) and
+scores that work at zero. Two Harbor agent rows (`kodo_problem_solver`, `kodo_guide`) and
 an explicit acknowledgement that Guide mode is being measured on an axis it was
 not designed for — or a Kōdo-authored dataset that verifies the artifacts too.
 

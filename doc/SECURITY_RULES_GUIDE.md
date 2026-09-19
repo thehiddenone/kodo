@@ -313,9 +313,9 @@ unresolvable value could be the dangerous form.
 ## 4a. Step 3a — toolchain-builder scripts
 
 **The question:** does this segment's own executable directly invoke one of
-`toolchain_builder`'s generated `scripts/<step>.{sh,ps1}` entrypoints
+`kodo_toolchain_builder`'s generated `scripts/<step>.{sh,ps1}` entrypoints
 (`build`/`format`/`static_analysis`/`test`/`full_build` —
-`subagent_toolchain_builder.md` Phase 4), resolved under a workspace root?
+`subagent_kodo_toolchain_builder.md` Phase 4), resolved under a workspace root?
 
 Checked **per segment**, right after §4 and before §5 — ahead of the rule
 table, since the script's own basename (`build.sh`, or just `build` once

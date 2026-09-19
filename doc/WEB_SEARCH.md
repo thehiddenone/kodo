@@ -1,6 +1,6 @@
-# Web Search — How the `web_search` Tool Works
+# Web Search — How the `kodo_web_search` Tool Works
 
-> From a free-text query to a themed research report: the `web_search`
+> From a free-text query to a themed research report: the `kodo_web_search`
 > agent that plans its own discovery/read/synthesis loop, its two backends
 > (Playwright browsers and `curl_cffi`), its pacing/memory tools, and its
 > timeout model.
@@ -8,15 +8,15 @@
 Companion to [TOOLS.md](TOOLS.md) (tool subsystem mechanics),
 [INTERNALS.md](INTERNALS.md) (layering), and [READ_WEBPAGE.md](READ_WEBPAGE.md)
 (the sibling single-page fetch tool — same `kodo.websearch` package and fetch
-backends, but an independent, un-agent-driven path). `web_search` is
-currently granted only to the shared `investigator` sub-agent (spawnable by
-both top-level agents, `problem_solver` and `guide`).
+backends, but an independent, un-agent-driven path). `kodo_web_search` is
+currently granted only to the shared `kodo_investigator` sub-agent (spawnable by
+both top-level agents, `kodo_problem_solver` and `kodo_guide`).
 
 ---
 
 ## 1. Overview
 
-`web_search` used to be a fixed, deterministic three-phase pipeline
+`kodo_web_search` used to be a fixed, deterministic three-phase pipeline
 (discover all four engines in parallel → scrape every page → summarize with
 a second silent LLM pass). It is now driven by a real agent:
 
@@ -30,7 +30,7 @@ a second silent LLM pass). It is now driven by a real agent:
  └───────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
- ┌─ web_search agent (subagent_web_search.md, capability: medium) ──────────┐
+ ┌─ web_search agent (subagent_kodo_web_search.md, capability: medium) ──────────┐
  │  a silent, multi-round tool-calling turn (_run_silent_tool_loop_turn)    │
  │  the agent itself decides, round by round:                              │
  │   - query_search_engine(engine, query, browser?) — one engine per call  │
@@ -70,8 +70,8 @@ completed", never an error surfaced to the run.
 | `curl` backend fetch | [kodo/websearch/_curlfetch.py](../src/kodo/websearch/_curlfetch.py) | T0 leaf |
 | `curl` backend extraction (no live DOM) | [kodo/websearch/_htmlextract.py](../src/kodo/websearch/_htmlextract.py), [_engines_static.py](../src/kodo/websearch/_engines_static.py) | T0 leaf |
 | Agent-managed pacing/memory store | [kodo/websearch/_state.py](../src/kodo/websearch/_state.py) (`WebSearchStateStore`) | T0 leaf |
-| `web_search` agent prompt | [subagents/subagent_web_search.md](../src/kodo/agents/subagents/subagent_web_search.md) | T3 (`kodo.agents`) |
-| `web_search` agent spec | [subagents/specs/web_search.json](../src/kodo/agents/subagents/specs/web_search.json) | T3 |
+| `kodo_web_search` agent prompt | [subagents/subagent_kodo_web_search.md](../src/kodo/agents/subagents/subagent_kodo_web_search.md) | T3 (`kodo.agents`) |
+| `kodo_web_search` agent spec | [subagents/specs/kodo_web_search.json](../src/kodo/agents/subagents/specs/kodo_web_search.json) | T3 |
 | Silent tool-loop turn primitive | [runtime/_engine/_llm.py](../src/kodo/runtime/_engine/_llm.py) (`_run_silent_tool_loop_turn`) | T4 |
 | Engine service (`run_web_search_agent`) | [runtime/_engine/_subagents.py](../src/kodo/runtime/_engine/_subagents.py) (`_run_web_search_agent`) | T4 |
 | Agent-memory state file | `~/.kodo/websearch/agent_state.json` | on disk |
@@ -130,7 +130,7 @@ read whichever pages `query_search_engine` surfaced as promising, with
 
 ## 5. Pacing and memory: the four dedicated tools
 
-Exclusive to the `web_search` agent by convention (not listed in any other
+Exclusive to the `kodo_web_search` agent by convention (not listed in any other
 agent's frontmatter `tools:`):
 
 | Tool | Purpose |
@@ -145,7 +145,7 @@ agent's frontmatter `tools:`):
 Replaces the old deterministic 30-minute `CooldownStore`. A generic
 key-value store persisted at `~/.kodo/websearch/agent_state.json`, **shared
 machine-wide across sessions** (its 12-hour TTL per entry far outlives any
-single, 600s-capped `web_search` call, so this memory has to survive across
+single, 600s-capped `kodo_web_search` call, so this memory has to survive across
 calls). Same atomic-write/forgiving-read conventions as every other file
 under `~/.kodo/websearch/`.
 
@@ -158,7 +158,7 @@ Each entry's TTL resets on every write to that key. Two kinds of value:
   elapsed since it was recorded**, freshly computed on every read — not the
   timestamp, and not the string `<time_mark>`.
 
-The agent's prompt (`subagent_web_search.md`) spells out the protocol with a
+The agent's prompt (`subagent_kodo_web_search.md`) spells out the protocol with a
 worked example: time-mark `<engine>_last_query` right before querying an
 engine, so a later `get_web_search_state` call tells it how long it's been;
 record a `<engine>_status` note when an engine serves a wall, so it isn't
@@ -169,9 +169,9 @@ with agent judgment — the model decides pacing instead of a fixed timer.
 
 Two turn-loop shapes already existed in the engine before this: the full,
 feed-visible `_run_agent_turn`/`_drive_subsession` (a real subsession — but
-subsessions can't nest, and `web_search` is typically called *from* a
+subsessions can't nest, and `kodo_web_search` is typically called *from* a
 sub-agent, the investigator), and the single-shot, no-dispatch
-`_run_silent_return_turn` (`compactor`/the retired `web_summarizer` — no tool
+`_run_silent_return_turn` (`kodo_compactor`/the retired `web_summarizer` — no tool
 loop at all, just one call captured for its `return_result`; session titling
 used to be a third example here but is now `kodo.titling` — a plain HTTP chat
 completion against its own dedicated llama-server, outside the engine's
@@ -197,21 +197,21 @@ Bounded two ways:
   valve against a runaway loop.
 
 `_run_web_search_agent` ([`runtime/_engine/_subagents.py`](../src/kodo/runtime/_engine/_subagents.py))
-drives this: resolves the `web_search` agent (medium capability), computes
+drives this: resolves the `kodo_web_search` agent (medium capability), computes
 the deadline, builds a dispatcher scoped to it (`ToolContext.deadline` set,
 read by `remaining_time`/`wait`), and returns the agent's `return_result`
 payload — or, if it never produced one, `{"themes": [], "note": "Search
 timed out before a report could be produced."}`.
 
-`web_search` is engine-driven only (`_DIRECT_ONLY_AGENTS`) — never spawnable
+`kodo_web_search` is engine-driven only (`_DIRECT_ONLY_AGENTS`) — never spawnable
 via `run_subagent`, exactly like the agents it replaced.
 
 ### Live narration — the "Web Search is in progress" panel
 
-`web_search` runs silently to the *calling agent* (the investigator never sees
+`kodo_web_search` runs silently to the *calling agent* (the investigator never sees
 intermediate steps, only the final report), but the panel shows the user a
 live, collapsible "Web Search is in progress" block so a multi-minute run
-doesn't look like a stall. The agent's prompt (`subagent_web_search.md`,
+doesn't look like a stall. The agent's prompt (`subagent_kodo_web_search.md`,
 "Narrating Your Work") requires it to write one or two plain sentences before
 each tool call (or small group of calls) explaining what it's about to do and
 why — not a caption of the call, an actual decision.
@@ -222,7 +222,7 @@ round's tool calls dispatch — the loop itself stays agent-agnostic and knows
 nothing about feed events or persistence. `_run_web_search_agent` is the only
 caller today; it buffers every round's text and streams it live via
 `EVT_WEB_SEARCH_NOTE` (`web_search.note`, `{tool_call_id, text}`,
-WS_PROTOCOL.md §5.5e), correlated with the `web_search` call's own
+WS_PROTOCOL.md §5.5e), correlated with the `kodo_web_search` call's own
 `agent.tool_call_prep` card by `tool_call_id` (the calling agent's
 `ToolContext.current_tool_use_id`, threaded through
 `EngineServices.run_web_search_agent(task_input, tool_call_id)`).
@@ -241,10 +241,10 @@ Keeping it a side channel means a crash mid-run just loses whatever wasn't
 flushed yet — acceptable, since this is a UI visibility aid, not part of the
 agent's real conversation. `session.history`'s `tool_call` entries carry the
 result as `webSearchNotes: string[]` (empty for every tool other than
-`web_search`).
+`kodo_web_search`).
 
 The client also reuses the existing `run_command` machinery for two more
-pieces of visibility, gated to `web_search` alongside `run_command`: (1)
+pieces of visibility, gated to `kodo_web_search` alongside `run_command`: (1)
 `agent.tool_call_prep` carries `timeout_seconds` (the caller's `timeout`, or
 `_DEFAULT_WEB_SEARCH_TIMEOUT_S` when omitted) and (2)
 `agent.tool_call_in_progress` fires once the security gate clears, so the
@@ -281,7 +281,7 @@ attempt to defeat rate-limiting beyond pacing — is unchanged.
 
 ## 8. Security posture
 
-`web_search` is `SecurityImpact.MODERATE` and available in autonomous mode.
+`kodo_web_search` is `SecurityImpact.MODERATE` and available in autonomous mode.
 `query_search_engine` and `read_webpage` are `SecurityImpact.LOW`
 (read-only network access); the four pacing tools are `SecurityImpact.NONE`
 (no real-world effect beyond an ephemeral local state file or a sleep). The

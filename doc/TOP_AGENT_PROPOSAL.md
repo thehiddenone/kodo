@@ -1,9 +1,18 @@
 # Proposal — User-Installed Top-Level Agents
 
-> Status: **the rationale record.** Written 2026-09-16. Phases 1-3 of the roadmap
-> below are **implemented** — the whole of TOP_AGENT_PLAN.md is done. Phase 4
-> here — the user-installed `~/.kodo/agents/` tier this document is actually
-> about — is not started, and is all that remains. The implementation plan and its running record live in
+> Status: **the rationale record.** Written 2026-09-16. Everything below is now
+> **implemented**, including phase 4 — the user-installed `~/.kodo/agents/` tier
+> this document is actually about. The shipped spec is
+> [USER_AGENTS.md](USER_AGENTS.md); read this one for *why* those options and
+> not the others.
+>
+> Four things landed differently from the sketch below, each for a reason the
+> spec states: bundles are **directories**, not flat files (§4.1); the
+> namespace is kept clean by a reserved **`kodo_` prefix on every built-in
+> agent** rather than by refusing a shadowing name (§4.4); user **sub-agents**
+> are supported from the start, in one shared directory (§4.5 deferred them);
+> and there is **no first-appearance trust prompt** (§5 proposed one) — the
+> directory is treated exactly as `~/.kodo/skills/` is. The implementation plan and its running record live in
 > [TOP_AGENT_PLAN.md](TOP_AGENT_PLAN.md); this document stays as *why* those
 > options and not the others.
 > Question asked: *"what should be done to allow creation of new top level agents
@@ -75,7 +84,7 @@ Five findings, in order of importance:
 |---|---|
 | System prompt | the `agent_<name>.md` body |
 | Tool grants | frontmatter `tools:`, validated against `kodo.toolspecs` at load |
-| Terminal behavior | a *tool* property. `judge` ends its run via `submit_evaluation`, which sets `ToolContext.stop_requested` from its own dispatch — no engine branch exists for it |
+| Terminal behavior | a *tool* property. `kodo_judge` ends its run via `submit_evaluation`, which sets `ToolContext.stop_requested` from its own dispatch — no engine branch exists for it |
 | Sub-agent roster | frontmatter `subagents:`, gated at dispatch by `AgentRegistry.allowed_subagents` |
 | Capability tier / display name | frontmatter `capability:` / `display_name:` |
 | Prompt validation | `{SHARED:working_rules}` + `{SHARED:security}` required ([_registry.py:325](../src/kodo/agents/_registry.py#L325)); editing discipline bound to `modifies_files`; findings blocks bound to `get_findings`; `{SKILLS}` bound to `use_skill`; `{SHARED:task_input}` and `{PHASE:…}` **rejected** on any agent with no `SubAgentSpec` |
@@ -157,7 +166,7 @@ a second validation site is not a hazard but a guaranteed bug.
 **(a) `ctx.mode != "guided"`** — [_get_findings.py:30](../src/kodo/tools/_get_findings.py#L30),
 [_guided_dev_status.py:28](../src/kodo/tools/_guided_dev_status.py#L28).
 `_make_dispatcher` passes `effective_workflow_mode` to **every** agent,
-sub-agents included. A user agent that spawns `coder` / `architect` / any critic
+sub-agents included. A user agent that spawns `kodo_coder` / `kodo_architect` / any critic
 gets `get_findings` answering `{"error": …}` — and the entire author/critic
 review loop is built on that backlog ([FINDINGS.md](FINDINGS.md) §3).
 
@@ -165,7 +174,7 @@ review loop is built on that backlog ([FINDINGS.md](FINDINGS.md) §3).
 > `ToolContext.mode` — `kodo.tools` now has no notion of workflow mode at all.
 
 **Fix: delete both checks.** `guided_dev_status` is granted to exactly one agent
-(`agent_guide.md`), so its mode check is pure redundancy behind the tool grant.
+(`agent_kodo_guide.md`), so its mode check is pure redundancy behind the tool grant.
 `get_findings` is granted to the guide plus 17 pipeline sub-agents, which no
 other entry agent can reach *unless it lists them* — in which case refusing the
 tool is the wrong answer. **The grant is already the gate**, and a second gate
@@ -240,7 +249,7 @@ Three reasons to prefer JSON over more frontmatter keys, all sharpened by D:
 
 - The frontmatter parser ([_loader.py:294](../src/kodo/agents/_loader.py#L294))
   is hand-rolled, flat-only, and returns everything as `str`. It already carries
-  bespoke coercion for `standalone` / `user_review` / `planner`. Adding
+  bespoke coercion for `standalone` / `user_review` / `kodo_planner`. Adding
   `rank: 30` and `selectable: true` makes that worse — and under D it is parsing
   **third-party text**, where every added key is another way to be wrong.
 - `mode` and `label` are **public protocol values**: persisted in session state,
@@ -423,7 +432,7 @@ That reframing changes the mitigation:
    `{SHARED:security}`, name collision, dangling `critic:`, `subagents:` entry
    that does not exist — each asserting it produces a **row**, not an exception,
    and that the *other* agents still load.
-3. **Prompt quality is untouched by all of this.** `agent_guide.md` is 326 lines
+3. **Prompt quality is untouched by all of this.** `agent_kodo_guide.md` is 326 lines
    of prompt; the wiring this proposal removes is about 20. D makes adding an
    entry agent *possible*, not adding a *good* one *easy*. Ship a
    `kodo agents scaffold <name>` that emits a valid skeleton with the mandatory
@@ -434,7 +443,7 @@ That reframing changes the mitigation:
 
 ## 7. Decisions still needed
 
-1. **`selectable: false` for user agents — keep it?** It exists for `judge`
+1. **`selectable: false` for user agents — keep it?** It exists for `kodo_judge`
    (wire-only, validator-driven). A user agent that opts out of the picker is
    only reachable by something sending `workflow.set` directly. Probably keep
    for symmetry, but it has no user story yet.

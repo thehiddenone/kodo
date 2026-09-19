@@ -99,9 +99,9 @@ would be ambiguous against a sub-agent.
 
 ```
 src/kodo/agents/               # top-level agents + what both kinds share
-  agent_guide.md               #   prompt, keeping its `display_name:` (see §4.3a)
-  agent_problem_solver.md
-  agent_judge.md
+  agent_kodo_guide.md               #   prompt, keeping its `display_name:` (see §4.3a)
+  agent_kodo_problem_solver.md
+  agent_kodo_judge.md
   shared_*.md                  #   included by BOTH kinds, hence the top level
   guide.json                   #   the config half — label, description, rank
   problem_solver.json
@@ -262,7 +262,7 @@ Smaller notes:
   argument is evaluated at import, so it cannot ask the registry; every real call
   site passes the name). Every runtime path asks `default_top_agent()` instead.
 - The phase-1 table had no `label`, so labels came from frontmatter
-  `display_name` — which for `guide` is **"Kōdo"**, where the picker has always
+  `display_name` — which for `kodo_guide` is **"Kōdo"**, where the picker has always
   said "Guide". **Settled in phase 2** (§4.3a deviation 1): `label` and
   `display_name` are separate fields, and `guide.json` sets
   `"label": "Guide"`.
@@ -334,7 +334,7 @@ Three deviations, all discovered while building it:
 
 **1. `label` and `display_name` coexist; §4.2's rule 3 was wrong.** That rule
 said an `agent_*.md` declaring `display_name` while its config declares `label`
-is an error. It is not — the two name *different things*, and `guide` is the
+is an error. It is not — the two name *different things*, and `kodo_guide` is the
 standing proof: the feed calls the agent "Kōdo" (`display_name`), the picker
 calls the choice "Guide" (`label`). Rejecting the pair would have renamed a
 control the user has always known by the other name. The config's `label` wins
@@ -436,7 +436,7 @@ Both repos. Lands with phase 4.
 
 **Values** are coerced through `registry.resolve_top_agent()` on every read path,
 so `"guided"` / `"problem_solving"` in an existing `transient.json` resolve to
-`guide` / `problem_solver`. Nothing on disk needs rewriting.
+`kodo_guide` / `kodo_problem_solver`. Nothing on disk needs rewriting.
 
 ### 5.2 The served catalog
 
@@ -504,10 +504,10 @@ Implemented 2026-09-16. `3972 passed`, lint and mypy clean.
 
 Everything in §5.1-5.3 landed as written. Three things are worth recording:
 
-**1. `default: true` had to move from `guide` to `problem_solver`.** Not a
+**1. `default: true` had to move from `kodo_guide` to `kodo_problem_solver`.** Not a
 preference — a forced consequence. Phase 4 has the client adopt `hello.ack`'s
 `default_agent` for a brand-new session instead of hardcoding one, and kodo-vsix
-has always started new sessions on Problem Solver. Leaving the flag on `guide`
+has always started new sessions on Problem Solver. Leaving the flag on `kodo_guide`
 would have silently changed the agent every new session begins with.
 
 That also merges two things that had drifted apart: the agent a **fresh session
@@ -590,7 +590,7 @@ again.
 Everything in §6 landed as written. Four things are worth recording:
 
 **1. `coerceTopAgent` does *not* validate against the served catalog.** §6 said
-it should. That is wrong, and the reason is `judge`: the catalog carries only
+it should. That is wrong, and the reason is `kodo_judge`: the catalog carries only
 **selectable** agents, so a validator session legitimately runs an agent the
 catalog omits — checking against it would reject the very value the server just
 confirmed. Every value reaching this function comes from the server, already
@@ -600,7 +600,7 @@ the same thing, which is what made the redundancy obvious.
 
 **2. The picker label falls back to the bare agent name.** `_agentLabel` looks
 the name up in the catalog and uses the name itself when it is absent — the same
-`judge` case. Showing `judge` beats showing nothing, and beats showing another
+`kodo_judge` case. Showing `kodo_judge` beats showing nothing, and beats showing another
 agent's label.
 
 **3. `SessionListEntry` exists twice**, once in `settings-panel/types.ts` (host)
@@ -626,7 +626,7 @@ The client now hardcodes **no** agent name anywhere:
 **Server-side tests added** for the contract phase 4 depends on, which had none:
 `hello.ack` carries every selectable agent with all four fields and the right
 order; non-selectable agents are absent from it; `agent.set` still accepts one
-anyway; and a legacy `"guided"` resolves to `guide` in the state echo. That last
+anyway; and a legacy `"guided"` resolves to `kodo_guide` in the state echo. That last
 one needed care — the engine emits `state` *before* the ack, so reading the
 response first discards the event under test.
 
@@ -690,7 +690,7 @@ real only if that check is ever relaxed — which the user-installed tier may
 want, and which is the right time to add it.
 
 **3. A non-selectable agent is refused, not just hidden.** `default_agent.set`
-rejects `judge` with `{ok: false}` and persists nothing, and
+rejects `kodo_judge` with `{ok: false}` and persists nothing, and
 `default_top_agent()` ignores such a value if one reaches settings.json by
 hand. Hiding it from the picker is not enough — the setting is a file a user can
 edit, and a session that began on an agent with no interactive prompt would look
@@ -702,7 +702,7 @@ Smaller notes:
   response with no follow-up round trip (unlike the `housekeeper_llm` pair it is
   modelled on, whose ack carries only `{ok, selected}`).
 - An alias is accepted as a preference: `default_agent: "guided"` resolves to
-  `guide`, consistent with every other read path.
+  `kodo_guide`, consistent with every other read path.
 - The panel's first row is "Use Kōdo's default (Problem Solver)" — naming what
   it resolves to, so clearing the preference is not a blind choice.
 
@@ -724,7 +724,7 @@ Smaller notes:
 |---|---|
 | 1 | `test_engine_worker.py` / `test_engine_turns.py` / `test_engine_llm.py` reference the deleted wrappers — retarget to `_run_top_agent`. New: every registered top agent dispatches; an unknown selection falls back to the default **and emits a user-visible error**; `test_main.py:39`'s `_PINNED_AGENT` still resolves. |
 | 2 | Parametrize over `top_agents()` rather than naming Guide/PS/Judge — the CLAUDE.md rule about deriving from the live registry. New: each of the five §4.2 cross-checks raises; the §4.3 collector reports **all** problems, not the first, and names the agent at fault. |
-| 3 | `agent.set` accepts a name and each alias, rejects unknown; `hello.ack` omits `selectable: false` entries but `agent.set` still accepts them; a `transient.json` holding `"problem_solving"` resumes onto `problem_solver`; a `session.jsonl` holding `entry_agent` still resumes. |
+| 3 | `agent.set` accepts a name and each alias, rejects unknown; `hello.ack` omits `selectable: false` entries but `agent.set` still accepts them; a `transient.json` holding `"problem_solving"` resumes onto `kodo_problem_solver`; a `session.jsonl` holding `entry_agent` still resumes. |
 | 5.3 | `new_revision` entries carry `top_agent`; `derive_status` and `last_revision_timestamp` are unaffected (they never read the field). |
 | 4 | kodo-vsix: picker renders N rows from a served catalog; `coerceTopAgent` keeps an unknown value out without collapsing to Guide; a new session adopts the served default. |
 | 7 | `default_agent` precedence, all three levels; an unknown or non-selectable value falls through instead of raising. |

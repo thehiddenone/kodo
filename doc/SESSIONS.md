@@ -377,7 +377,7 @@ instead.
 ### Typed sub-agent interface (input/output schemas)
 
 Agent↔sub-agent interaction is typed, mirroring tools. Every sub-agent except
-the top-level agents (`guide`, `problem_solver`) has a `SubAgentSpec`
+the top-level agents (`kodo_guide`, `kodo_problem_solver`) has a `SubAgentSpec`
 (`kodo.agents.subagents.specs`, one JSON file per agent) declaring an `input_schema` and an
 `output_schema`. Neither schema is ever restated as prose in a system prompt.
 The registry auto-grants such agents the terminal `return_result` tool and a
@@ -426,7 +426,7 @@ schemas either — those reach the caller as real JSON Schema on its own
   There is no `previous_artifact_id`/`for_revision_artifact_ids` plumbing —
   `for_revision_paths` is the member list, since one round revises the whole
   set.
-- **Engine-driven agents.** `compactor` carries a spec and returns through
+- **Engine-driven agents.** `kodo_compactor` carries a spec and returns through
   `return_result` (`{summary}`); the silent `_run_silent_return_turn` grants
   it the tool and captures the payload, with raw text as a fallback. Session
   titling used to work the same way (`session_titler`, a sub-agent LLM call
@@ -464,7 +464,7 @@ back it, both keyed by `base_llm` (doc/LLM_REGISTRY.md §4.5/§4.5a):
 `""` means the active model has no thinking family at all — a local model
 outside both families (e.g. Qwen3-Coder-Next-80B, or any `custom_*` registry
 entry). Every LLM call the session's engine makes — the main turn, the
-security judge, compaction, `web_search`'s tool loop — carries this one value
+security judge, compaction, `kodo_web_search`'s tool loop — carries this one value
 (`LLMPlumbingMixin._thinking_kwargs`), not a per-call override; it is a
 whole-session setting, the same way `command_control` is. Each plugin
 translates the tier into its provider's own request shape and validates it
@@ -520,7 +520,7 @@ such as `temperature`/`top_k`/`min_p`, edited from the ⚙ button in the chat
 footer. Full reference: [SAMPLING.md](SAMPLING.md).
 
 Shares thinking level's shape — per-session, server-owned, applied to *every*
-local LLM call the session makes (main turn, compaction, `web_search`'s tool
+local LLM call the session makes (main turn, compaction, `kodo_web_search`'s tool
 loop), never to a cloud call — but differs on the two points that matter:
 
 - **Keyed by quant, not flat.** `sampling` is
@@ -655,7 +655,7 @@ Narrative Author"). The sub-agent's own streamed work appears between the two
 dividers.
 
 Display names come from the sub-agent's `display_name:` frontmatter field, or are
-derived by title-casing the agent name (`narrative_author` → "Narrative Author")
+derived by title-casing the agent name (`kodo_narrative_author` → "Narrative Author")
 when not set. The Guide's display name is **"Kōdo"**.
 
 On reconnect, the client requests `session.history`. **The server hydrates one

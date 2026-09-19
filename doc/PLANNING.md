@@ -175,7 +175,7 @@ and the ids always match the execution order.
 ### What else a planner may return
 
 Anything. The extra fields pass through to the caller untouched; the engine looks
-at exactly two. In particular the shipped `planner` also returns
+at exactly two. In particular the shipped `kodo_planner` also returns
 `plan_warranted` / `reason`, which the engine **deliberately does not read** —
 "it gave me no tasks" is the same fact as `plan_warranted: false`, and reading
 the flag would put one agent's private vocabulary into the engine.
@@ -427,7 +427,7 @@ the host posts has no case.
 
 ## 7. Who gets the tools
 
-Today: the Problem Solver only, granted in `agent_problem_solver.md`'s `tools:`
+Today: the Problem Solver only, granted in `agent_kodo_problem_solver.md`'s `tools:`
 list. Nothing is special-cased — the tools read the plan out of `ToolContext`, so
 any agent whose frontmatter lists them works.
 

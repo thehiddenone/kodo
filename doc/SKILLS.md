@@ -4,6 +4,12 @@
 > instruction packs under `~/.kodo/skills`, surfaced to agents by progressive
 > disclosure and managed from the Kōdo Settings panel's **Skills** section or
 > `python -m kodo`.
+>
+> A skill teaches an agent how to do a kind of task. To install a whole
+> **agent** instead — one that appears in the picker — see
+> [USER_AGENTS.md](USER_AGENTS.md), which is modelled on this feature and shares
+> its fail-soft loading, its install-from-repo flow, and its Settings panel
+> shape.
 
 ---
 
@@ -321,25 +327,25 @@ at construction, not at runtime. `test_agents.py` re-runs the same parity check
 over every shipped agent file, reading the tool name off the live `ToolSpec`
 rather than hardcoding it, so a rename moves the test with it.
 
-**Shipped with the grant:** `problem_solver` — the top-level agent positioned to
+**Shipped with the grant:** `kodo_problem_solver` — the top-level agent positioned to
 decide that a task matches a skill before it hands work to a sub-agent — plus
-every sub-agent that itself writes code or documents: `architect`,
-`developer`, `e2e_test_coder`, `e2e_test_designer`, `functional_designer`,
-`narrative_author`, `requirements_author`, `test_coder`, `test_designer`, and
-`coder`. `guide` does not carry the grant — it talks to the user but never
+every sub-agent that itself writes code or documents: `kodo_architect`,
+`kodo_developer`, `kodo_e2e_test_coder`, `kodo_e2e_test_designer`, `kodo_functional_designer`,
+`kodo_narrative_author`, `kodo_requirements_author`, `kodo_test_coder`, `kodo_test_designer`, and
+`kodo_coder`. `kodo_guide` does not carry the grant — it talks to the user but never
 produces the code or documents a skill would guide.
 
 **Opted out, by category, not by omission:**
 
-- **Critics** (`architect_critic`, `code_critic`, `e2e_test_code_critic`,
-  `e2e_test_design_critic`, `functional_design_critic`, `requirements_critic`,
-  `test_design_critic`) and `judge` — they evaluate someone else's output
+- **Critics** (`kodo_architect_critic`, `kodo_code_critic`, `kodo_e2e_test_code_critic`,
+  `kodo_e2e_test_design_critic`, `kodo_functional_design_critic`, `kodo_requirements_critic`,
+  `kodo_test_design_critic`) and `kodo_judge` — they evaluate someone else's output
   against a spec; they never author anything a skill would guide.
-- **Toolchain agents** (`toolchain_builder`, `toolchain_depsmgr`) — their task
+- **Toolchain agents** (`kodo_toolchain_builder`, `kodo_toolchain_depsmgr`) — their task
   is fixed by the toolchain itself, not by a user-installed convention.
-- **Read-only / investigative agents** (`planner`, `investigator`,
-  `web_search`) — they gather and reason, they don't produce the deliverable.
-- `compactor` — a single-shot transcript rewriter with no filesystem tools at
+- **Read-only / investigative agents** (`kodo_planner`, `kodo_investigator`,
+  `kodo_web_search`) — they gather and reason, they don't produce the deliverable.
+- `kodo_compactor` — a single-shot transcript rewriter with no filesystem tools at
   all.
 
 Granting or revoking the pair (`use_skill` tool + `{SKILLS}` token) is a

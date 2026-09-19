@@ -443,7 +443,7 @@ share one `toolchain/upp` and `toolchain/rvp`. The task is a CLI Fibonacci
 number calculator (1-indexed, `N` as a command-line argument), with tests and
 a toolchain explicitly requested. This family exercises **Problem Solver's
 toolchain triggers** (an explicit "write tests" + "set up the toolchain"
-ask), so a clean run spawns `toolchain_builder` for the named language; its
+ask), so a clean run spawns `kodo_toolchain_builder` for the named language; its
 `_rvp` is also the first to lean on the judge's `toolchain_build` capability
 (§9.2) to get real build/test evidence rather than inferring from a
 read-only pass, and explicitly excludes big-number/overflow behavior from
@@ -537,7 +537,7 @@ not masquerade as a low-scoring run), `run_scenario` calls
    UPP's per-call `llm.complete` override, the judge's turns are ordinary
    session dispatch with no per-call hook to ride, so this is the only place
    left to pin it. Then push the **same** `workspace.folders` payload, and
-   pin friction-free modes (autonomous, **`judge`** workflow,
+   pin friction-free modes (autonomous, **`kodo_judge`** workflow,
    allow_all/permissive — its gates are answered by a plain `ScriptedUser`);
 3. submit one judge turn: the RVP + a mechanical context block — workspace
    root paths, the PUT(s), and the full interaction log (every question /
@@ -549,7 +549,7 @@ not masquerade as a low-scoring run), `run_scenario` calls
    text is polluted with exploration narration + tool-argument fragments, so
    asking the judge to *print* a JSON verdict is unreliable. Instead the judge
    submits `{score, report}` through the `submit_evaluation` tool (a `NONE`-
-   impact tool the `judge` agent declares, `kodo.toolspecs.
+   impact tool the `kodo_judge` agent declares, `kodo.toolspecs.
    SUBMIT_EVALUATION`), and `_verdict_from_tool_calls` reads the values off
    that call's `agent.tool_call_detail` rows — structured, no text parsing.
    `_parse_score` (fenced / bare / embedded JSON) stays as a **fallback** for
@@ -557,26 +557,26 @@ not masquerade as a low-scoring run), `run_scenario` calls
    follow-up turn asking for the verdict again (default 3 attempts), then
    `EvaluationError`.
 
-**The `judge` agent** (`agent.set` name `"judge"`, `kodo.agents.agent_judge.md`)
+**The `kodo_judge` agent** (`agent.set` name `"judge"`, `kodo.agents.agent_kodo_judge.md`)
 is a **dedicated, validator-only top-level agent** — almost entirely read-only
 (`read_file`, `find_files`, `find_text_in_files`, `submit_evaluation`), no
 editing, no general command execution, no sub-agents, no `ask_user`. It also
 carries one narrow, scoped exception: `toolchain_build`, the same tool
-Problem Solver/`toolchain_builder` runs use to execute a project's generated
+Problem Solver/`kodo_toolchain_builder` runs use to execute a project's generated
 `scripts/<step>.{sh,ps1}` build/format/static-analysis/test pair. This lets a
 scenario whose RVP asks for it get *real, executed* evidence — actual build
 and test-suite output — instead of the judge only inferring correctness by
 reading scripts, without granting it any broader command-execution or editing
-capability. `agent_judge.md`'s own prose gates the tool to RVP-directed use:
+capability. `agent_kodo_judge.md`'s own prose gates the tool to RVP-directed use:
 don't invoke it against a project whose rubric never asked for a toolchain
 check. Earlier the judge turn ran as a `problem_solving` session, i.e.
-through the full `problem_solver` agent (read/write/execute/sub-agent-spawning
+through the full `kodo_problem_solver` agent (read/write/execute/sub-agent-spawning
 tools, none of which judging needs) — a single-responsibility violation kept
-only for lack of a narrower entry point. `judge` is a third top-level agent
+only for lack of a narrower entry point. `kodo_judge` is a third top-level agent
 value alongside `guided` and `problem_solving` (WS_PROTOCOL.md §5.1/§7.4); it
 is wired **only** in the engine and the validator harness — kodo-vsix's
 workflow picker still offers just `guided`/`problem_solving` and never sends
-`judge`, so it stays entirely invisible to and unreachable from the
+`kodo_judge`, so it stays entirely invisible to and unreachable from the
 extension.
 
 **Scope of the verdict.** The judge scores the **whole delivery**, not just
@@ -594,7 +594,7 @@ own scoring rules (start at 100, subtract per distinct defect, deduction sized
 to severity, across all three axes) are the **default**; a scenario's RVP may
 supply its own scoring guide instead, which takes precedence. The shipped
 `tictactoe/rvp` deliberately carries **no** scoring band of its own — it is a
-task rubric only, deferring the arithmetic to `agent_judge.md`.
+task rubric only, deferring the arithmetic to `agent_kodo_judge.md`.
 
 The verdict lands in three places: `ScenarioResult.score` (+ the full
 `EvaluationResult`), `<run_dir>/report.md` (human-readable score + report),
@@ -610,7 +610,7 @@ a whole session turn cannot be grammar-constrained; a terminal tool call is
 the equivalent structured-return channel for the agentic side.
 
 Trade-off, made explicitly: judging through a kodo session means the verdict
-is *mediated by kodo's own agent stack* (the judge's `judge`-workflow run is
+is *mediated by kodo's own agent stack* (the judge's `kodo_judge`-workflow run is
 part of the measurement chain). That is what buys tool access to the
 workspace ("path to generated code"), and the judge stack is held constant
 across scenarios, so comparisons between LUTs stay apples-to-apples.
@@ -696,7 +696,7 @@ thinking family) mirror the per-round timeout/thinking-level knobs §9 already
 establishes.
 
 Unlike the RVP judge (§9.2), the summary round is **not** a full agentic
-session — no workspace, no tools, no `judge` workflow. Its input is every
+session — no workspace, no tools, no `kodo_judge` workflow. Its input is every
 entry's *already-generated* report text (score + the RVP judge's write-up),
 which is compact and needs no tool-based exploration; a real session would be
 unnecessary machinery. Instead it is one session-less `llm.complete` call —

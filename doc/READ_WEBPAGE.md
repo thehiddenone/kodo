@@ -5,11 +5,11 @@
 > `content_filter` levels, its SSRF guard, and its anti-bot failure behavior.
 
 Companion to [WEB_SEARCH.md](WEB_SEARCH.md) (the sibling `query_search_engine`/
-`web_search` tools, which share the same `kodo.websearch` fetch backends but
+`kodo_web_search` tools, which share the same `kodo.websearch` fetch backends but
 serve a different purpose — querying a search engine vs. reading a known
 page) and [TOOLS.md](TOOLS.md) (tool subsystem mechanics). The tool is
-currently granted only to the shared `investigator` sub-agent (spawnable by
-both top-level agents, `problem_solver` and `guide`) and the `web_search` agent.
+currently granted only to the shared `kodo_investigator` sub-agent (spawnable by
+both top-level agents, `kodo_problem_solver` and `kodo_guide`) and the `kodo_web_search` agent.
 
 ---
 
@@ -41,7 +41,7 @@ shaped by `content_filter`:
                 {"content": "..."}     or     {"error": "..."}
 ```
 
-Unlike `web_search`/`query_search_engine`, there is no discovery phase (the
+Unlike `kodo_web_search`/`query_search_engine`, there is no discovery phase (the
 URL is given) and no cooldown: a page that walls the tool off just returns an
 `error` for that one call — repeating the exact same call (same URL, same
 `browser`) will fail the same way, though a *different* `browser` choice may
@@ -176,5 +176,5 @@ is read-only toward the user's machine (its only writes are
 and its SSRF guard (§3) keeps it from being used to probe the user's local
 network. Fetched page content is untrusted input handed straight back to the
 calling agent as data — there is no LLM synthesis step in this tool to
-harden (unlike `web_search`'s agent, which treats fetched text strictly as
+harden (unlike `kodo_web_search`'s agent, which treats fetched text strictly as
 data per its own prompt).

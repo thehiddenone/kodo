@@ -386,9 +386,9 @@ evaluate_command()` — a deterministic verdict ladder, first hit wins
    expansions (`$VAR`) are tolerated in the fast path itself: an unknown
    value fed to a pure reader cannot mutate anything.
 4. **Toolchain-builder scripts** — a segment whose own executable directly
-   invokes one of `toolchain_builder`'s generated `scripts/<step>.{sh,ps1}`
+   invokes one of `kodo_toolchain_builder`'s generated `scripts/<step>.{sh,ps1}`
    entrypoints (`build`/`format`/`static_analysis`/`test`/`full_build` — see
-   `subagent_toolchain_builder.md` Phase 4) under a workspace root → **allow**,
+   `subagent_kodo_toolchain_builder.md` Phase 4) under a workspace root → **allow**,
    ahead of the rule table (`kodo.security._analysis._toolchain_script_hit`,
    judged per segment via `CommandAnalysis.segment_toolchain_script`). Only a
    direct, path-shaped invocation qualifies (`./scripts/build.sh`,
