@@ -168,17 +168,34 @@ MSG_CHECKPOINT_REDO = "checkpoint.redo"
 MSG_MODE_SET = "mode.set"
 
 # Client → Server. Selects the top-level agent for the next prompt. Payload:
-# ``{name: "guide"}`` — a name from ``hello.ack``'s ``agents`` catalog, or a
-# legacy workflow-mode value (``"guided"``/``"problem_solving"``) left in a
-# session persisted before the rename; anything unrecognized falls back to
-# ``hello.ack``'s ``default_agent``. The other frozen toggle — same
-# next-prompt-only semantics as ``mode.set``. Server replies ``agent.accepted``
-# and follows with an updated EVT_STATE, whose ``top_agent`` echoes the resolved
-# name (so a client that sent an alias sees what it actually got).
+# ``{name: "guide"}`` — a name from ``top_agents.list.ack``'s ``agents``
+# catalog, ``""`` to let the server resolve its own default (a brand-new
+# session's first call, since the catalog is no longer pushed unsolicited —
+# see ``MSG_TOP_AGENTS_LIST``), or a legacy workflow-mode value
+# (``"guided"``/``"problem_solving"``) left in a session persisted before the
+# rename; anything else unrecognized falls back the same way. The other frozen
+# toggle — same next-prompt-only semantics as ``mode.set``. Server replies
+# ``agent.accepted`` and follows with an updated EVT_STATE, whose ``top_agent``
+# echoes the resolved name (so a client that sent an alias, or nothing, sees
+# what it actually got).
 #
 # Replaced ``workflow.set {mode}``, which named a fixed set of three modes; the
 # accepted values are now whatever top-level agents the registry has loaded.
 MSG_AGENT_SET = "agent.set"
+
+# Client → Server. Session connection. Request the current top-level agent
+# catalog on demand — the ``{agents, default_agent}`` shape ``hello.ack`` used
+# to carry unconditionally before the catalog moved out of it (kodo-vsix's
+# Agent picker now fetches it lazily, each time its popup opens, rather than
+# once at connect: see doc/WS_PROTOCOL.md §7.4g). No payload. Replies
+# ``top_agents.list.ack`` ``{agents: [{name, label, description, rank}, ...],
+# default_agent}`` — built by the same ``_top_agents_payload`` hello.ack used
+# to spread inline. ``agents`` lists only the **selectable** ones, in picker
+# order; a non-selectable agent (``kodo_judge``) is absent but still accepted
+# by ``agent.set``. The client is expected to replace its cached catalog with
+# this response wholesale, not merge into it, so a since-deleted user agent
+# disappears from the picker on the next open.
+MSG_TOP_AGENTS_LIST = "top_agents.list"
 
 # Client → Server. Set the Edit Control posture.
 # Payload: ``{edit_control: "review_all"|"allow_all"|"smart"}``. Unlike
@@ -395,7 +412,7 @@ MSG_DEFAULT_AGENT_SET = "default_agent.set"
 # bundle that failed to load, listed deliberately so a broken one is visible and
 # deletable rather than silently missing — the same contract ``skills.list``
 # has. Built-in agents are **not** listed: they are not the user's to delete,
-# and the picker already publishes them through ``hello.ack``.
+# and the picker already publishes them through ``top_agents.list``.
 MSG_AGENTS_LIST = "agents.list"
 
 # Client → Server. Control connection only. Delete one user-installed agent —

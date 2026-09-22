@@ -1,6 +1,6 @@
 ---
 name: kodo_guide
-display_name: Kōdo
+display_name: Guide
 capability: high
 tools:
   - guided_dev_status

@@ -199,6 +199,7 @@ from kodo.transport import (
     MSG_STUCK_DETECTION_GET,
     MSG_STUCK_DETECTION_SET,
     MSG_THINKING_LEVEL_SET,
+    MSG_TOP_AGENTS_LIST,
     MSG_WORKSPACE_FOLDERS,
     SREQ_HF_TOKEN_REQUEST,
     Connection,
@@ -356,7 +357,6 @@ async def _handle_session_hello(
             "server_version": _SERVER_VERSION,
             "session_id": session.id,
             "state": session.engine.session.to_dict(),
-            **_top_agents_payload(req.manager.registry),
             **_llama_payload(config.reload_settings()),
         }
     )
@@ -1428,7 +1428,7 @@ async def _handle_mode(req: Request) -> None:
 
 
 def _top_agents_payload(registry: AgentRegistry) -> dict[str, object]:
-    """The top-level agent catalog ``hello.ack`` carries.
+    """The top-level agent catalog ``top_agents.list.ack`` carries.
 
     ``agents`` lists only the **selectable** ones, in picker order, so a client
     renders one row per entry with no name hardcoded on its side — the same
@@ -1436,9 +1436,15 @@ def _top_agents_payload(registry: AgentRegistry) -> dict[str, object]:
     adding a top-level agent needs no client change. A non-selectable agent
     (``judge``) is absent here but still accepted by ``agent.set``.
 
-    ``default_agent`` is what a brand-new session starts on. The client adopts
-    it rather than choosing one itself, which is what stops the picker's default
-    and the server's fallback from drifting apart.
+    ``default_agent`` is what a brand-new session starts on when it sends
+    ``agent.set`` with an empty name — the client no longer needs to know this
+    value itself to bootstrap correctly (``resolve_top_agent`` falls back to it
+    server-side), but it is still useful to display.
+
+    Also reused, independently, by ``_default_agent_payload`` for the Kōdo
+    Settings panel's "General" section — that caller fetches its own fresh copy
+    rather than sharing one across requests, since the two features have no
+    connection to each other.
     """
     return {
         "agents": [
@@ -1453,6 +1459,22 @@ def _top_agents_payload(registry: AgentRegistry) -> dict[str, object]:
         ],
         "default_agent": registry.default_top_agent(),
     }
+
+
+def _make_top_agents_list_handler(registry: AgentRegistry) -> HandlerFn:
+    """Build the ``top_agents.list`` handler bound to the process registry.
+
+    Session-connection counterpart of ``hello.ack``'s former inline catalog
+    (doc/WS_PROTOCOL.md §7.4g): kodo-vsix's Agent picker calls this on demand,
+    each time its popup opens, instead of relying on a snapshot taken once at
+    connect — so an agent installed mid-session (doc/USER_AGENTS.md) becomes
+    visible in an already-open window without a reload.
+    """
+
+    async def _handle_top_agents_list(req: Request) -> None:
+        await req.reply({"type": "top_agents.list.ack", **_top_agents_payload(registry)})
+
+    return _handle_top_agents_list
 
 
 async def _handle_agent_set(req: Request) -> None:
@@ -3047,6 +3069,9 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_PROMPT_SUBMIT, _handle_prompt)
     conn_registry.register_handler(MSG_MODE_SET, _handle_mode)
     conn_registry.register_handler(MSG_AGENT_SET, _handle_agent_set)
+    conn_registry.register_handler(
+        MSG_TOP_AGENTS_LIST, _make_top_agents_list_handler(registry)
+    )
     conn_registry.register_handler(MSG_EDIT_CONTROL_SET, _handle_edit_control)
     conn_registry.register_handler(MSG_COMMAND_CONTROL_SET, _handle_command_control)
     conn_registry.register_handler(MSG_THINKING_LEVEL_SET, _handle_thinking_level)

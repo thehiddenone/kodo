@@ -259,7 +259,20 @@ async def test_hello_ack_embeds_state_snapshot(ws: aiohttp.ClientWebSocketRespon
     assert isinstance(state, dict) and "phase" in state
 
 
-async def test_hello_ack_carries_the_top_agent_catalog(
+async def test_hello_ack_no_longer_carries_the_agent_catalog(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    """Moved to ``top_agents.list`` (§7.4g) — the picker now fetches it on
+    demand, each time its popup opens, rather than once at connect."""
+    resp = await _hello(ws)
+    assert "agents" not in resp.payload
+    assert "default_agent" not in resp.payload
+    # The session's starting agent is still resolved server-side at creation —
+    # only the client-facing catalog moved, not the default-resolution logic.
+    assert resp.payload["state"]["top_agent"] == AgentRegistry(_AGENTS_DIR).default_top_agent()
+
+
+async def test_top_agents_list_returns_the_full_catalog(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
     """The picker is rendered from this, so the client hardcodes no agent names.
@@ -267,9 +280,14 @@ async def test_hello_ack_carries_the_top_agent_catalog(
     Every registered *selectable* agent must be here, with everything a row
     needs — adding one server-side is meant to need no client change at all.
     """
-    resp = await _hello(ws)
+    sid = str((await _hello(ws)).payload["session_id"])
     registry = AgentRegistry(_AGENTS_DIR)
     expected = [a for a in registry.top_agents() if a.selectable]
+
+    req = _make_request("top_agents.list", session_id=sid)
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+    assert resp.payload["type"] == "top_agents.list.ack"
 
     agents = resp.payload["agents"]
     assert isinstance(agents, list)
@@ -281,13 +299,13 @@ async def test_hello_ack_carries_the_top_agent_catalog(
             "description": agent.description,
             "rank": agent.rank,
         }
-    # A brand-new session's starting agent, which the client adopts rather than
-    # choosing one of its own.
+    # A brand-new session's starting agent, which the server resolves on its
+    # own — the client sends `agent.set` with an empty name and adopts
+    # whatever the follow-up `state` event echoes back.
     assert resp.payload["default_agent"] == registry.default_top_agent()
-    assert resp.payload["state"]["top_agent"] == registry.default_top_agent()
 
 
-async def test_hello_ack_omits_non_selectable_agents(
+async def test_top_agents_list_omits_non_selectable_agents(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
     """``judge`` is registered and reachable, but never offered to a user.
@@ -295,9 +313,13 @@ async def test_hello_ack_omits_non_selectable_agents(
     It is absent from the catalog and still accepted by ``agent.set`` — the
     whole point of the ``selectable`` flag.
     """
-    resp = await _hello(ws)
+    sid = str((await _hello(ws)).payload["session_id"])
     hidden = {a.name for a in AgentRegistry(_AGENTS_DIR).top_agents() if not a.selectable}
     assert hidden, "expected at least one non-selectable agent to make this meaningful"
+
+    req = _make_request("top_agents.list", session_id=sid)
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
     assert hidden.isdisjoint({a["name"] for a in resp.payload["agents"]})
 
 

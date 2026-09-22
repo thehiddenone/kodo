@@ -146,13 +146,6 @@ The server replies with the current world plus local-model status:
     "type": "hello.ack",
     "server_version": "0.1.0",
     "state": { ...state snapshot per §5.1... },
-    "agents": [
-      { "name": "problem_solver", "label": "Problem Solver",
-        "description": "One generalist agent tackles your request end to end.", "rank": 10 },
-      { "name": "guide", "label": "Guide",
-        "description": "One coordinating agent drives specialists through design, tests and implementation.", "rank": 20 }
-    ],
-    "default_agent": "problem_solver",
     "cloud_registry": {
       "anthropic": { "display_name": "Anthropic", "models": [
         { "model_id": "claude-fable-5", "name": "Claude Fable 5",
@@ -224,6 +217,12 @@ The server replies with the current world plus local-model status:
     "detected_ram_gb": 64 | null
   } }
 ```
+
+`hello.ack` no longer carries the top-level agent catalog (`agents`/
+`default_agent`) — that moved to `top_agents.list` (§7.4g), which kodo-vsix's
+Agent picker calls lazily, each time its popup opens, rather than once at
+connect. A brand-new session's first `agent.set` (§4.1 below, §7.4) sends an
+empty name and lets the server resolve its own default.
 
 The LLM registry itself (both `cloud_registry` and the catalogue behind
 `local_registry`) is documented in full in `doc/LLM_REGISTRY.md` — this
@@ -309,7 +308,7 @@ Immediately after the ack the server **also pushes** a `state` event (§5.1) and
 
 For a brand-new session only, `hello` also kicks off a background task that writes and pushes the session's opening greeting — see `session.greeting` (§5.9i). Fire-and-forget: it is not part of the ack and never delays it.
 
-After `hello.ack` the client pushes the session's starting toggles to the server: a brand-new session sends `agent.set` (§7.4) with `hello.ack`'s `default_agent` plus `edit_control.set`/`command_control.set`, while a resumed one adopts the persisted values carried in the ack's own `state` and re-sends only the Edit/Command pair (kodo-vsix `session/mode-toggle-controller.ts`, `applyNewSessionDefaults` / `applyResumedState`). There is no project-level `.kodo/settings.json` in this path — the workflow is per-session state in the session's own `transient.json`, not a project preference.
+After `hello.ack` the client pushes the session's starting toggles to the server: a brand-new session sends `agent.set` (§7.4) with an empty name — letting the server resolve `resolve_top_agent`'s own default rather than the client tracking one — plus `edit_control.set`/`command_control.set`, while a resumed one adopts the persisted values carried in the ack's own `state` and re-sends only the Edit/Command pair (kodo-vsix `session/mode-toggle-controller.ts`, `applyNewSessionDefaults` / `applyResumedState`). There is no project-level `.kodo/settings.json` in this path — the workflow is per-session state in the session's own `transient.json`, not a project preference.
 
 ### 4.2 Shutdown
 
@@ -369,7 +368,7 @@ The header toggles split into **two frozen** and **three never-frozen**:
 **Frozen toggles** (`autonomous`, `top_agent`) are reported as a **pair**: the user-facing *selected* value and its per-turn frozen *effective* twin (`effective_*`). The selected value flips the instant the user clicks; the effective value is the one the **in-flight prompt** actually runs under — the engine freezes both from their selected values when it dequeues a prompt (`_freeze_effective_modes`), so a toggle flipped mid-run takes effect only on the *next* prompt. The client renders each as "in effect" (selected == effective, or idle) or "queued for the next prompt" (a turn is running and they differ).
 
 - `autonomous` — Autonomous/Interactive mode. Toggled via `mode.set` (§7.5).
-- `top_agent` — the name of the top-level agent driving prompts, always one the server has registered. Not a fixed set: it is whatever `hello.ack`'s `agents` catalog lists, plus any non-selectable agent (`kodo_judge`) reachable only by sending it explicitly. Toggled via `agent.set` (§7.4).
+- `top_agent` — the name of the top-level agent driving prompts, always one the server has registered. Not a fixed set: it is whatever `top_agents.list.ack`'s `agents` catalog lists (§7.4g), plus any non-selectable agent (`kodo_judge`) reachable only by sending it explicitly. Toggled via `agent.set` (§7.4).
 
 **Never-frozen toggles** (`edit_control`, `command_control`, `thinking_level`) carry a **single** value and **no `effective_*` twin** — a flip applies to the next LLM call, not the next prompt.
 
@@ -1521,7 +1520,7 @@ Selects which top-level agent drives the next prompt. Like `mode.set`, it applie
 { "type": "agent.set", "name": "problem_solver" }
 ```
 
-`name` is an entry from `hello.ack`'s `agents` catalog (§4.1), **or** a legacy workflow-mode value (`guided` / `problem_solving`) left in a session persisted before the rename — both resolve to the same agent. Anything unrecognized falls back to `hello.ack`'s `default_agent`, so a stale stored selection keeps working rather than failing the prompt.
+`name` is an entry from `top_agents.list.ack`'s `agents` catalog (§7.4g), `""` to let the server pick its own default (what a brand-new session sends, since the catalog is no longer pushed unconditionally at connect), **or** a legacy workflow-mode value (`guided` / `problem_solving`) left in a session persisted before the rename — both resolve to the same agent. Anything else unrecognized falls back the same way, so a stale stored selection keeps working rather than failing the prompt.
 
 The accepted set is whatever top-level agents the server has registered; there is no fixed list of modes any more. A non-selectable agent is absent from the catalog but still accepted here — which is how `kodo_judge` is reached.
 
@@ -1652,6 +1651,45 @@ Response:
 Unlike `thinking_level.set`, individual bad parameters do **not** fail the request: unknown, reserved (`max_tokens`, `json_schema`, `grammar`, `ignore_eos`, `logit_bias`, …) and wrong-typed entries are dropped and out-of-range numbers clamped, so a client built against a different llama.cpp still gets the parameters both sides understand. The reply therefore **echoes the set actually stored**, which may be a strict subset of what was sent — the client should adopt that echo rather than its own optimistic copy. `ok: false` means only that `model` was blank or is not a known local entry.
 
 A `state` event with the updated `sampling` map follows on success.
+
+### 7.4g `top_agents.list` — the top-level agent catalog, on demand
+
+Session connection. Request the current top-level agent catalog — the same
+`{agents, default_agent}` shape `hello.ack` carried unconditionally before
+this moved out of it (§4.1). No payload:
+
+```json
+{ "type": "top_agents.list" }
+```
+
+→ `top_agents.list.ack`:
+
+```json
+{ "type": "top_agents.list.ack",
+  "agents": [
+    { "name": "problem_solver", "label": "Problem Solver",
+      "description": "One generalist agent tackles your request end to end.", "rank": 10 },
+    { "name": "guide", "label": "Guide",
+      "description": "One coordinating agent drives specialists through design, tests and implementation.", "rank": 20 }
+  ],
+  "default_agent": "problem_solver" }
+```
+
+Built from the same `_top_agents_payload` helper `hello.ack` used to spread
+inline, so the shape is unchanged — only the timing is. `agents` lists only
+the **selectable** ones, in picker order; a non-selectable agent (`kodo_judge`)
+is absent but still accepted by `agent.set` (§7.4).
+
+kodo-vsix's Agent picker (`session/mode-toggle-controller.ts`) calls this every
+time its popup opens rather than once at connect, so an agent installed
+mid-session (doc/USER_AGENTS.md) becomes selectable in an already-open window
+without a reload. The client **replaces** its cached catalog with each
+response wholesale rather than merging into it, so a since-deleted
+user-installed agent also disappears from the picker on the next open.
+
+`default_agent` is what a brand-new session's `agent.set` (§7.4) resolves to
+when it sends an empty name — display-only for the client now, since the
+server resolves it on its own either way.
 
 ### 7.5 `config.reload` — apply settings.json changes
 
@@ -2161,7 +2199,7 @@ Control connection only. Backs the Kōdo Settings panel's "General" section's "D
   "default_agent": "problem_solver" }
 ```
 
-`selected` is the user's own preference and is empty when they have expressed none. `effective` is the agent a new session will actually start on — the shipped default whenever `selected` is empty or names an agent that is unknown or not selectable. The panel needs both so its "Use Kōdo's default" row can name the agent it resolves to. `agents` is the same catalog `hello.ack` carries (§4.1), selectable entries only.
+`selected` is the user's own preference and is empty when they have expressed none. `effective` is the agent a new session will actually start on — the shipped default whenever `selected` is empty or names an agent that is unknown or not selectable. The panel needs both so its "Use Kōdo's default" row can name the agent it resolves to. `agents` is the same catalog `top_agents.list.ack` carries (§7.4g), selectable entries only — this handler fetches its own independent copy rather than sharing one with the session-connection picker.
 
 `default_agent.set` takes `{ "name": "guide" }`, or `{ "name": "" }` to clear the preference:
 
@@ -2453,7 +2491,7 @@ Reads, installs and deletes the agents the user has installed under
 
 **Built-in agents are deliberately absent from every payload here.** They are
 not the user's to delete, and the picker already publishes them through
-`hello.ack`'s `agents` catalog (§7.6k).
+`top_agents.list.ack`'s `agents` catalog (§7.4g).
 
 ```json
 { "type": "agents.list" }
