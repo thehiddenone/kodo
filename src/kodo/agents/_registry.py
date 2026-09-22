@@ -803,8 +803,8 @@ class AgentRegistry:
                 if paired is None:
                     problems.add(
                         agent.name,
-                        f"critic {agent.critic!r} has no subagent_{agent.critic}.md "
-                        f"in the registry",
+                        f"critic {agent.critic!r} is not loaded — no agent by that "
+                        f"name exists, or it failed to load (see its own entry)",
                         agent.source_path,
                     )
                 elif not paired.is_critic:
@@ -830,7 +830,8 @@ class AgentRegistry:
                 if sub not in self.__agents:
                     problems.add(
                         agent.name,
-                        f"subagents entry {sub!r} has no subagent_{sub}.md in the registry",
+                        f"subagents entry {sub!r} is not loaded — no agent by that name "
+                        f"exists, or it failed to load (see its own entry)",
                         agent.source_path,
                     )
 
@@ -1011,6 +1012,25 @@ class AgentRegistry:
         overwrite, a UI deciding whether to offer a Delete button.
         """
         return frozenset(self.__user_names & self.__agents.keys())
+
+    def user_agents(self) -> tuple[SubAgent, ...]:
+        """Every user-installed agent that loaded, as parsed (not rendered).
+
+        The healthy half of what is installed under the user root —
+        :attr:`broken_agents` is the other half. Together they are what a
+        listing shows: an entry the store parsed but this registry demoted for a
+        cross-agent reason is a broken row here, never a healthy one.
+
+        Returns:
+            tuple[SubAgent, ...]: Top-level agents first, then sub-agents, each
+            group name-sorted.
+        """
+        return tuple(
+            sorted(
+                (self.__agents[name] for name in self.user_agent_names),
+                key=lambda a: (not a.is_top_level, a.name),
+            )
+        )
 
     def reload(self) -> tuple[BrokenAgent, ...]:
         """Rebuild the registry from disk, swapping only if the rebuild succeeds.

@@ -1072,15 +1072,17 @@ def _skill_row(skill: Skill) -> dict[str, object]:
 def _agents_payload(registry: AgentRegistry) -> dict[str, object]:
     """The user-installed agent listing every ``agents.*`` ack carries.
 
-    Read from the store rather than the registry's loaded set, for the same
-    reason ``skills.list`` reads the directory: what is *installed* is a fact
-    about the folder, and a bundle the registry demoted is still installed and
-    still the user's to see and delete. The registry supplies only the two
-    presentation fields it alone knows — a top-level agent's picker ``label``
-    and ``description``, which live in its config.
+    Read from the **registry**, not the store: an entry the store parses but
+    the registry demotes for a cross-agent reason (a ``subagents:`` entry that
+    does not load, a sub-agent with no ``## Purpose``) is not usable, and a
+    listing that called it healthy would tell the user an install worked while
+    the agent never reached the picker. A demoted entry is still listed — as a
+    broken row with the reason — so it stays visible and deletable. A bundle
+    edited by hand shows up after ``agents.reload``, exactly as it reaches the
+    picker.
 
     Args:
-        registry: The live registry, for those two fields.
+        registry: The live registry.
 
     Returns:
         dict[str, object]: ``{agents: [...], root}``.
@@ -1088,9 +1090,7 @@ def _agents_payload(registry: AgentRegistry) -> dict[str, object]:
     root = kodo_agents_dir()
     configs = {top.name: top for top in registry.top_agents()}
     rows: list[dict[str, object]] = []
-    for agent in sorted(
-        UserAgentStore(root).scan().agents, key=lambda a: (not a.is_top_level, a.name)
-    ):
+    for agent in registry.user_agents():
         config = configs.get(agent.name)
         rows.append(
             {
@@ -1103,7 +1103,7 @@ def _agents_payload(registry: AgentRegistry) -> dict[str, object]:
                 "error": "",
             }
         )
-    for entry in UserAgentStore(root).scan().broken:
+    for entry in registry.broken_agents:
         rows.append(
             {
                 "name": entry.name,
@@ -3069,9 +3069,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_PROMPT_SUBMIT, _handle_prompt)
     conn_registry.register_handler(MSG_MODE_SET, _handle_mode)
     conn_registry.register_handler(MSG_AGENT_SET, _handle_agent_set)
-    conn_registry.register_handler(
-        MSG_TOP_AGENTS_LIST, _make_top_agents_list_handler(registry)
-    )
+    conn_registry.register_handler(MSG_TOP_AGENTS_LIST, _make_top_agents_list_handler(registry))
     conn_registry.register_handler(MSG_EDIT_CONTROL_SET, _handle_edit_control)
     conn_registry.register_handler(MSG_COMMAND_CONTROL_SET, _handle_command_control)
     conn_registry.register_handler(MSG_THINKING_LEVEL_SET, _handle_thinking_level)

@@ -324,7 +324,7 @@ raise, grouped by the agent at fault:
 broken (…/subagent_broken.md)
   - tool 'no_such_tool' has no ToolSpec in kodo.toolspecs
   - grants file-modifying tool(s) ['edit_file'], so its prompt must include {SHARED:editing}
-  - critic 'ghost' has no subagent_ghost.md in the registry
+  - critic 'ghost' is not loaded — no agent by that name exists, or it failed to load (see its own entry)
 
 orphan (…/agent_orphan.md)
   - no orphan.json — a top-level agent declares how it is selected …

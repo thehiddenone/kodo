@@ -86,7 +86,7 @@ import kodo.agents as _agents_pkg
 from kodo.agents import AgentLoadError, AgentRegistry, SubAgent
 from kodo.llms import CloudLLMEntry, get_cloud_registry, get_local_registry
 from kodo.llms.llamacpp import build_openai_tools, get_local_model_manager
-from kodo.project import kodo_skills_dir, kodo_user_dir
+from kodo.project import kodo_agents_dir, kodo_skills_dir, kodo_user_dir
 from kodo.runtime import agent_tool_specs
 from kodo.skills import (
     GitNotAvailableError,
@@ -292,8 +292,8 @@ def _resolve(
         needs it to expand the per-agent ``run_subagent_<name>`` / ``return_result``
         specs (see :func:`kodo.runtime.agent_tool_specs`).
     """
-    registry = AgentRegistry(_AGENTS_DIR)
     try:
+        registry = _agent_registry()
         agent = registry.get(agent_name, autonomous=False)
     except AgentLoadError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -380,30 +380,57 @@ def _run_list_skills() -> int:
     return 0
 
 
+def _agent_registry() -> AgentRegistry:
+    """The registry over both agent roots — the packaged one and ``~/.kodo/agents``.
+
+    Built the way the server builds it, so every CLI view of an agent (its
+    prompt, its tools, whether it is installed and healthy) agrees with what a
+    session would actually get. A user bundle that fails to load is a broken row
+    here, not an exception.
+
+    Raises:
+        AgentLoadError: A **packaged** agent failed to load.
+    """
+    return AgentRegistry(_AGENTS_DIR, user_dir=kodo_agents_dir())
+
+
+def _print_user_agents(registry: AgentRegistry) -> None:
+    """Print the registry's user agents, healthy then broken, one per line.
+
+    Args:
+        registry: A registry built over the user root.
+    """
+    from kodo.agents import KIND_AGENT, KIND_SUBAGENT, UNVERSIONED
+
+    for agent in registry.user_agents():
+        kind = KIND_AGENT if agent.is_top_level else KIND_SUBAGENT
+        print(f"{kind:9} {agent.name}  {agent.version or UNVERSIONED}")
+    for entry in registry.broken_agents:
+        kind = KIND_AGENT if entry.is_top_level else KIND_SUBAGENT
+        print(f"{kind:9} {entry.name}  BROKEN: {entry.error}")
+
+
 def _run_list_agents() -> int:
     """Print every user-installed agent and sub-agent, plus anything broken.
 
-    Reads the store directly rather than building an :class:`AgentRegistry`:
-    listing what is installed is a question about the directory, and a bundle
-    the registry would demote for a cross-agent reason is still installed and
-    still the user's to see and delete.
+    Reads the full registry rather than only the store, so an entry that
+    parses on its own but is demoted for a cross-agent reason (a missing
+    ``subagents:`` entry, a sub-agent with no ``## Purpose``) is reported as
+    broken — exactly as it would fail to reach the picker.
 
     Returns:
-        int: 0 — an empty store is not an error.
+        int: 0 — an empty store is not an error; 2 when a packaged agent fails
+        to load.
     """
-    from kodo.agents import KIND_AGENT, KIND_SUBAGENT, UNVERSIONED, UserAgentStore
-    from kodo.project import kodo_agents_dir
-
-    scan = UserAgentStore(kodo_agents_dir()).scan()
-    if not scan.agents and not scan.broken:
+    try:
+        registry = _agent_registry()
+    except AgentLoadError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    if not registry.user_agents() and not registry.broken_agents:
         print(f"No user agents installed under {kodo_agents_dir()}.")
         return 0
-    for agent in sorted(scan.agents, key=lambda a: (not a.is_top_level, a.name)):
-        kind = KIND_AGENT if agent.is_top_level else KIND_SUBAGENT
-        print(f"{kind:9} {agent.name}  {agent.version or UNVERSIONED}")
-    for entry in scan.broken:
-        kind = KIND_AGENT if entry.is_top_level else KIND_SUBAGENT
-        print(f"{kind:9} {entry.name}  BROKEN: {entry.error}")
+    _print_user_agents(registry)
     return 0
 
 
@@ -424,7 +451,6 @@ def _run_install_agent(source: str, *, assume_yes: bool) -> int:
         could be installed.
     """
     from kodo.agents import AgentInstallError, GitNotAvailableError, install_source, scan_source
-    from kodo.project import kodo_agents_dir
 
     root = kodo_agents_dir()
     try:
@@ -436,7 +462,7 @@ def _run_install_agent(source: str, *, assume_yes: bool) -> int:
     if not scan.candidates:
         print(
             f"error: {source} holds no agents — expected <name>.json and agent_<name>.md at "
-            f"its root, and/or sub-agents under ./subagents/"
+            f"its root, and/or sub-agents under ./subagents/<name>/"
         )
         return 1
     for candidate in scan.candidates:
@@ -465,6 +491,24 @@ def _run_install_agent(source: str, *, assume_yes: bool) -> int:
         print(f"skipped {line}")
     for name in result.missing:
         print(f"missing {name} — the source changed while installing")
+    if not result.installed:
+        return 0
+    # Each file parsed on its own during the scan, but whether the bundle
+    # *works* is cross-agent: a subagents: entry that does not load, a
+    # sub-agent the registry refuses. Only the full registry can say, so load
+    # it and report what it made of what was just written.
+    try:
+        registry = _agent_registry()
+    except AgentLoadError as exc:
+        print(f"error: {exc}")
+        return 1
+    installed = frozenset(result.installed)
+    failed = [b for b in registry.broken_agents if b.name in installed]
+    if failed:
+        print("\nInstalled, but Kōdo cannot load:")
+        for entry in failed:
+            print(f"  {entry.name}: {entry.error}")
+        return 1
     return 0
 
 

@@ -2508,15 +2508,20 @@ not the user's to delete, and the picker already publishes them through
       "path": "/home/u/.kodo/agents/reviewer", "error": "" },
     { "name": "scanner", "kind": "subagent", "version": "1.6.0",
       "label": "Scanner", "description": "",
-      "path": "/home/u/.kodo/agents/subagents", "error": "" }
+      "path": "/home/u/.kodo/agents/subagents/scanner", "error": "" }
   ] }
 ```
 
 `kind` is `"agent"` (a top-level agent the user selects) or `"subagent"` (one
 another agent delegates to). A non-empty `error` is a bundle that failed to
 load, listed deliberately so a broken one is visible and deletable rather than
-silently missing — the same contract `skills.list` has (§7.6j). Top-level
-agents are listed before sub-agents, name-sorted within each kind.
+silently missing — the same contract `skills.list` has (§7.6j). The listing is
+the **registry's** view, not the directory's: an entry that parses on its own
+but is demoted for a cross-agent reason (a `subagents:` entry that does not
+load, a sub-agent with no `## Purpose`) is a broken row, never a healthy one,
+and a bundle copied in by hand appears after `agents.reload`. `path` is always
+a directory — the bundle, or `subagents/<name>/` — the one Delete removes.
+Top-level agents are listed before sub-agents, name-sorted within each kind.
 
 ```json
 { "type": "agents.install_scan", "source": "https://github.com/owner/repo" }
@@ -2570,9 +2575,9 @@ half-installed.
 
 → `agents.delete.ack` — `{ ok, error }` plus the post-deletion listing.
 `kind: "agent"` deletes the whole bundle directory; `"subagent"` deletes that
-sub-agent's prompt and contract from the shared directory. `UserAgentStore`
-re-validates that `name` is a single path component resolving inside the agents
-root, so a crafted name cannot reach outside it. A failure still carries the
+sub-agent's directory, `subagents/<name>/`. `UserAgentStore` re-validates that
+`name` is a single path component resolving inside the directory it is deleted
+from, so a crafted name cannot reach outside it. A failure still carries the
 refreshed listing — the likeliest cause is a panel showing something already
 removed from disk, and the refreshed table is what makes that obvious.
 

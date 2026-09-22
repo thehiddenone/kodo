@@ -70,7 +70,7 @@ def _write_subagent(
     spec: dict[str, object] | None = None,
 ) -> Path:
     """Write one user sub-agent (prompt + contract) and return its prompt path."""
-    directory = root / SHARED_SUBAGENTS_DIRNAME
+    directory = root / SHARED_SUBAGENTS_DIRNAME / name
     directory.mkdir(parents=True, exist_ok=True)
     version_line = f"version: {version}\n" if version else ""
     prompt = directory / f"subagent_{name}.md"
@@ -224,12 +224,32 @@ def test_a_prompt_whose_name_disagrees_with_its_filename_is_broken(user_root: Pa
 
 
 def test_a_subagent_with_no_contract_is_broken(user_root: Path) -> None:
-    directory = user_root / SHARED_SUBAGENTS_DIRNAME
-    directory.mkdir()
+    directory = user_root / SHARED_SUBAGENTS_DIRNAME / "auditor"
+    directory.mkdir(parents=True)
     (directory / "subagent_auditor.md").write_text(
         "---\nname: auditor\n---\nhi\n", encoding="utf-8"
     )
     assert "auditor.json" in _broken(_registry(user_root), "auditor")
+
+
+def test_a_subagent_whose_prompt_disagrees_with_its_directory_is_broken(
+    user_root: Path,
+) -> None:
+    prompt = _write_subagent(user_root, "auditor")
+    prompt.rename(prompt.with_name("subagent_other.md"))
+    assert "subagent_auditor.md" in _broken(_registry(user_root), "auditor")
+
+
+def test_loose_files_in_the_shared_directory_are_not_read(user_root: Path) -> None:
+    """Sub-agents are directories; a flat subagent_*.md is not an agent."""
+    prompt = _write_subagent(user_root, "auditor")
+    shared = user_root / SHARED_SUBAGENTS_DIRNAME
+    for path in prompt.parent.iterdir():
+        path.rename(shared / path.name)
+    prompt.parent.rmdir()
+    registry = _registry(user_root)
+    assert "auditor" not in registry.user_agent_names
+    assert registry.broken_agents == ()
 
 
 def test_a_stray_file_beside_the_bundles_is_not_an_agent(user_root: Path) -> None:
@@ -338,6 +358,16 @@ def test_demotion_cascades_to_an_agent_that_named_the_demoted_one(user_root: Pat
     assert registry.user_agent_names == frozenset()
     # And the packaged set is untouched by both.
     assert registry.default_top_agent() == "kodo_problem_solver"
+
+
+def test_user_agents_lists_only_what_survived_validation(user_root: Path) -> None:
+    """A demoted entry is a broken row, never also a healthy one."""
+    _write_subagent(user_root, "auditor", frontmatter="critic: no_such_critic\n")
+    _write_subagent(user_root, "scanner")
+    _write_agent(user_root, "reviewer")
+    registry = _registry(user_root)
+    assert [a.name for a in registry.user_agents()] == ["reviewer", "scanner"]
+    assert [b.name for b in registry.broken_agents] == ["auditor"]
 
 
 def test_a_user_agent_cannot_claim_the_default(user_root: Path) -> None:
@@ -452,11 +482,16 @@ def test_delete_removes_a_top_level_bundle(user_root: Path) -> None:
     assert not (user_root / "reviewer").exists()
 
 
-def test_delete_removes_both_halves_of_a_subagent(user_root: Path) -> None:
+def test_delete_removes_a_subagents_directory(user_root: Path) -> None:
     prompt = _write_subagent(user_root, "auditor")
     UserAgentStore(user_root).delete("auditor", top_level=False)
-    assert not prompt.exists()
-    assert not (user_root / SHARED_SUBAGENTS_DIRNAME / "auditor.json").exists()
+    assert not prompt.parent.exists()
+    assert (user_root / SHARED_SUBAGENTS_DIRNAME).is_dir()
+
+
+def test_delete_refuses_a_subagent_not_installed(user_root: Path) -> None:
+    with pytest.raises(UserAgentDeleteError, match="no user sub-agent"):
+        UserAgentStore(user_root).delete("absent", top_level=False)
 
 
 @pytest.mark.parametrize("name", ["", "..", "../escape", "a/b"])
@@ -511,8 +546,8 @@ def test_install_puts_each_half_where_the_registry_reads_it(source: Path, user_r
     assert set(result.installed) == {"reviewer", "auditor"}
     assert (user_root / "reviewer" / "agent_reviewer.md").is_file()
     assert (user_root / "reviewer" / "reviewer.json").is_file()
-    assert (user_root / SHARED_SUBAGENTS_DIRNAME / "subagent_auditor.md").is_file()
-    assert (user_root / SHARED_SUBAGENTS_DIRNAME / "auditor.json").is_file()
+    assert (user_root / SHARED_SUBAGENTS_DIRNAME / "auditor" / "subagent_auditor.md").is_file()
+    assert (user_root / SHARED_SUBAGENTS_DIRNAME / "auditor" / "auditor.json").is_file()
     assert "reviewer" in {t.name for t in _registry(user_root).top_agents()}
 
 
@@ -641,7 +676,7 @@ def test_install_from_a_repository_lands_in_the_same_layout(repo: str, user_root
     result = install_source(repo, user_root, replace=False)
     assert set(result.installed) == {"reviewer", "auditor"}
     assert (user_root / "reviewer" / "agent_reviewer.md").is_file()
-    assert (user_root / SHARED_SUBAGENTS_DIRNAME / "subagent_auditor.md").is_file()
+    assert (user_root / SHARED_SUBAGENTS_DIRNAME / "auditor" / "subagent_auditor.md").is_file()
 
 
 def test_cloning_an_unreachable_repository_raises(user_root: Path) -> None:

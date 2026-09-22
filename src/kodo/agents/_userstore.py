@@ -10,14 +10,18 @@ Layout (doc/USER_AGENTS.md §2)
         reviewer.json               how it is selected (a TopAgent config)
         agent_reviewer.md           its prompt — exactly one per directory
       subagents/                    the shared user sub-agent directory
-        subagent_auditor.md         a sub-agent's prompt
-        auditor.json                that sub-agent's contract (a SubAgentSpec)
+        auditor/                    one directory per user sub-agent
+          subagent_auditor.md       its prompt — exactly one per directory
+          auditor.json              its contract (a SubAgentSpec)
 
-The directory name **is** the top-level agent's name, and both of its files are
-named after it, so a bundle cannot disagree with itself about what it is called.
-User sub-agents live in one shared directory rather than inside a bundle because
-they are shared: any user top-level agent may list any of them, and a sub-agent
-installed twice from two sources is one file, not two copies that drift.
+The directory name **is** the agent's name — for a top-level agent and a
+sub-agent alike — and both of its files are named after it, so an entry cannot
+disagree with itself about what it is called, and deleting one is removing one
+directory. User sub-agents live under one shared directory rather than inside a
+bundle because they are shared: any user top-level agent may list any of them,
+and a sub-agent installed twice from two sources is one directory, not two
+copies that drift. Loose files directly under ``subagents/`` are not read, the
+same rule the root applies to a stray ``README.md``.
 
 Two regimes, one parser
 =======================
@@ -102,8 +106,9 @@ class BrokenAgent:
             filename rather than from the frontmatter that may be the thing
             that failed to parse. Always non-empty, so the row can be shown and
             deleted by name.
-        path: The directory (for a top-level agent) or file (for a sub-agent)
-            the user would delete to make the row go away.
+        path: The directory the user would delete to make the row go away —
+            the bundle for a top-level agent, ``subagents/<name>/`` for a
+            sub-agent.
         error: What is wrong, in one sentence, written for the user who wrote
             the file — not a traceback.
         is_top_level: Whether the entry was found as a top-level agent bundle
@@ -243,9 +248,9 @@ class UserAgentStore:
         Args:
             name: The agent's name, as :class:`BrokenAgent` or the registry
                 reports it.
-            top_level: ``True`` to delete a top-level agent's whole bundle
-                directory, ``False`` to delete a sub-agent's prompt and contract
-                from the shared directory.
+            top_level: ``True`` to delete a top-level agent's bundle directory,
+                ``False`` to delete a sub-agent's directory under the shared
+                ``subagents/``.
 
         Raises:
             UserAgentDeleteError: The name is empty, escapes the root, names
@@ -253,32 +258,18 @@ class UserAgentStore:
         """
         if not name or "/" in name or "\\" in name or name in (".", ".."):
             raise UserAgentDeleteError(f"{name!r} is not a valid agent name")
+        parent = self.__root if top_level else self.subagents_dir
+        kind = "agent" if top_level else "sub-agent"
         try:
-            if top_level:
-                target = (self.__root / name).resolve()
-                target.relative_to(self.__root.resolve())
-                if not target.is_dir():
-                    raise UserAgentDeleteError(f"no user agent named {name!r} is installed")
-                shutil.rmtree(target)
-                return
-            removed = False
-            for path in self.__subagent_files(name):
-                if path.exists():
-                    path.unlink()
-                    removed = True
-            if not removed:
-                raise UserAgentDeleteError(f"no user sub-agent named {name!r} is installed")
+            target = (parent / name).resolve()
+            target.relative_to(parent.resolve())
+            if not target.is_dir():
+                raise UserAgentDeleteError(f"no user {kind} named {name!r} is installed")
+            shutil.rmtree(target)
         except UserAgentDeleteError:
             raise
         except (OSError, ValueError) as exc:
             raise UserAgentDeleteError(f"could not delete {name!r}: {exc}") from exc
-
-    def __subagent_files(self, name: str) -> tuple[Path, ...]:
-        """The two files that make up one user sub-agent."""
-        return (
-            self.subagents_dir / f"subagent_{name}.md",
-            self.subagents_dir / f"{name}{SPEC_SUFFIX}",
-        )
 
     def __scan_bundle(
         self,
@@ -362,41 +353,65 @@ class UserAgentStore:
         specs: list[SubAgentSpec],
         broken: list[BrokenAgent],
     ) -> None:
-        """Load every sub-agent in the shared directory, one row per failure."""
+        """Load every sub-agent directory under the shared one, one row per failure."""
         try:
-            prompts = sorted(directory.glob("subagent_*.md"))
+            entries = sorted((p for p in directory.iterdir() if p.is_dir()), key=lambda p: p.name)
         except OSError as exc:
             broken.append(BrokenAgent(directory.name, directory, str(exc), False))
             return
-        for prompt in prompts:
-            name = prompt.stem[len("subagent_") :]
-            reserved = reserved_name_error(name)
-            if reserved:
-                broken.append(BrokenAgent(name, prompt, reserved, False))
-                continue
-            try:
-                agent = load_agent(prompt)
-            except AgentLoadError as exc:
-                broken.append(BrokenAgent(name, prompt, _reason(exc, prompt), False))
-                continue
-            spec_path = directory / f"{name}{SPEC_SUFFIX}"
-            if not spec_path.is_file():
-                broken.append(
-                    BrokenAgent(
-                        name,
-                        prompt,
-                        f"no {name}{SPEC_SUFFIX} beside it — a sub-agent declares "
-                        f"its input/output contract in a JSON file of the same name",
-                        False,
-                    )
+        for entry in entries:
+            self.__scan_subagent(entry, agents, specs, broken)
+
+    def __scan_subagent(
+        self,
+        directory: Path,
+        agents: list[SubAgent],
+        specs: list[SubAgentSpec],
+        broken: list[BrokenAgent],
+    ) -> None:
+        """Load one ``subagents/<name>/`` directory, recording a row on any failure."""
+        name = directory.name
+        reserved = reserved_name_error(name)
+        if reserved:
+            broken.append(BrokenAgent(name, directory, reserved, False))
+            return
+        prompts = sorted(directory.glob("subagent_*.md"))
+        if len(prompts) != 1 or prompts[0].name != f"subagent_{name}.md":
+            found = ", ".join(p.name for p in prompts) or "none"
+            broken.append(
+                BrokenAgent(
+                    name,
+                    directory,
+                    f"expected exactly one prompt, subagent_{name}.md, found {found} — a "
+                    f"sub-agent's prompt is named after the directory it lives in",
+                    False,
                 )
-                continue
-            try:
-                specs.append(load_spec(spec_path))
-            except SpecLoadError as exc:
-                broken.append(BrokenAgent(name, spec_path, _reason(exc, spec_path), False))
-                continue
-            agents.append(agent)
+            )
+            return
+        prompt = prompts[0]
+        try:
+            agent = load_agent(prompt)
+        except AgentLoadError as exc:
+            broken.append(BrokenAgent(name, directory, _reason(exc, prompt), False))
+            return
+        spec_path = directory / f"{name}{SPEC_SUFFIX}"
+        if not spec_path.is_file():
+            broken.append(
+                BrokenAgent(
+                    name,
+                    directory,
+                    f"no {name}{SPEC_SUFFIX} beside the prompt — a sub-agent declares "
+                    f"its input/output contract in a JSON file of the same name",
+                    False,
+                )
+            )
+            return
+        try:
+            specs.append(load_spec(spec_path))
+        except SpecLoadError as exc:
+            broken.append(BrokenAgent(name, directory, _reason(exc, spec_path), False))
+            return
+        agents.append(agent)
 
 
 def _reason(exc: Exception, path: Path) -> str:

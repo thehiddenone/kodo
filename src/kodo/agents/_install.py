@@ -7,12 +7,14 @@ one bundle is authored (doc/USER_AGENTS.md §3)::
       reviewer.json            the top-level agent's config
       agent_reviewer.md        its prompt
       subagents/
-        subagent_auditor.md    a sub-agent's prompt
-        auditor.json           that sub-agent's contract
+        auditor/
+          subagent_auditor.md  a sub-agent's prompt
+          auditor.json         that sub-agent's contract
 
 Installing moves each half to where the registry reads it: the top-level
-agent's two files into ``~/.kodo/agents/<name>/``, and everything under
-``subagents/`` into the **shared** ``~/.kodo/agents/subagents/``. That
+agent's two files into ``~/.kodo/agents/<name>/``, and each
+``subagents/<name>/`` directory into the **shared**
+``~/.kodo/agents/subagents/<name>/``. That
 redistribution is the whole reason this module exists rather than telling
 people to copy a directory — the source is shaped for authoring one bundle, the
 destination is shaped for a registry that shares sub-agents across every
@@ -104,8 +106,8 @@ class Candidate:
     """One agent or sub-agent a source offers, and what it would replace.
 
     Attributes:
-        name: The entry's name — the directory name for a top-level agent, the
-            ``subagent_<name>.md`` stem for a sub-agent.
+        name: The entry's name — the ``agent_<name>.md`` stem for a top-level
+            agent, the ``subagents/<name>/`` directory name for a sub-agent.
         kind: :data:`KIND_AGENT` or :data:`KIND_SUBAGENT`.
         version: The ``version:`` its prompt declares, or :data:`UNVERSIONED`.
         installed_version: The version of what is **already installed** under
@@ -331,10 +333,12 @@ def _installed_versions(root: Path) -> dict[tuple[str, str], str]:
 def _read_source(directory: Path, installed: dict[tuple[str, str], str]) -> tuple[Candidate, ...]:
     """Find every agent and sub-agent *directory* offers."""
     agents = [_read_agent(p, directory, installed) for p in sorted(directory.glob("agent_*.md"))]
-    subs = [
-        _read_subagent(p, installed)
-        for p in sorted((directory / SHARED_SUBAGENTS_DIRNAME).glob("subagent_*.md"))
-    ]
+    shared = directory / SHARED_SUBAGENTS_DIRNAME
+    subs = (
+        [_read_subagent(p, installed) for p in sorted(shared.iterdir()) if p.is_dir()]
+        if shared.is_dir()
+        else []
+    )
     return tuple(agents + subs)
 
 
@@ -362,14 +366,23 @@ def _read_agent(prompt: Path, directory: Path, installed: dict[tuple[str, str], 
     return Candidate(name, KIND_AGENT, agent.version or UNVERSIONED, have, "", (prompt, config))
 
 
-def _read_subagent(prompt: Path, installed: dict[tuple[str, str], str]) -> Candidate:
-    """Build the candidate for one ``subagent_<name>.md`` and its contract."""
-    name = prompt.stem[len("subagent_") :]
+def _read_subagent(directory: Path, installed: dict[tuple[str, str], str]) -> Candidate:
+    """Build the candidate for one ``subagents/<name>/`` directory."""
+    name = directory.name
     have = installed.get((KIND_SUBAGENT, name), "")
-    spec = prompt.parent / f"{name}{SPEC_SUFFIX}"
+    prompt = directory / f"subagent_{name}.md"
+    spec = directory / f"{name}{SPEC_SUFFIX}"
     reserved = reserved_name_error(name)
     if reserved:
         return Candidate(name, KIND_SUBAGENT, UNVERSIONED, have, reserved)
+    if not prompt.is_file():
+        return Candidate(
+            name,
+            KIND_SUBAGENT,
+            UNVERSIONED,
+            have,
+            f"no subagent_{name}.md — a sub-agent's prompt is named after its directory",
+        )
     if not spec.is_file():
         return Candidate(
             name, KIND_SUBAGENT, UNVERSIONED, have, f"no {name}{SPEC_SUFFIX} beside the prompt"
@@ -407,7 +420,8 @@ def _copy(
         if candidate.conflicts and not replace:
             kept.append(name)
             continue
-        destination = store.root / name if candidate.kind == KIND_AGENT else store.subagents_dir
+        parent = store.root if candidate.kind == KIND_AGENT else store.subagents_dir
+        destination = parent / name
         try:
             destination.mkdir(parents=True, exist_ok=True)
             for path in candidate.files:

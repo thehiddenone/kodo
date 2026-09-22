@@ -50,26 +50,32 @@ be indistinguishable from it.
     auditor-suite.json
     agent_auditor-suite.md
   subagents/                   the shared user sub-agent directory
-    subagent_scanner.md        a sub-agent's prompt
-    scanner.json               that sub-agent's input/output contract
-    subagent_scanner_critic.md
-    scanner_critic.json
+    scanner/                   one directory per user sub-agent
+      subagent_scanner.md      its prompt
+      scanner.json             its input/output contract
+    scanner_critic/
+      subagent_scanner_critic.md
+      scanner_critic.json
 ```
 
 Three rules, and the reasons they are rules:
 
-- **The directory name *is* the top-level agent's name**, and both of its files
-  are named after it. A bundle cannot disagree with itself about what it is
-  called, and Delete has one unambiguous thing to act on.
-- **Exactly one `agent_*.md` per directory.** Two would make "which agent is
-  this directory?" a question the name alone could no longer answer.
-- **User sub-agents live in one shared directory**, not inside a bundle, because
-  they are shared: any user top-level agent may list any of them, and a
-  sub-agent published by two sources is one file rather than two copies free to
-  drift.
+- **The directory name *is* the agent's name** — a top-level agent's and a
+  sub-agent's alike — and both of its files are named after it. An entry cannot
+  disagree with itself about what it is called, and Delete has one unambiguous
+  directory to remove.
+- **Exactly one prompt per directory** (`agent_<name>.md` or
+  `subagent_<name>.md`). Two would make "which agent is this directory?" a
+  question the name alone could no longer answer.
+- **User sub-agents live under one shared directory**, not inside a bundle,
+  because they are shared: any user top-level agent may list any of them, and a
+  sub-agent published by two sources is one directory rather than two copies
+  free to drift.
 
-A stray `README.md` or `.DS_Store` beside the bundles is skipped silently — only
-directories are read as agents.
+Only directories are read as agents. A stray `README.md` or `.DS_Store` beside
+the bundles is skipped silently, and so is a loose file directly under
+`subagents/` — the flat `subagents/subagent_<name>.md` layout of the first
+release is **not** read (a clean break, like the prefix rename in §1).
 
 ---
 
@@ -128,9 +134,9 @@ to claim.
 
 ### 3.2 A sub-agent
 
-Two files in `~/.kodo/agents/subagents/`: `subagent_<name>.md` (prompt) and
-`<name>.json` (its `SubAgentSpec` — the typed contract that makes it
-spawnable). Both are exactly what the built-in sub-agents use; the spec format,
+Two files in `~/.kodo/agents/subagents/<name>/`: `subagent_<name>.md`
+(prompt) and `<name>.json` (its `SubAgentSpec` — the typed contract that makes
+it spawnable). Both are exactly what the built-in sub-agents use; the spec format,
 including the `shape` builders and the `"shape": "raw"` escape hatch, is
 documented in
 [subagents/specs/_loader.py](../src/kodo/agents/subagents/specs/_loader.py).
@@ -138,6 +144,28 @@ documented in
 A sub-agent with no spec beside it is a broken entry: the spec is what supplies
 the `input_schema` its caller fills in and the `output_schema` it returns
 through `return_result`.
+
+The prompt **must** carry a `## Purpose` section. Its text becomes the
+description of the generated `run_subagent_<name>` tool — it is what a calling
+agent reads to decide when to delegate — so a sub-agent without one is demoted
+to a broken row, and so is every top-level agent that lists it.
+
+```markdown
+---
+name: scanner
+version: 1.6.0
+standalone: true
+tools:
+  - read_file
+  - find_text_in_files
+---
+You are **Scanner**.
+
+## Purpose
+
+Scanner finds every call site of a symbol and returns them with `path:line`
+citations. Invoke it via `run_subagent_scanner` when …
+```
 
 ### 3.3 Versions
 
@@ -200,13 +228,14 @@ laid out the way one bundle is *authored*:
   reviewer.json
   agent_reviewer.md
   subagents/
-    subagent_scanner.md
-    scanner.json
+    scanner/
+      subagent_scanner.md
+      scanner.json
 ```
 
 Installing redistributes it to where the registry *reads* it: the top-level
-agent's two files into `~/.kodo/agents/reviewer/`, everything under
-`subagents/` into the shared `~/.kodo/agents/subagents/`. That redistribution is
+agent's two files into `~/.kodo/agents/reviewer/`, each `subagents/<name>/`
+directory into the shared `~/.kodo/agents/subagents/<name>/`. That redistribution is
 why there is an installer at all rather than an instruction to copy a folder.
 
 A source may carry a top-level agent, sub-agents, or both. Sub-agents alone is a
@@ -285,12 +314,16 @@ it, so cross-agent validation runs in a loop, re-checking whatever survived the
 last round until nothing more is demoted.
 
 Broken rows appear in `--list-agents`, in the Settings panel's Agents table, and
-in the server log at startup. The row names the file, so the fix is usually
+in the server log at startup — including entries demoted for a cross-agent
+reason, because every one of those listings reads the full registry rather than
+only the directory. `--install-agent` loads the registry after writing and
+exits non-zero, naming the reason, when anything it just installed does not
+load. `--system-prompt` and `--tools` see user agents too. The row names the file, so the fix is usually
 obvious:
 
 ```
 agent     reviewer  BROKEN: tool 'reed_file' has no ToolSpec in kodo.toolspecs
-subagent  scanner   BROKEN: no scanner.json beside it — a sub-agent declares its
+subagent  scanner   BROKEN: no scanner.json beside the prompt — a sub-agent declares its
                     input/output contract in a JSON file of the same name
 ```
 

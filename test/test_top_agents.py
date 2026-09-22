@@ -330,4 +330,4 @@ def test_construction_lists_several_problems_for_one_agent(agents_dir: Path) -> 
     assert "1 agent failed validation" in report
     assert "no_such_tool" in report  # unknown tool
     assert "{SHARED:editing}" in report  # file-modifying grant, no discipline
-    assert "subagent_ghost.md" in report  # dangling critic
+    assert "critic 'ghost' is not loaded" in report  # dangling critic
