@@ -20,7 +20,10 @@ Two things in the repository are deliberately **not** wired up:
   other hardcoded entry.
 - The ``MTP/`` NextN speculative-decoding heads. llama.cpp's draft-head
   support for this architecture is still an open PR (ggml-org/llama.cpp#27836
-  / #27842 as of 2026-09-13) and kodo launches no ``--spec-type`` flag.
+  / #27842 as of 2026-09-13) and kodo launches no ``--spec-type`` flag. This
+  is a support gap in llama.cpp, not in the GGUF's own data, so every entry
+  here keeps :attr:`~._types.LocalLLMEntry.mtp_supported` at its default
+  ``False`` until that upstream work lands — see :mod:`._knobs_mtp`.
 
 ``llamacpp_version`` is 10829 rather than 10660, the build that first loaded
 the architecture (ggml-org/llama.cpp#27742, merged 2026-08-27). Three

@@ -219,6 +219,21 @@ class LocalLLMEntry:
         llamacpp_version: Llama.cpp version required for this LLM to run.
             All versions that are less than this one will likely to fail
             with this LLM. ``0`` means any version will work.
+        mtp_supported: Whether this entry's GGUF is verified to carry
+            Multi-Token Prediction layers (the GGUF's own
+            ``<arch>.nextn_predict_layers`` metadata key) that llama.cpp can
+            drive as a built-in speculative-decoding draft model. This is
+            the single source of truth for MTP support — never inferred
+            from the entry's or repo's name, since a GGUF branded
+            ``-MTP-GGUF`` can still have had the layers stripped by its own
+            quantization pipeline, and one that isn't branded can still
+            carry them (see :mod:`._knobs_mtp`). When ``True``, the entry
+            must list :data:`~._knobs_mtp.MTP_SPEC_DECODE_KNOB` in
+            ``knobs``, and when ``False`` it must not — enforced at import
+            time by
+            :func:`~kodo.llms.local_registry._catalog._validate_catalog`, so
+            the flag can never silently drift from what's actually wired.
+            ``hardcoded_hf`` only — always ``False`` for every other kind.
     """
 
     name: str
@@ -244,3 +259,4 @@ class LocalLLMEntry:
     min_memory: int = 0
     memory: int = 0
     llamacpp_version: int = 0
+    mtp_supported: bool = False

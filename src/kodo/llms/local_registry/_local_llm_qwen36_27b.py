@@ -1,10 +1,32 @@
-"""Qwen36-27B GGUF catalog entries."""
+"""Qwen36-27B GGUF catalog entries.
+
+Support for Multi-Token Prediction splits **within** this family, by quant
+repo rather than by model — the first trap of its kind in this catalog, so
+it's called out explicitly rather than left to be rediscovered. The four
+``unsloth/Qwen3.6-27B-MTP-GGUF``-backed entries have it: their GGUF header
+declares ``qwen35.nextn_predict_layers = 1`` (checked directly on the
+UD-Q8_K_XL quant). The ``atomicchat-qwen36-27b-q8`` entry does not: it's a
+*different* quant of the same base model, from ``AlexAtomic/qwen36-27b-GGUF``,
+whose own GGUF header has no ``nextn_predict_layers`` key at all — that
+quantization pipeline simply didn't retain the MTP tensors. So only the
+Unsloth-backed entries list :data:`~._knobs_mtp.MTP_SPEC_DECODE_KNOB` and set
+``mtp_supported=True``; the AtomicChat entry stays at the default
+``mtp_supported=False`` with no MTP knob.
+"""
 
 from __future__ import annotations
 
+from ._knobs_mtp import MTP_SPEC_DECODE_KNOB
 from ._knobs_qwen import QWEN_CONTEXT_KNOB
 from ._knobs_shared import SHARED_KNOBS
 from ._types import LocalLLMEntry
+
+#: The Unsloth-backed entries in this family offer the shared knobs, the
+#: dense Qwen YaRN context knob, and the MTP knob; the AtomicChat entry
+#: (different quant repo, verified to lack the MTP tensors) offers only the
+#: first two.
+_QWEN36_27B_KNOBS = SHARED_KNOBS + (QWEN_CONTEXT_KNOB,)
+_QWEN36_27B_MTP_KNOBS = _QWEN36_27B_KNOBS + (MTP_SPEC_DECODE_KNOB,)
 
 
 def qwen36_27b_entries() -> list[LocalLLMEntry]:
@@ -16,7 +38,7 @@ def qwen36_27b_entries() -> list[LocalLLMEntry]:
             repo_id="AlexAtomic/qwen36-27b-GGUF",
             filename="qwen36-27b-Q8_0.gguf",
             context_window=262_144,
-            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knobs=_QWEN36_27B_KNOBS,
             base_llm="Qwen36-27B",
             llm_author="Alibaba Cloud",
             license_name="Apache License 2.0",
@@ -41,7 +63,8 @@ def qwen36_27b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
             filename="Qwen3.6-27B-UD-Q8_K_XL.gguf",
             context_window=262_144,
-            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knobs=_QWEN36_27B_MTP_KNOBS,
+            mtp_supported=True,
             base_llm="Qwen36-27B",
             llm_author="Alibaba Cloud",
             license_name="Apache License 2.0",
@@ -65,7 +88,8 @@ def qwen36_27b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
             filename="Qwen3.6-27B-UD-Q6_K_XL.gguf",
             context_window=262_144,
-            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knobs=_QWEN36_27B_MTP_KNOBS,
+            mtp_supported=True,
             base_llm="Qwen36-27B",
             llm_author="Alibaba Cloud",
             license_name="Apache License 2.0",
@@ -89,7 +113,8 @@ def qwen36_27b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
             filename="Qwen3.6-27B-UD-Q5_K_XL.gguf",
             context_window=262_144,
-            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knobs=_QWEN36_27B_MTP_KNOBS,
+            mtp_supported=True,
             base_llm="Qwen36-27B",
             llm_author="Alibaba Cloud",
             license_name="Apache License 2.0",
@@ -111,7 +136,8 @@ def qwen36_27b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.6-27B-MTP-GGUF",
             filename="Qwen3.6-27B-UD-Q4_K_XL.gguf",
             context_window=262_144,
-            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knobs=_QWEN36_27B_MTP_KNOBS,
+            mtp_supported=True,
             base_llm="Qwen36-27B",
             llm_author="Alibaba Cloud",
             license_name="Apache License 2.0",

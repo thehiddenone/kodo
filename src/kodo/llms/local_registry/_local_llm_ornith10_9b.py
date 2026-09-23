@@ -4,6 +4,11 @@ A **dense** build despite the MoE sibling in the same generation: its GGUF
 records ``general.architecture = qwen35``, so it takes
 :data:`~._knobs_qwen.QWEN_CONTEXT_KNOB`, not the MoE one that
 ``_local_llm_ornith10_35b_a3b.py`` uses.
+
+No MTP knob: the base model's own source weights (``ornith-ai/Ornith-1.0-9B``)
+have zero ``mtp.*`` tensors, unlike the 1.5 generation's Qwen3.5 lineage —
+see :mod:`._knobs_mtp`. Every entry here keeps
+:attr:`~._types.LocalLLMEntry.mtp_supported` at its default ``False``.
 """
 
 from __future__ import annotations

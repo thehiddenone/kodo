@@ -10,6 +10,7 @@ function below — nothing else in this package should construct
 from __future__ import annotations
 
 from ._knobs import validate_knobs
+from ._knobs_mtp import MTP_SPEC_DECODE_KNOB
 from ._local_llm_gemma4_26b_a4b import gemma4_26b_a4b_entries
 from ._local_llm_gemma4_31b import gemma4_31b_entries
 from ._local_llm_gpt_oss_20b import gpt_oss_20b_entries
@@ -83,6 +84,14 @@ def _validate_catalog() -> None:
        so renaming or dropping a model family leaves a slug behind that
        matches nothing and silently strips that family's reasoning tiers —
        the model keeps working, just with thinking quietly unavailable.
+    4. **``mtp_supported`` against the knob** — an entry's
+       :attr:`~kodo.llms.local_registry.LocalLLMEntry.mtp_supported` must
+       agree with whether it lists
+       :data:`~kodo.llms.local_registry._knobs_mtp.MTP_SPEC_DECODE_KNOB` in
+       its ``knobs``. Without this, the boolean could drift from what's
+       actually wired — set without the knob (a claim the UI never backs
+       up) or the knob added without the flag (silently missing from
+       whatever, in the future, reads the flag instead of the knob list).
 
     Note that this validates *code against code*; the mirror-image cleanup of
     a user's stored per-model state after a rename or removal is
@@ -92,6 +101,13 @@ def _validate_catalog() -> None:
     known: dict[str, object] = {}
     for entry in _HARDCODED_LOCAL_MODELS:
         validate_knobs(entry.knobs, context=entry.name)
+        has_mtp_knob = any(knob.id == MTP_SPEC_DECODE_KNOB.id for knob in entry.knobs)
+        if entry.mtp_supported != has_mtp_knob:
+            raise ValueError(
+                f"{entry.name}: mtp_supported={entry.mtp_supported!r} but "
+                f"{'lists' if has_mtp_knob else 'does not list'} the "
+                f"{MTP_SPEC_DECODE_KNOB.id!r} knob — the two must agree"
+            )
         by_id = {knob.id: knob for knob in entry.knobs}
         for knob_id, selection in entry.knob_defaults.items():
             knob = by_id.get(knob_id)

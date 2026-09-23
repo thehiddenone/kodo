@@ -890,6 +890,7 @@ class LocalLLMEntry:
     min_memory: int = 0     # hardcoded_hf only — absolute minimum combined VRAM+RAM (GB); 0 = unknown
     memory: int = 0         # hardcoded_hf only — recommended combined VRAM+RAM (GB); 0 = unknown
     llamacpp_version: int = 0  # hardcoded_hf only in practice — minimum llama.cpp build number; 0 = any version works
+    mtp_supported: bool = False  # hardcoded_hf only — this GGUF is verified to carry Multi-Token Prediction layers, see §4.6
 ```
 
 `base_llm`/`llm_author`/`license_name`/`license_url`/`quant_author`/`quant_type`/`size_hint`/`gpu_tip`/`mac_tip`/
@@ -1703,28 +1704,49 @@ runs at its unscaled native length, so there is no "native" option to offer.
 / `1m`, where the latter two write the same explicit YaRN args as the Qwen
 knobs, computed off the real native context of 8192.
 
-**Ornith 1.5 35B-A3B ships a second private knob**, and it is the only
-non-context one in the catalog: `spec-decoding-mtp` (`ORNITH15_MTP_KNOB`,
-hand-built in `_local_llm_ornith15_35b_a3b.py`).
+**MTP (Multi-Token Prediction) speculative decoding** is one knob shared
+across every family that has it, `spec-decoding-mtp`
+(`MTP_SPEC_DECODE_KNOB`, defined once in `_knobs_mtp.py`) — unlike the YaRN
+context knobs it needs no per-architecture `--override-kv` target, since
+`--spec-type draft-mtp` is the same flag regardless of GGUF architecture, so
+a single knob object is reused rather than one per family.
 
 | knob id | kind | options | flags |
 |---------|------|---------|-------|
 | `spec-decoding-mtp` | checkbox | `off` (default), `on` | `--spec-type` |
 
 `on` writes `--spec-type draft-mtp`, which tells llama.cpp to run speculative
-decoding against the Multi-Token Prediction layers baked into the GGUF
-(`qwen35moe.nextn_predict_layers`) — a built-in draft model, so unlike the
-usual speculative-decoding setup there is no second GGUF to download or
-point at. Decoding stays verified, so the sampled distribution is unchanged;
-only throughput moves. It is private rather than shared precisely because
-`--spec-type draft-mtp` is **not** a no-op on a GGUF without MTP layers, and
-no other entry in the catalog has them — including Ornith 1.5 **9B**, whose
-model card lists "Speculative decoding: no", which is why that family
-declares no MTP knob. Default `off`: this is the only place kodo launches
-`--spec-type` at all, so the speedup is opt-in. Note that bartowski stores
-the MTP layers at Q4_0 in every imatrix quant except Q8_0 (imatrix
-calibration does not exercise them, and Q4_0's speed is what makes drafting
-pay off), so draft quality is intentionally low across most of the ladder.
+decoding against the Multi-Token Prediction layers baked into the GGUF (its
+own `<arch>.nextn_predict_layers` metadata key) — a built-in draft model, so
+unlike the usual speculative-decoding setup there is no second GGUF to
+download or point at. Decoding stays verified, so the sampled distribution
+is unchanged; only throughput moves. Default `off`: the speedup is opt-in.
+
+Whether an entry offers this knob is controlled by its own
+`mtp_supported: bool` field (`LocalLLMEntry`, §4), which `_validate_catalog()`
+enforces can never disagree with whether the knob is actually in that
+entry's `knobs` tuple — one drifting from the other fails at import, not at
+launch. `mtp_supported` is set **per verified GGUF, never inferred from a
+repo's `-MTP-GGUF` name or the model family**: a repo can be branded MTP and
+still have had the layers stripped by its own quantization pipeline (true of
+`AlexAtomic/qwen36-27b-GGUF`, whose GGUF header has no
+`nextn_predict_layers` key at all, even though its Unsloth-quantized
+siblings in the same `Qwen36-27B` catalog family do), and a repo with no
+such branding can still carry them (true of `unsloth/Qwen3.8-27B-GGUF`).
+Verification means range-fetching an actual quant file's header and
+confirming the metadata key directly, the same discipline the context-knob
+code above already insists on for `arch_key`.
+
+As of this writing, `mtp_supported=True` on: every Ornith15-35B-A3B entry,
+every Qwen35-9B entry, every Qwen36-35B-A3B entry, every Qwen38-27B entry,
+and the four `unsloth/Qwen3.6-27B-MTP-GGUF`-backed Qwen36-27B entries (not
+its `atomicchat-qwen36-27b-q8` sibling). Everything else in the catalog
+stays at the field's default `False`, including entries that look like
+plausible candidates: Ornith15-9B and Ornith10-9B/-35B-A3B (no MTP tensors
+in the underlying weights, or unverifiable), and Qwen38-Flash-Next (the
+GGUF does carry an `MTP/` NextN head, but llama.cpp's draft-head support for
+its `qwen4exp` architecture is an open upstream PR, so kodo launches no
+`--spec-type` regardless of data availability).
 
 **Which context knob an Ornith entry takes is decided by the GGUF's
 architecture key, not by the family name** — the 35B-A3B and 9B builds of

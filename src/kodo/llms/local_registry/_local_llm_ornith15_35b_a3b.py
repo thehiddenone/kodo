@@ -13,10 +13,10 @@ Two things separate it from the 1.0 family:
 
 - **MTP.** These quants carry Multi-Token Prediction layers (the GGUF's
   ``qwen35moe.nextn_predict_layers``), which llama.cpp can drive as a
-  built-in draft model for speculative decoding. That is what
-  :data:`ORNITH15_MTP_KNOB` below exposes; it is declared here rather than
-  in :mod:`._knobs_shared` because no other model in the catalog ships MTP
-  layers, and ``--spec-type`` on a GGUF without them is not a no-op.
+  built-in draft model for speculative decoding — see
+  :mod:`._knobs_mtp` for :data:`~._knobs_mtp.MTP_SPEC_DECODE_KNOB`, which
+  every entry here lists, and :attr:`~._types.LocalLLMEntry.mtp_supported`,
+  which every entry here sets ``True``.
 - **Vision.** The upstream model is multimodal and bartowski's repo ships
   ``mmproj-Ornith-1.5-35B-A3B-{f16,bf16}.gguf`` companions.
   :class:`~._types.LocalLLMEntry` has no field to declare an mmproj
@@ -32,62 +32,14 @@ so a 32-36GB machine can run the model at all.
 
 from __future__ import annotations
 
-from ._knobs import KnobKind, KnobOption, LlamaKnob
+from ._knobs_mtp import MTP_SPEC_DECODE_KNOB
 from ._knobs_qwen import QWEN_MOE_CONTEXT_KNOB
 from ._knobs_shared import KV_CACHE_F16_DEFAULT, SHARED_KNOBS
 from ._types import LocalLLMEntry
 
-#: Speculative decoding off the model's own MTP layers. Unique to this family
-#: — ``--spec-type draft-mtp`` tells llama.cpp to use the MTP heads baked into
-#: the GGUF as the draft model, so unlike the usual speculative-decoding setup
-#: there is no second model to download or configure. Verified decoding, so
-#: the sampled distribution is unchanged; the only cost is the extra compute
-#: when a draft token is rejected.
-#:
-#: Defaults to ``off``: no other entry in the catalog launches ``--spec-type``,
-#: so this is the one place the flag is exercised at all, and a user who wants
-#: the speedup should opt into it knowingly. Note that bartowski stores the
-#: MTP layers at Q4_0 in every imatrix quant except Q8_0 (imatrix calibration
-#: does not exercise them, and Q4_0's speed is what makes drafting pay off),
-#: so draft quality is deliberately low across most of the ladder — that is
-#: the intended trade, not a defect.
-ORNITH15_MTP_KNOB = LlamaKnob(
-    id="spec-decoding-mtp",
-    name="Speculative decoding (MTP)",
-    description=(
-        "Uses the Multi-Token Prediction layers built into this model's GGUF as a draft "
-        "model, letting llama.cpp guess several tokens ahead and verify them in one pass. "
-        "Generation gets faster on accepted guesses and the output is unchanged either way, "
-        "since every drafted token is verified against the full model. There is nothing extra "
-        "to download — the draft layers ship inside the quant."
-    ),
-    kind=KnobKind.CHECKBOX,
-    options=(
-        KnobOption(
-            id="off",
-            name="Off",
-            description=(
-                "Plain single-token decoding. Pick this if you see instability, or if you are "
-                "comparing timings against another model that has no MTP layers."
-            ),
-        ),
-        KnobOption(
-            id="on",
-            name="On",
-            description=(
-                "Draft with the model's own MTP layers. Faster on predictable text (code, "
-                "structured output, long tool-call arguments) and roughly neutral on text where "
-                "few guesses are accepted."
-            ),
-            llama_args={"--spec-type": "draft-mtp"},
-        ),
-    ),
-    default_option="off",
-)
-
 #: Every entry in this family offers the shared knobs, the MoE YaRN context
-#: knob, and the MTP knob above.
-_ORNITH15_35B_KNOBS = SHARED_KNOBS + (QWEN_MOE_CONTEXT_KNOB, ORNITH15_MTP_KNOB)
+#: knob, and the MTP knob.
+_ORNITH15_35B_KNOBS = SHARED_KNOBS + (QWEN_MOE_CONTEXT_KNOB, MTP_SPEC_DECODE_KNOB)
 
 
 def ornith15_35b_a3b_entries() -> list[LocalLLMEntry]:
@@ -100,6 +52,7 @@ def ornith15_35b_a3b_entries() -> list[LocalLLMEntry]:
             filename="Ornith-1.5-35B-A3B-bf16/Ornith-1.5-35B-A3B-bf16-00001-of-00002.gguf",
             context_window=262_144,
             knobs=_ORNITH15_35B_KNOBS,
+            mtp_supported=True,
             knob_defaults=KV_CACHE_F16_DEFAULT,
             base_llm="Ornith15-35B-A3B",
             llm_author="Ornith AI",
@@ -127,6 +80,7 @@ def ornith15_35b_a3b_entries() -> list[LocalLLMEntry]:
             filename="Ornith-1.5-35B-A3B-Q8_0.gguf",
             context_window=262_144,
             knobs=_ORNITH15_35B_KNOBS,
+            mtp_supported=True,
             base_llm="Ornith15-35B-A3B",
             llm_author="Ornith AI",
             license_name="MIT License",
@@ -152,6 +106,7 @@ def ornith15_35b_a3b_entries() -> list[LocalLLMEntry]:
             filename="Ornith-1.5-35B-A3B-Q6_K.gguf",
             context_window=262_144,
             knobs=_ORNITH15_35B_KNOBS,
+            mtp_supported=True,
             base_llm="Ornith15-35B-A3B",
             llm_author="Ornith AI",
             license_name="MIT License",
@@ -176,6 +131,7 @@ def ornith15_35b_a3b_entries() -> list[LocalLLMEntry]:
             filename="Ornith-1.5-35B-A3B-Q5_K_M.gguf",
             context_window=262_144,
             knobs=_ORNITH15_35B_KNOBS,
+            mtp_supported=True,
             base_llm="Ornith15-35B-A3B",
             llm_author="Ornith AI",
             license_name="MIT License",
@@ -199,6 +155,7 @@ def ornith15_35b_a3b_entries() -> list[LocalLLMEntry]:
             filename="Ornith-1.5-35B-A3B-Q4_K_M.gguf",
             context_window=262_144,
             knobs=_ORNITH15_35B_KNOBS,
+            mtp_supported=True,
             base_llm="Ornith15-35B-A3B",
             llm_author="Ornith AI",
             license_name="MIT License",
@@ -222,6 +179,7 @@ def ornith15_35b_a3b_entries() -> list[LocalLLMEntry]:
             filename="Ornith-1.5-35B-A3B-Q3_K_XL.gguf",
             context_window=262_144,
             knobs=_ORNITH15_35B_KNOBS,
+            mtp_supported=True,
             base_llm="Ornith15-35B-A3B",
             llm_author="Ornith AI",
             license_name="MIT License",
@@ -245,6 +203,7 @@ def ornith15_35b_a3b_entries() -> list[LocalLLMEntry]:
             filename="Ornith-1.5-35B-A3B-IQ3_M.gguf",
             context_window=262_144,
             knobs=_ORNITH15_35B_KNOBS,
+            mtp_supported=True,
             base_llm="Ornith15-35B-A3B",
             llm_author="Ornith AI",
             license_name="MIT License",
@@ -269,6 +228,7 @@ def ornith15_35b_a3b_entries() -> list[LocalLLMEntry]:
             filename="Ornith-1.5-35B-A3B-Q2_K_L.gguf",
             context_window=262_144,
             knobs=_ORNITH15_35B_KNOBS,
+            mtp_supported=True,
             base_llm="Ornith15-35B-A3B",
             llm_author="Ornith AI",
             license_name="MIT License",

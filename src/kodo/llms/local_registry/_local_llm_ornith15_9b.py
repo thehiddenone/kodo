@@ -14,7 +14,9 @@ The upstream model is multimodal and bartowski's repo ships
 :class:`~._types.LocalLLMEntry` has no field to declare one, so every entry
 here is registered text-only. Unlike the 35B-A3B build there are no MTP
 layers in these quants (bartowski's model card lists "Speculative decoding:
-no"), so this family declares no MTP knob.
+no"), so this family declares no MTP knob and every entry keeps
+:attr:`~._types.LocalLLMEntry.mtp_supported` at its default ``False`` — see
+:mod:`._knobs_mtp`.
 
 The quant ladder mirrors the five rungs Ornith 1.0 9B ships
 (BF16/Q8_0/Q6_K/Q5_K_M/Q4_K_M) plus three smaller builds. The tail is

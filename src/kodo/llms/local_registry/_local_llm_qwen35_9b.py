@@ -1,10 +1,21 @@
-"""Qwen35-9B GGUF catalog entries."""
+"""Qwen35-9B GGUF catalog entries.
+
+Verified to carry Multi-Token Prediction layers: the GGUF header declares
+``qwen35.nextn_predict_layers = 1`` (checked directly on the BF16 quant, not
+inferred from the repo's own ``-MTP-GGUF`` name), so every entry here lists
+:data:`~._knobs_mtp.MTP_SPEC_DECODE_KNOB` and sets ``mtp_supported=True``.
+"""
 
 from __future__ import annotations
 
+from ._knobs_mtp import MTP_SPEC_DECODE_KNOB
 from ._knobs_qwen import QWEN_CONTEXT_KNOB
 from ._knobs_shared import KV_CACHE_F16_DEFAULT, SHARED_KNOBS
 from ._types import LocalLLMEntry
+
+#: Every entry in this family offers the shared knobs, the dense Qwen YaRN
+#: context knob, and the MTP knob.
+_QWEN35_9B_KNOBS = SHARED_KNOBS + (QWEN_CONTEXT_KNOB, MTP_SPEC_DECODE_KNOB)
 
 
 def qwen35_9b_entries() -> list[LocalLLMEntry]:
@@ -16,7 +27,8 @@ def qwen35_9b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
             filename="Qwen3.5-9B-BF16.gguf",
             context_window=262_144,
-            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knobs=_QWEN35_9B_KNOBS,
+            mtp_supported=True,
             knob_defaults=KV_CACHE_F16_DEFAULT,
             base_llm="Qwen35-9B",
             llm_author="Alibaba Cloud",
@@ -41,7 +53,8 @@ def qwen35_9b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
             filename="Qwen3.5-9B-UD-Q8_K_XL.gguf",
             context_window=262_144,
-            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knobs=_QWEN35_9B_KNOBS,
+            mtp_supported=True,
             base_llm="Qwen35-9B",
             llm_author="Alibaba Cloud",
             license_name="Apache License 2.0",
@@ -64,7 +77,8 @@ def qwen35_9b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
             filename="Qwen3.5-9B-UD-Q6_K_XL.gguf",
             context_window=262_144,
-            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knobs=_QWEN35_9B_KNOBS,
+            mtp_supported=True,
             base_llm="Qwen35-9B",
             llm_author="Alibaba Cloud",
             license_name="Apache License 2.0",
@@ -87,7 +101,8 @@ def qwen35_9b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
             filename="Qwen3.5-9B-UD-Q5_K_XL.gguf",
             context_window=262_144,
-            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knobs=_QWEN35_9B_KNOBS,
+            mtp_supported=True,
             base_llm="Qwen35-9B",
             llm_author="Alibaba Cloud",
             license_name="Apache License 2.0",
@@ -109,7 +124,8 @@ def qwen35_9b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
             filename="Qwen3.5-9B-UD-Q4_K_XL.gguf",
             context_window=262_144,
-            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knobs=_QWEN35_9B_KNOBS,
+            mtp_supported=True,
             base_llm="Qwen35-9B",
             llm_author="Alibaba Cloud",
             license_name="Apache License 2.0",
@@ -131,7 +147,8 @@ def qwen35_9b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
             filename="Qwen3.5-9B-UD-Q3_K_XL.gguf",
             context_window=262_144,
-            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knobs=_QWEN35_9B_KNOBS,
+            mtp_supported=True,
             base_llm="Qwen35-9B",
             llm_author="Alibaba Cloud",
             license_name="Apache License 2.0",
@@ -153,7 +170,8 @@ def qwen35_9b_entries() -> list[LocalLLMEntry]:
             repo_id="unsloth/Qwen3.5-9B-MTP-GGUF",
             filename="Qwen3.5-9B-UD-Q2_K_XL.gguf",
             context_window=262_144,
-            knobs=SHARED_KNOBS + (QWEN_CONTEXT_KNOB,),
+            knobs=_QWEN35_9B_KNOBS,
+            mtp_supported=True,
             base_llm="Qwen35-9B",
             llm_author="Alibaba Cloud",
             license_name="Apache License 2.0",

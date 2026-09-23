@@ -250,6 +250,41 @@ def test_every_shipped_entry_has_a_valid_knob_set() -> None:
         validate_knobs(entry.knobs, context=entry.name)
 
 
+def test_every_shipped_entry_with_mtp_support_declares_the_spec_decoding_knob() -> None:
+    """``mtp_supported`` and the knob's presence must never disagree (the real catalog)."""
+    from kodo.llms.local_registry._catalog import _HARDCODED_LOCAL_MODELS
+    from kodo.llms.local_registry._knobs_mtp import MTP_SPEC_DECODE_KNOB
+
+    assert _HARDCODED_LOCAL_MODELS
+    for entry in _HARDCODED_LOCAL_MODELS:
+        has_knob = any(knob.id == MTP_SPEC_DECODE_KNOB.id for knob in entry.knobs)
+        assert entry.mtp_supported == has_knob, entry.name
+
+
+def test_validate_catalog_rejects_mtp_supported_without_the_knob(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bad = replace(_BASE_ENTRY, name="fake-mtp-claim", mtp_supported=True)
+    monkeypatch.setattr(_catalog, "_HARDCODED_LOCAL_MODELS", (bad,))
+    with pytest.raises(ValueError, match="mtp_supported=True but does not list"):
+        _catalog._validate_catalog()
+
+
+def test_validate_catalog_rejects_the_knob_without_mtp_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kodo.llms.local_registry._knobs_mtp import MTP_SPEC_DECODE_KNOB
+
+    bad = replace(
+        _BASE_ENTRY,
+        name="fake-mtp-unflagged",
+        knobs=_BASE_ENTRY.knobs + (MTP_SPEC_DECODE_KNOB,),
+    )
+    monkeypatch.setattr(_catalog, "_HARDCODED_LOCAL_MODELS", (bad,))
+    with pytest.raises(ValueError, match="mtp_supported=False but lists"):
+        _catalog._validate_catalog()
+
+
 def test_shared_sampling_knobs_never_enable_a_repetition_penalty() -> None:
     """doc/QUANT_SAMPLING.md §3f — DRY et al. break verbatim identifier recall."""
     banned = {
