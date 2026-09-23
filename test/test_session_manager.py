@@ -97,9 +97,16 @@ async def test_grace_blocks_others_then_frees(manager_factory) -> None:  # type:
     # During the grace window the session is still reserved for window A.
     assert await mgr.open(session.id, "windowB") is None
 
-    await asyncio.sleep(0.12)  # let grace expire
-
-    reopened = await mgr.open(session.id, "windowB")
+    # Poll for grace expiry rather than sleeping a fixed margin past it: a
+    # loaded CI runner's event-loop scheduling jitter can easily exceed a
+    # tight fixed margin (e.g. 0.12s past a 0.05s grace), which flaked this
+    # test without any actual bug in SessionManager.
+    reopened = None
+    for _ in range(100):
+        reopened = await mgr.open(session.id, "windowB")
+        if reopened is not None:
+            break
+        await asyncio.sleep(0.05)
     assert reopened is not None and reopened.id == session.id
 
 
