@@ -170,17 +170,16 @@ def test_every_shipped_config_carries_notes() -> None:
         assert cfg.notes.strip(), cfg.name
 
 
-def test_guides_picker_label_is_not_its_display_name() -> None:
-    """The one case that proves the two names are separate things.
+def test_guides_picker_label_matches_its_display_name() -> None:
+    """The picker calls this agent "Guide"; the feed does too, on purpose.
 
-    The feed calls this agent "Kōdo" (its frontmatter ``display_name``); the
-    picker calls the *choice* "Guide". A change that collapsed them would
-    silently rename a control the user has always known by the other name.
+    A prior version of the product split the two names ("Kōdo" in the feed,
+    "Guide" in the picker); that split was retired in favor of one name.
     """
     registry = AgentRegistry(_REAL_AGENTS_DIR)
     guide = next(a for a in registry.top_agents() if a.name == "kodo_guide")
     assert guide.label == "Guide"
-    assert registry.get("kodo_guide").display_name == "Kōdo"
+    assert registry.get("kodo_guide").display_name == "Guide"
 
 
 def test_only_selectable_agents_would_reach_a_picker() -> None:

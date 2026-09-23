@@ -954,9 +954,8 @@ class AgentRegistry:
         for name in sorted(loaded & configs.keys()):
             cfg = configs[name]
             # ``label`` names the *choice* in a picker; ``display_name`` names
-            # the agent as it works. They are allowed to differ — ``guide`` is
-            # "Guide" in the picker and "Kōdo" in the feed — so the config wins
-            # where it speaks and falls back where it does not.
+            # the agent as it works. They are allowed to differ, so the config
+            # wins where it speaks and falls back where it does not.
             agents.append(replace(cfg, label=cfg.label or self.__agents[name].display_name))
         for top in agents:
             # One namespace, one kind of value: an agent's name *is* the value

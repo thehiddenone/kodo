@@ -1,4 +1,4 @@
-"""Approval-gate and user-question orchestration (WS_PROTOCOL.md §6).
+r"""Approval-gate and user-question orchestration (WS_PROTOCOL.md §6).
 
 Server-initiated user interactions use ``kind=request`` frames so the
 client's reply is a ``kind=response`` correlated by ``id``.

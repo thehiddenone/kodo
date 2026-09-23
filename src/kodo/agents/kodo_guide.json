@@ -1,6 +1,6 @@
 {
   "name": "kodo_guide",
-  "notes": "The full Kodo pipeline. `label` is deliberately NOT the agent's display_name: the feed calls this agent 'Kōdo' (its frontmatter display_name), while the picker has always called the choice 'Guide' — naming the option after the product would read as 'pick Kodo' in a list of Kodo's own agents. Every built-in agent carries the `kodo_` prefix so a user-installed agent can never collide with one; the prefix is reserved and refused on user files.",
+  "notes": "The full Kodo pipeline. `label` matches the agent's frontmatter display_name ('Guide') on purpose — an earlier version split the two ('Kōdo' in the feed, 'Guide' in the picker), which was retired in favor of one name. Every built-in agent carries the `kodo_` prefix so a user-installed agent can never collide with one; the prefix is reserved and refused on user files.",
   "label": "Guide",
   "description": "One coordinating agent drives specialists through design, tests and implementation.",
   "rank": 20

@@ -85,9 +85,8 @@ class TopAgent:
         label: User-facing name for a picker row (``"Problem Solver"``).
 
             **Not the same thing as** :attr:`kodo.agents.SubAgent.display_name`,
-            and the two are allowed to differ — ``guide`` is the standing case:
-            the feed calls it "Kōdo" while the picker has always called the
-            *choice* "Guide". ``display_name`` names the agent as it works;
+            and the two are allowed to differ, though no built-in agent
+            currently does. ``display_name`` names the agent as it works;
             ``label`` names the option you pick. Omit it and it falls back to
             ``display_name``.
         description: One sentence describing what choosing this agent does,
