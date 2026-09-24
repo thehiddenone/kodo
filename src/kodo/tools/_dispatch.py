@@ -430,7 +430,7 @@ class ToolDispatcher:
 
         Returns ``None`` when dispatch may proceed (allowed outright, or the
         user granted permission), or a JSON-encoded error result when the user
-        denied the call.
+        denied the call or the layer denied it outright (``deny``).
 
         A *recovered* call (salvaged from a model that emitted it as plain
         text — see :meth:`dispatch`) forces the prompt whenever the run is not
@@ -478,6 +478,13 @@ class ToolDispatcher:
             decision_action = decision.action
             decision_reason = decision.reason
             parts = decision.parts
+
+        if decision_action == "deny":
+            # A final verdict with no one to ask (the headless sandbox,
+            # doc/HEADLESS.md): never prompt, never run the handler — and it
+            # wins over a recovered call's forced prompt too.
+            _log.info("security: DENIED %s (%s): %s", tool_name, ctx.agent_name, decision_reason)
+            return json.dumps({"error": f"Blocked by the headless sandbox: {decision_reason}"})
 
         if not force_ask and decision_action != "ask":
             return None

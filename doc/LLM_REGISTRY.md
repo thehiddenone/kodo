@@ -1183,6 +1183,35 @@ control — a label showing the current override path or "No override" plus
 "Set llama.cpp override" / "Remove llama.cpp override" buttons — separate
 from the model card grid, since it isn't itself a model.
 
+### 4.2a Standalone llama-server and attaching to one by URL
+
+Two headless-only paths reuse a registry entry without the kodo server
+managing its llama-server ([HEADLESS.md](HEADLESS.md)).
+
+- **`kodo-llama-server start --model ENTRY --port N`** launches the entry with
+  `resolve_llama_launch(entry, kodo_dir)`, the launch resolution extracted out
+  of `ensure_llama_running`. It covers the override binary, the active
+  profile's args and the forced `--reasoning-budget`, so both paths launch
+  with identical flags.
+  - The GGUF comes from `find_installed_model_path`, which reads
+    `manager-state.json` through `LocalModelManager.peek_model_path` and never
+    constructs a manager, so an in-flight download is never flipped to
+    `PAUSED`.
+  - `LlamaServerConfig.runtime_file` / `log_file` / `alias` redirect the
+    runtime record to `llama.cpp/standalone/<port>.json` (never the adopted
+    `llama-server.json`), give it its own log, and pass `--alias ENTRY`.
+    All three default to `None`/`""`, which keeps the kodo server's behavior
+    unchanged.
+- **`kodo-server --headless-sandbox … --llama-url URL`** sets
+  `RemoteLlamaEndpoint` for the process. `LlamaPlugin` then streams from that
+  URL for every local entry and never launches a server.
+  - Unlike a `custom_server_url` entry, the model keeps its full registry
+    identity: `base_llm` thinking family, the active profile's context window,
+    and sampling.
+  - `RemoteLlamaEndpoint.verify` checks the endpoint once per `(url, entry)`:
+    the alias or GGUF file name, and a per-slot `n_ctx` no smaller than the
+    registry's window divided by `--parallel`.
+
 ### 4.3 Hardware detection (`detected_vram_gb`, `detected_ram_gb`)
 
 `kodo/llms/_hardware.py`'s `detect_vram_gb()` and `detect_ram_gb()` are

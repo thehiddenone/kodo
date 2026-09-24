@@ -60,7 +60,12 @@ from kodo.project import (
     WorkspaceLayout,
     kodo_user_dir,
 )
-from kodo.security import SecurityLayer, add_global_path_rule, add_global_rule
+from kodo.security import (
+    SandboxSecurityLayer,
+    SecurityLayer,
+    add_global_path_rule,
+    add_global_rule,
+)
 from kodo.state import TransientStore
 from kodo.titling import generate_project_name
 from kodo.tools import LogicalPathResolver, PathResolver, RootPath, root_for
@@ -198,6 +203,7 @@ class WorkflowEngine(
         registry: AgentRegistry,
         gateway: LLMGateway,
         session_workspace: SessionWorkspace | None = None,
+        sandbox_root: Path | None = None,
     ) -> None:
         """Initialise the runtime engine.
 
@@ -219,6 +225,11 @@ class WorkflowEngine(
             workspace_layout (WorkspaceLayout): Workspace-tier filesystem layout
                 + logical-root folder map.
             registry (AgentRegistry): Loaded subagent file registry.
+            sandbox_root (Path | None): Headless runs only (doc/HEADLESS.md):
+                judge every tool call with a
+                :class:`~kodo.security.SandboxSecurityLayer` confining mutation
+                to this directory — allow or deny, never ask. ``None`` (the
+                default) is the interactive :class:`~kodo.security.SecurityLayer`.
         """
         self._sink = sink
         self._gate = gate
@@ -276,7 +287,9 @@ class WorkflowEngine(
         self._subsession_crash_recovered = False
         # The security layer judging every tool call (doc/SECURITY.md) —
         # deterministic heuristic rules, no LLM involved.
-        self._security = SecurityLayer()
+        self._security = (
+            SandboxSecurityLayer(sandbox_root) if sandbox_root is not None else SecurityLayer()
+        )
         # Collaborators. The emitters' context gauge and the compactor's cost
         # folding cross-reference each other, so both sides are late-bound:
         # the emitters get a lambda that reads the compactor built right after.

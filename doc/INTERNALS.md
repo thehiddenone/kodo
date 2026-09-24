@@ -56,6 +56,17 @@ source:
 | `titling` | `project`, `llms` |
 | `runtime` | `common`, `transport`, `toolspecs`, `tools`, `findings`, `plan`, `workproducts`, `guided_state`, `project`, `state`, `subagents`, `llms`, `titling`, `mirror`, `shellparser`, `binutils` |
 | `server` | `common`, `transport`, `project`, `state`, `subagents`, `llms`, `titling`, `runtime`, `binutils` |
+| `llamaserver` | `llms`, `project` |
+| `headless` | `common`, `transport`, `validator` |
+
+`llamaserver` (the `kodo-llama-server` command) and `headless` (the
+`kodo-headless` command) are leaves in the other direction: nothing in `kodo`
+imports either one. `headless` is a pure client with the same discipline as
+`validator`: it never imports `runtime`, `llms`, `agents`, `server`, `tools`,
+`security` or `llamaserver`, and spawns the server and llama-server by module
+name ([HEADLESS.md](HEADLESS.md)). The server's headless mode reaches the
+sandbox layer through `WorkflowEngine(sandbox_root=…)`, so `runtime` remains the
+only importer of `security`.
 
 `toolspecs` is now a true leaf: the old `toolspecs → workspace` edge (importing
 `ArtifactType` for `list_artifacts`'s schema) is gone along with the artifact

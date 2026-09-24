@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 from kodo.llms import (
@@ -22,7 +23,14 @@ from kodo.llms.local import LocalModelManager
 from ._installer import find_installed
 from ._llama_server import LlamaServer, LlamaServerConfig
 
-__all__ = ["ensure_llama_running", "get_local_model_manager", "purge_unknown_local_models"]
+__all__ = [
+    "LlamaLaunch",
+    "ensure_llama_running",
+    "find_installed_model_path",
+    "get_local_model_manager",
+    "purge_unknown_local_models",
+    "resolve_llama_launch",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -183,9 +191,7 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
             return server
         await server.stop()
 
-    install = find_installed(kodo_dir)
-    if install is None:
-        raise RuntimeError("llama.cpp is not installed")
+    launch = resolve_llama_launch(entry, kodo_dir)
 
     if entry.kind == "custom_file":
         model_path: Path | None = Path(entry.path)
@@ -195,6 +201,60 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
         model_path = get_local_model_manager(kodo_dir).get_model_path(entry.name)
         if model_path is None:
             raise RuntimeError(f"Model {entry.name!r} is not installed")
+
+    cfg = LlamaServerConfig(
+        executable=launch.executable,
+        model_path=model_path,
+        kodo_dir=kodo_dir,
+        model_name=entry.name,
+    )
+    server = LlamaServer(cfg, launch.llama_args, profile_id=launch.profile_id)
+    await server.start()
+    return server
+
+
+@dataclass(frozen=True)
+class LlamaLaunch:
+    """Everything needed to launch llama-server for one entry, except the GGUF path.
+
+    Attributes:
+        executable: The llama-server binary — the user's override when one
+            is set (:func:`kodo.llms.get_llama_server_override_path`), else
+            the installed llama.cpp build's.
+        llama_args: The complete resolved launch flags for the entry's active
+            profile, including any flag the engine forces regardless of it.
+        profile_id: The active user-defined profile's id, ``""`` for Default.
+    """
+
+    executable: Path
+    llama_args: dict[str, str]
+    profile_id: str
+
+
+def resolve_llama_launch(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaLaunch:
+    """Resolve how llama-server must be launched for *entry*.
+
+    The single source of launch configuration for both the kodo server's own
+    managed llama-server (:func:`ensure_llama_running`) and the standalone
+    ``kodo-llama-server`` — so a model launched by either gets identical flags.
+    The GGUF path is deliberately not resolved here: the two callers look it
+    up differently (the standalone one must not construct a
+    :class:`~kodo.llms.local.LocalModelManager`, see
+    :func:`find_installed_model_path`).
+
+    Args:
+        entry (LocalLLMEntry): The local registry entry to launch.
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+
+    Returns:
+        LlamaLaunch: Executable, resolved flags and active profile id.
+
+    Raises:
+        RuntimeError: If llama.cpp is not installed.
+    """
+    install = find_installed(kodo_dir)
+    if install is None:
+        raise RuntimeError("llama.cpp is not installed")
 
     override = get_llama_server_override_path(kodo_dir)
     executable = Path(override) if override else install.executable
@@ -215,13 +275,27 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
         # whose knobs never write these flags in the first place.
         llama_args["--reasoning-budget"] = "-1"
         llama_args["--reasoning-budget-message"] = REASONING_BUDGET_MESSAGE
+    return LlamaLaunch(executable=executable, llama_args=llama_args, profile_id=profile_id)
 
-    cfg = LlamaServerConfig(
-        executable=executable,
-        model_path=model_path,
-        kodo_dir=kodo_dir,
-        model_name=entry.name,
-    )
-    server = LlamaServer(cfg, llama_args, profile_id=profile_id)
-    await server.start()
-    return server
+
+def find_installed_model_path(entry: LocalLLMEntry, kodo_dir: Path) -> Path | None:
+    """The GGUF to launch for *entry*, looked up without writing any state.
+
+    ``custom_file`` entries point at their own file; downloaded entries are
+    read from the models directory's ``manager-state.json`` via
+    :meth:`kodo.llms.local.LocalModelManager.peek_model_path`, which — unlike
+    :func:`get_local_model_manager` — never rewrites an in-flight download's
+    status, so it is safe to call from a process that does not own the
+    downloads (``kodo-llama-server`` running next to a kodo server).
+
+    Args:
+        entry (LocalLLMEntry): The local registry entry.
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+
+    Returns:
+        Path | None: The model file, or ``None`` if it is not present.
+    """
+    if entry.kind == "custom_file":
+        path = Path(entry.path)
+        return path if path.is_file() else None
+    return LocalModelManager.peek_model_path(_models_dir(kodo_dir), entry.name)

@@ -49,15 +49,28 @@ from ._llama_server import (
     LlamaServerConfig,
     RunningServer,
     find_running_server,
+    is_pid_alive,
+    kill_pid,
+    terminate_pid,
 )
-from ._manager import ensure_llama_running, get_local_model_manager, purge_unknown_local_models
+from ._manager import (
+    LlamaLaunch,
+    ensure_llama_running,
+    find_installed_model_path,
+    get_local_model_manager,
+    purge_unknown_local_models,
+    resolve_llama_launch,
+)
+from ._remote import RemoteLlamaEndpoint
 
 __all__ = [
     "LlamaInstall",
+    "LlamaLaunch",
     "LlamaPlugin",
     "LlamaServer",
     "LlamaServerConfig",
     "MalformedToolCallError",
+    "RemoteLlamaEndpoint",
     "RunningServer",
     "ThinkingStreamParser",
     "build_exists",
@@ -66,11 +79,16 @@ __all__ = [
     "ensure_llama_running",
     "fetch_latest_build_number",
     "find_installed",
+    "find_installed_model_path",
     "find_running_server",
     "get_local_model_manager",
     "install_llamacpp",
+    "is_pid_alive",
+    "kill_pid",
     "purge_unknown_local_models",
+    "resolve_llama_launch",
     "server_executable",
+    "terminate_pid",
     "uninstall_llamacpp",
     "update_llamacpp",
 ]

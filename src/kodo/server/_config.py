@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from kodo.project import WorkspaceLayout
 from kodo.titling import DEFAULT_HOUSEKEEPER_LLM_ID
@@ -248,11 +249,22 @@ class Config:
         port: TCP port for the WebSocket listener (loopback only).
         log_level: Python logging level name.
         extra: Full merged settings dict for use by the engine/gateway.
+        headless_sandbox: ``--headless-sandbox DIR`` — run as the headless
+            runner's server (doc/HEADLESS.md): every session judges tool calls
+            with :class:`kodo.security.SandboxSecurityLayer` confined to this
+            directory, and the startup steps that touch shared state (llama
+            adoption, the model purge, the titler) are skipped. ``None`` (the
+            default) is the ordinary interactive server.
+        llama_url: ``--llama-url URL`` — attach every local-model call to this
+            already-running llama-server instead of launching one (requires
+            ``headless_sandbox``). ``None`` by default.
     """
 
     port: int = _DEFAULT_PORT
     log_level: str = _DEFAULT_LOG_LEVEL
     extra: dict[str, object] = field(default_factory=dict)
+    headless_sandbox: Path | None = None
+    llama_url: str | None = None
 
     @classmethod
     def from_args(cls, argv: list[str] | None = None) -> Config:
@@ -282,7 +294,33 @@ class Config:
             metavar="LEVEL",
             help=f"Logging level (default: {_DEFAULT_LOG_LEVEL}; overrides etc/settings.json).",
         )
+        parser.add_argument(
+            "--headless-sandbox",
+            default=None,
+            metavar="DIR",
+            help=(
+                "Headless mode: confine every tool call's mutations to DIR with the "
+                "sandbox security posture (doc/HEADLESS.md)."
+            ),
+        )
+        parser.add_argument(
+            "--llama-url",
+            default=None,
+            metavar="URL",
+            help=(
+                "Headless mode: use this running llama-server for local models instead "
+                "of launching one (requires --headless-sandbox)."
+            ),
+        )
         args = parser.parse_args(argv)
+
+        headless_sandbox: Path | None = None
+        if args.headless_sandbox is not None:
+            headless_sandbox = Path(args.headless_sandbox).expanduser().resolve()
+            if not headless_sandbox.is_dir():
+                parser.error(f"--headless-sandbox: not a directory: {headless_sandbox}")
+        if args.llama_url is not None and headless_sandbox is None:
+            parser.error("--llama-url requires --headless-sandbox")
 
         _ensure_user_settings()
         settings = _load_settings()
@@ -293,6 +331,8 @@ class Config:
             port=args.port,
             log_level=log_level,
             extra=settings,
+            headless_sandbox=headless_sandbox,
+            llama_url=str(args.llama_url).rstrip("/") if args.llama_url is not None else None,
         )
 
     def reload_settings(self) -> dict[str, object]:

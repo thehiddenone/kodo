@@ -141,7 +141,9 @@ class SecurityDecisionLike(Protocol):
 
     @property
     def action(self) -> str:
-        """``'allow'`` (dispatch proceeds) or ``'ask'`` (prompt the user)."""
+        """``'allow'`` (dispatch proceeds), ``'ask'`` (prompt the user), or
+        ``'deny'`` (refuse outright, no prompt — only the headless sandbox
+        posture, :class:`kodo.security.SandboxSecurityLayer`, ever says this)."""
         ...
 
     @property

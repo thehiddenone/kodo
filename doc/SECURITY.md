@@ -31,6 +31,8 @@ reaches its handler, the dispatcher consults the **security layer**
 
 The layer never denies on its own. Every path that cannot be confidently
 allowed ends at the user: the gate **fails closed to a prompt**, never open.
+The one exception is the headless sandbox posture (§2b): a headless run has no
+user, so its layer returns `allow` or `deny`, and never `ask`.
 Judgement is **fully deterministic** — heuristic rules over the structural
 parse, never an LLM (see [SECURITY_RULES_PLAN.md](SECURITY_RULES_PLAN.md)
 for the plan that replaced the former LLM intent judge and its rationale) —
@@ -123,6 +125,36 @@ control, not part of the security layer — enforced independently by
 `ToolDispatcher.__edit_review_gate` for `create_file`/`edit_file` only, always
 evaluated *after* this gate. See WS_PROTOCOL.md §6.9/§7.4a for the exact
 rules (there is no Edit Control section in this document).
+
+### 2b. The headless sandbox posture and the `deny` verdict
+
+A server started with `--headless-sandbox DIR` (the `kodo-headless` runner,
+[HEADLESS.md](HEADLESS.md)) builds every engine with
+`kodo.security.SandboxSecurityLayer(DIR)` in place of `SecurityLayer`
+(`WorkflowEngine(sandbox_root=…)`). It subclasses `SecurityLayer`, so the
+engine's `_security: SecurityLayer` annotations are unchanged. It ignores
+`command_control` and `autonomous`: the posture is fixed for the whole server.
+
+Its policy is **mutation confined to DIR, reads anywhere, git read-only**.
+Every dispatchable tool is classified explicitly; an unclassified tool is
+denied. [HEADLESS.md](HEADLESS.md) §4 gives the full rules.
+
+The layer's verdicts are `allow` and **`deny`**. `ToolDispatcher.__security_gate`
+has a `deny` branch that runs before the prompt branch and also takes
+precedence over a recovered call's forced prompt. It returns
+`{"error": "Blocked by the headless sandbox: <reason>"}` without firing
+`prompt.permission` and without running the handler. The interactive
+`SecurityLayer` never returns `deny`, so the branch is unreachable outside
+headless mode; `test_default_security_layer_never_denies` pins that down.
+
+`run_command` is judged **allow unless evidence**. It reuses `_analysis`'s
+substitution masking and parse (`mask_substitutions`, `parse_masked`), the
+`_classify` wrapper peel (`peel_prefixes`), the per-segment cwd tracker
+(`_track_cwd`) and the rule engine's command-substitution recursion. It adds
+its own rules for git, for write targets, and for any `cd` the tracker cannot
+follow. Static analysis cannot see what a program does at run time, so the
+sandbox is best-effort by design; the container a headless run lives in is the
+real jail.
 
 ## 3. SMART mode
 

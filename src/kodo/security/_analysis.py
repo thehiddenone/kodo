@@ -38,7 +38,7 @@ from kodo.shellparser import (
 
 from ._classify import CD_EXECUTABLES, SUB_MARK, NormalizedSegment, leaf_name, normalize_segments
 
-__all__ = ["CommandAnalysis", "analyze_command"]
+__all__ = ["CommandAnalysis", "analyze_command", "mask_substitutions", "parse_masked"]
 
 # Device sinks that read/write nowhere; never counted as outside targets.
 _DEVICE_PATHS = frozenset(
@@ -291,36 +291,8 @@ def analyze_command(
     """
     win = os.name == "nt" if windows is None else windows
 
-    # Collect substitution snippets, then mask them so the tokenizer keeps
-    # each affected token in one (marked, skipped) piece. `$null` is PowerShell's
-    # devnull-equivalent (a variable, not a path) — masking it here would still
-    # leave it harmless (`_classify` already skips `_SUB_MARK`-carrying tokens),
-    # but recognizing it explicitly, like `is_fd_merge_target` below, keeps it out of
-    # `unresolved` and documents the exemption as intentional rather than
-    # incidental.
-    unresolved: list[str] = []
-    command_subs: list[str] = []
-    masked = command
-    for pattern in _WINDOWS_SUBSTITUTION_RES if win else _SUBSTITUTION_RES:
-        for match in pattern.finditer(masked):
-            snippet = match.group()
-            if win and _PS_NULL_RE.match(snippet):
-                continue
-            if snippet not in unresolved:
-                unresolved.append(snippet)
-                if pattern in _COMMAND_SUB_RES:
-                    command_subs.append(snippet)
-        if win:
-            masked = pattern.sub(_mask_unless_ps_null, masked)
-        else:
-            masked = pattern.sub(_SUB_MARK, masked)
-
-    # POSIX goes through the flattener (`kodo.shellparser.flatten_command`),
-    # so control-flow bodies, `case` arms and called function bodies each
-    # contribute their own commands instead of collapsing into the arguments
-    # of a keyword pseudo-command. PowerShell keeps the flat parse for now —
-    # its own flattener is not written yet (doc/SECURITY.md §5).
-    parsed: ParsedCommand = parse_powershell_command(masked) if win else flatten_command(masked)
+    masked, unresolved, command_subs = mask_substitutions(command, windows=win)
+    parsed = parse_masked(masked, windows=win)
     segments = normalize_segments(parsed, windows=win)
 
     # The cwd each segment actually runs in — shifts after an inline `cd`/
@@ -363,9 +335,9 @@ def analyze_command(
     )
     return CommandAnalysis(
         outside_paths=tuple(outside),
-        unresolved=tuple(unresolved),
+        unresolved=unresolved,
         read_only=read_only,
-        command_subs=tuple(command_subs),
+        command_subs=command_subs,
         segments=segments,
         operators=parsed.operators,
         segment_outside_paths=tuple(tuple(paths) for paths in per_segment),
@@ -495,6 +467,67 @@ def _track_cwd(
 # pair under `scripts/` at the project root (subagent_toolchain_builder.md
 # Phase 4) — a fixed, project-relative convention, not configurable.
 _TOOLCHAIN_SCRIPT_STEPS = ("build", "format", "static_analysis", "test", "full_build")
+
+
+def mask_substitutions(
+    command: str, *, windows: bool
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """Mask every substitution in *command* so the tokenizer keeps it whole.
+
+    Each ``$(...)`` / backtick / ``$VAR`` (``%VAR%`` …) snippet is replaced
+    by a marker, so an affected token stays in one (marked, statically
+    unresolvable) piece. ``$null`` is PowerShell's devnull-equivalent (a
+    variable, not a path) — masking it would still be harmless (tokens that
+    carry the marker are skipped anyway), but it is recognized explicitly to
+    keep it out of ``unresolved`` and document the exemption as intentional.
+
+    Args:
+        command: The raw shell command line.
+        windows: PowerShell/cmd dialect vs POSIX.
+
+    Returns:
+        tuple[str, tuple[str, ...], tuple[str, ...]]: The masked command,
+        every substitution snippet (``unresolved``), and the subset that
+        executes a nested command (``command_subs``), each in first-occurrence
+        order.
+    """
+    unresolved: list[str] = []
+    command_subs: list[str] = []
+    masked = command
+    for pattern in _WINDOWS_SUBSTITUTION_RES if windows else _SUBSTITUTION_RES:
+        for match in pattern.finditer(masked):
+            snippet = match.group()
+            if windows and _PS_NULL_RE.match(snippet):
+                continue
+            if snippet not in unresolved:
+                unresolved.append(snippet)
+                if pattern in _COMMAND_SUB_RES:
+                    command_subs.append(snippet)
+        if windows:
+            masked = pattern.sub(_mask_unless_ps_null, masked)
+        else:
+            masked = pattern.sub(_SUB_MARK, masked)
+    return masked, tuple(unresolved), tuple(command_subs)
+
+
+def parse_masked(masked: str, *, windows: bool) -> ParsedCommand:
+    """Structurally parse a :func:`mask_substitutions`-masked command.
+
+    POSIX goes through the flattener (``kodo.shellparser.flatten_command``),
+    so control-flow bodies, ``case`` arms and called function bodies each
+    contribute their own commands instead of collapsing into the arguments of
+    a keyword pseudo-command. PowerShell keeps the flat parse for now — its
+    own flattener is not written yet (doc/SECURITY.md §5).
+
+    Args:
+        masked: A masked command line.
+        windows: PowerShell/cmd dialect vs POSIX.
+
+    Returns:
+        ParsedCommand: The parse; its segments align positionally with
+        :func:`~._classify.normalize_segments` of the same parse.
+    """
+    return parse_powershell_command(masked) if windows else flatten_command(masked)
 
 
 def _toolchain_script_hit(token: str, cwd: str, roots: tuple[str, ...], windows: bool) -> bool:

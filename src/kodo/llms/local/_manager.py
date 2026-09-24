@@ -74,6 +74,16 @@ def _sanitize_model_id(model_id: str) -> str:
     return cleaned or "model"
 
 
+def _installed_path(root_dir: Path, model_id: str, record: ModelRecord | None) -> Path | None:
+    """The primary file of a fully downloaded *record*, or ``None``."""
+    if record is None or not record.is_installed:
+        return None
+    primary = record.primary_file
+    if primary is None:
+        return None
+    return root_dir / _sanitize_model_id(model_id) / primary.filename
+
+
 class LocalModelManager:
     """Downloads, tracks, pauses/resumes, and removes GGUF models from HF Hub.
 
@@ -253,13 +263,29 @@ class LocalModelManager:
         Returns:
             Path | None: The path, or ``None`` if not fully downloaded.
         """
-        record = self.get_record(model_id)
-        if record is None or not record.is_installed:
-            return None
-        primary = record.primary_file
-        if primary is None:
-            return None
-        return self.__model_dir(model_id) / primary.filename
+        return _installed_path(self.__root_dir, model_id, self.get_record(model_id))
+
+    @staticmethod
+    def peek_model_path(root_dir: Path, model_id: str) -> Path | None:
+        """Read-only :meth:`get_model_path` that never constructs a manager.
+
+        Constructing a :class:`LocalModelManager` rewrites every
+        ``DOWNLOADING`` file in ``manager-state.json`` to ``PAUSED`` (see
+        ``__reconcile_stale_downloads``) — correct inside the process that
+        owns the downloads, but wrong for a *second* process that only wants
+        to launch an already-installed model while the first may be mid
+        download (``kodo-llama-server`` next to a running kodo server). This
+        only reads the state file.
+
+        Args:
+            root_dir (Path): The models directory (holds ``manager-state.json``).
+            model_id (str): Caller-chosen model key.
+
+        Returns:
+            Path | None: The path, or ``None`` if not fully downloaded.
+        """
+        root = Path(root_dir)
+        return _installed_path(root, model_id, load_state(root / _STATE_FILE).get(model_id))
 
     def get_mmproj_path(self, model_id: str) -> Path | None:
         """Path to *model_id*'s mmproj companion file, once fully downloaded.

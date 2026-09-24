@@ -44,6 +44,9 @@ class SessionManager:
         layout: Global ``~/.kodo`` layout.
         grace_seconds: Seconds a disconnected session stays reserved for its
             window before becoming free for others.
+        sandbox_root: Headless server only (doc/HEADLESS.md) — every session's
+            engine confines tool-call mutations to this directory with the
+            sandbox security posture. ``None`` (the default) is interactive.
     """
 
     def __init__(
@@ -54,8 +57,10 @@ class SessionManager:
         get_settings: Callable[[], dict[str, object]],
         layout: WorkspaceLayout,
         grace_seconds: float = _DEFAULT_GRACE_SECONDS,
+        sandbox_root: Path | None = None,
     ) -> None:
         self.__registry = registry
+        self.__sandbox_root = sandbox_root
         self.__gateway = gateway
         self.__get_settings = get_settings
         self.__layout = layout
@@ -411,6 +416,7 @@ class SessionManager:
             registry=self.__registry,
             gateway=self.__gateway,
             session_workspace=session_workspace,
+            sandbox_root=self.__sandbox_root,
         )
         await engine.start(session_id, resumed, thinking_level=thinking_level)
         session = Session(

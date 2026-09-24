@@ -82,6 +82,7 @@ from kodo.llms.llamacpp import (
     LlamaPlugin,
     LlamaServer,
     LlamaServerConfig,
+    RemoteLlamaEndpoint,
     build_exists,
     ensure_llama_running,
     fetch_latest_build_number,
@@ -2901,6 +2902,20 @@ def _make_llm_complete_handler(config: Config, gateway: LLMGateway) -> HandlerFn
 # ------------------------------------------------------------------
 
 
+async def _start_background_headless(app: web.Application) -> None:
+    """The headless server's startup: only what a sandboxed run needs.
+
+    Skips every step of :func:`_start_background` that touches state shared
+    with the user's own kodo — adopting a running llama-server, the startup
+    model purge (the headless home links real directories, so a
+    version-skewed purge could delete real downloads), the titler (a second
+    llama-server competing for the GPU) and the OpenRouter catalog refresh.
+    The bundled utilities (rg/fd/uv) are still ensured: the file tools need
+    them.
+    """
+    await asyncio.to_thread(ensure_all_utils, kodo_user_dir())
+
+
 async def _start_background(app: web.Application) -> None:
     user_dir = kodo_user_dir()
 
@@ -3020,11 +3035,17 @@ def create_app(config: Config) -> web.Application:
     gateway = LLMGateway(
         cloud_concurrency=lambda: _cloud_concurrency(config),
     )
+    sandbox_root = config.headless_sandbox
+    # Headless runner's server (doc/HEADLESS.md): one fixed sandbox posture for
+    # every session, and local inference only ever by URL. Both are
+    # process-wide for this server, never set in the interactive one.
+    RemoteLlamaEndpoint.configure(config.llama_url)
     manager = SessionManager(
         registry=registry,
         gateway=gateway,
         get_settings=config.reload_settings,
         layout=layout,
+        sandbox_root=sandbox_root,
     )
     conn_registry = ConnectionRegistry(manager)
     conn_registry.set_gpu_release_hook(_release_llama_gpu)
@@ -3123,7 +3144,9 @@ def create_app(config: Config) -> web.Application:
     app[CONNECTION_REGISTRY_KEY] = conn_registry
     app[_MANAGER_KEY] = manager
     app.router.add_get("/ws", _ws_endpoint)
-    app.on_startup.append(_start_background)
+    app.on_startup.append(
+        _start_background_headless if sandbox_root is not None else _start_background
+    )
     app.on_shutdown.append(_stop_background)
 
     _log.info("Kōdo server %s — home=%s port=%d", _SERVER_VERSION, layout.kodo_dir, config.port)

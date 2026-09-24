@@ -31,7 +31,15 @@ from typing import cast
 
 import aiohttp
 
-__all__ = ["LlamaServer", "LlamaServerConfig", "RunningServer", "find_running_server"]
+__all__ = [
+    "LlamaServer",
+    "LlamaServerConfig",
+    "RunningServer",
+    "find_running_server",
+    "is_pid_alive",
+    "kill_pid",
+    "terminate_pid",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -57,17 +65,12 @@ def _runtime_path(kodo_dir: Path) -> Path:
     return kodo_dir / "llama.cpp" / "llama-server.json"
 
 
-def _write_runtime(kodo_dir: Path, pid: int, host: str, port: int, model: str) -> None:
-    p = _runtime_path(kodo_dir)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(
+def _write_runtime(path: Path, pid: int, host: str, port: int, model: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps({"pid": pid, "host": host, "port": port, "model": model}, indent=2),
         encoding="utf-8",
     )
-
-
-def _remove_runtime(kodo_dir: Path) -> None:
-    _runtime_path(kodo_dir).unlink(missing_ok=True)
 
 
 def _read_tail(path: Path, max_chars: int) -> str:
@@ -91,7 +94,18 @@ def _read_tail(path: Path, max_chars: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _is_pid_alive(pid: int) -> bool:
+def is_pid_alive(pid: int) -> bool:
+    """Whether process *pid* is still running — without signalling it.
+
+    Never uses ``os.kill(pid, 0)`` on Windows, where it is a real Ctrl+C
+    (see kodo/CLAUDE.md §Windows pitfalls).
+
+    Args:
+        pid (int): OS process ID.
+
+    Returns:
+        bool: ``True`` while the process is alive.
+    """
     if sys.platform == "win32":
         # A bare OpenProcess-succeeds check is not enough for a process this
         # module itself spawned: asyncio's Windows subprocess transport keeps
@@ -116,12 +130,26 @@ def _is_pid_alive(pid: int) -> bool:
         return False
 
 
-def _terminate_pid(pid: int) -> None:
+def terminate_pid(pid: int) -> None:
+    """Ask process *pid* to exit (SIGTERM; ``TerminateProcess`` on Windows).
+
+    A process that is already gone is not an error.
+
+    Args:
+        pid (int): OS process ID.
+    """
     with suppress(OSError):
         os.kill(pid, signal.SIGTERM)
 
 
-def _kill_pid(pid: int) -> None:
+def kill_pid(pid: int) -> None:
+    """Forcefully end process *pid* (SIGKILL; ``TerminateProcess`` on Windows).
+
+    A process that is already gone is not an error.
+
+    Args:
+        pid (int): OS process ID.
+    """
     if sys.platform == "win32":
         handle = ctypes.windll.kernel32.OpenProcess(_PROCESS_TERMINATE, False, pid)
         if handle:
@@ -174,6 +202,16 @@ class LlamaServerConfig:
             place the server's own log file.
         host: Bind address.  Defaults to ``'127.0.0.1'``.
         port: TCP port.  Defaults to `8042``.
+        runtime_file: Where the runtime state file (pid/host/port/model) is
+            written. ``None`` (default) means the shared
+            ``kodo_dir/llama.cpp/llama-server.json`` that the kodo server's
+            startup adoption reads — a standalone server (``kodo-llama-server``)
+            points this elsewhere so no kodo server ever adopts, or stops, it.
+        log_file: llama-server's own ``--log-file``; ``None`` (default) means
+            ``kodo_dir/logs/llama-server.log``. When set, the startup log sits
+            next to it as ``<stem>-startup.log``.
+        alias: ``--alias`` for the served model (what ``/v1/models`` reports);
+            ``""`` (default) passes no ``--alias``.
     """
 
     executable: Path
@@ -182,6 +220,9 @@ class LlamaServerConfig:
     model_name: str = ""
     host: str = "127.0.0.1"
     port: int = 8042
+    runtime_file: Path | None = None
+    log_file: Path | None = None
+    alias: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +286,12 @@ class LlamaServer:
     @property
     def is_running(self) -> bool:
         """``True`` if the server process is alive."""
-        return self.__pid is not None and _is_pid_alive(self.__pid)
+        return self.__pid is not None and is_pid_alive(self.__pid)
+
+    @property
+    def pid(self) -> int | None:
+        """OS process ID of the managed llama-server, or ``None`` when not started."""
+        return self.__pid
 
     @property
     def port(self) -> int:
@@ -321,7 +367,7 @@ class LlamaServer:
         await self.__wait_ready()
 
         _write_runtime(
-            self.__config.kodo_dir,
+            self.__runtime_path(),
             self.__pid,
             self.__active_host,
             self.__active_port,
@@ -336,24 +382,24 @@ class LlamaServer:
         does not exit within ``_STOP_GRACE`` seconds.
         """
         pid = self.__pid
-        if pid is None or not _is_pid_alive(pid):
+        if pid is None or not is_pid_alive(pid):
             self.__pid = None
             return
 
         _log.debug("Stopping llama-server (pid=%d)", pid)
-        _terminate_pid(pid)
+        terminate_pid(pid)
 
         elapsed = 0.0
-        while elapsed < _STOP_GRACE and _is_pid_alive(pid):
+        while elapsed < _STOP_GRACE and is_pid_alive(pid):
             await asyncio.sleep(0.5)
             elapsed += 0.5
 
-        if _is_pid_alive(pid):
+        if is_pid_alive(pid):
             _log.warning("llama-server pid=%d did not stop gracefully; killing", pid)
-            _kill_pid(pid)
+            kill_pid(pid)
 
         self.__pid = None
-        _remove_runtime(self.__config.kodo_dir)
+        self.__runtime_path().unlink(missing_ok=True)
         _log.info("llama-server stopped")
 
     def __build_command(self) -> list[str]:
@@ -369,7 +415,7 @@ class LlamaServer:
             str(cfg.executable),
             "--log-timestamps",
             "--log-file",
-            str(cfg.kodo_dir / "logs" / "llama-server.log"),
+            str(self.__log_path()),
             "--model",
             str(cfg.model_path),
             "--host",
@@ -377,6 +423,8 @@ class LlamaServer:
             "--port",
             str(cfg.port),
         ]
+        if cfg.alias:
+            cmd += ["--alias", cfg.alias]
         # Everything model-specific (context size, GPU offload, KV cache
         # type, --jinja, ...) comes entirely from the resolved profile — see
         # resolve_effective_llama_config in kodo/llms/local_registry/. No
@@ -408,7 +456,22 @@ class LlamaServer:
         raise TimeoutError(f"llama-server did not become ready within {_HEALTH_TIMEOUT:.0f} s")
 
     def __startup_log_path(self) -> Path:
+        log_file = self.__config.log_file
+        if log_file is not None:
+            return log_file.with_name(f"{log_file.stem}-startup.log")
         return self.__config.kodo_dir / "logs" / _STARTUP_LOG_NAME
+
+    def __log_path(self) -> Path:
+        log_file = self.__config.log_file
+        return (
+            log_file
+            if log_file is not None
+            else self.__config.kodo_dir / "logs" / "llama-server.log"
+        )
+
+    def __runtime_path(self) -> Path:
+        runtime_file = self.__config.runtime_file
+        return runtime_file if runtime_file is not None else _runtime_path(self.__config.kodo_dir)
 
     def __crashed_before_ready_message(self) -> str:
         """Build the ``RuntimeError`` message for an exit-before-ready crash.
@@ -468,7 +531,7 @@ def find_running_server(kodo_dir: Path) -> RunningServer | None:
         path.unlink(missing_ok=True)
         return None
 
-    if _is_pid_alive(pid):
+    if is_pid_alive(pid):
         _log.info("Detected running llama-server pid=%d at %s:%d model=%r", pid, host, port, model)
         return RunningServer(pid=pid, host=host, port=port, model=model)
 

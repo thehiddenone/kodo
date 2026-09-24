@@ -1,6 +1,9 @@
 # Kōdo × Harbor — Integration Proposal & Plan
 
-> Status: **proposal — nothing implemented**.
+> Status: **proposal**, plus the **option A′ building blocks implemented**
+> (2026-09-23): `kodo-headless`, `kodo-llama-server` and the headless server
+> mode. See §4 ("Option A′") and [HEADLESS.md](HEADLESS.md). The `kodo.harbor` adapter
+> itself (§6.3) is not built yet.
 > Scope: **server-side only** (`py-kodo`). No `kodo-vsix` change is required by
 > any option below, and none is proposed.
 > Sources read for this document (2026-09-17):
@@ -364,6 +367,36 @@ instead of hiding it.
 **Against** — requires a task network policy that permits the host gateway; the
 single llama-server still serializes trials; a shared endpoint is a
 cross-trial contamination surface (one wedged trial stalls the queue).
+
+### Option A′ — chosen: Kōdo in the container, models on the host, registry mounted
+
+This is option C with the model's identity kept intact. Kōdo runs in the task
+container under `kodo-headless`, and the model runs on the host under
+`kodo-llama-server`. The container gets the host's
+`local-llm-registry.json` through a read-only Harbor mount (`--mounts`).
+
+- **Why "mount the registry" is not enough on its own.** A containerized Kōdo
+  that finds a `hardcoded_hf` entry tries to *launch* llama-server: a local
+  binary, the GGUF and a GPU, and Docker on macOS has no Metal. Option C's
+  `custom_server_url` entry avoids the launch but drops the entry's thinking
+  family, context window and sampling. A′ keeps the entry and changes only
+  *where* inference runs: `--llama-url` makes `LlamaPlugin` attach by URL
+  (`RemoteLlamaEndpoint`) after checking the endpoint's alias and context
+  window against the mounted registry.
+- **Harbor needs no change.**
+  - `environment.mounts` (agent environment only) supplies the read-only
+    registry.
+  - `agents[].extra_allowed_hosts` opens egress to the host gateway during
+    `agent.run()`, even for `deny-all` tasks.
+  - An `extra_docker_compose` overlay adds `host-gateway` on Linux.
+  - Only `network_mode: none` tasks are out of reach.
+- **Sandboxing.** `kodo-headless` runs the server with `--headless-sandbox
+  <cwd>`: mutation is confined to the task directory, git is read-only, and a
+  refused call is an error result rather than a prompt nobody would answer.
+
+Everything needed below the adapter is built and documented in
+[HEADLESS.md](HEADLESS.md). What remains is the `kodo.harbor.KodoAgent` class
+(§6.3), whose `run()` becomes a single `kodo-headless` invocation.
 
 ### Option D — ACP bridge: teach Kōdo the Agent Client Protocol
 

@@ -84,12 +84,16 @@ class ServerProcess:
         log_level: ``--log-level`` passed to the server.
         console_log: File capturing the child's stdout+stderr; defaults to
             ``home_dir/server-console.log``.
+        extra_args: Further ``kodo.server`` CLI arguments, appended verbatim
+            (``kodo-headless`` passes ``--headless-sandbox``/``--llama-url``,
+            doc/HEADLESS.md); empty by default.
     """
 
     __home_dir: Path
     __port: int
     __log_level: str
     __console_log: Path
+    __extra_args: tuple[str, ...]
     __process: asyncio.subprocess.Process | None
 
     def __init__(
@@ -99,8 +103,10 @@ class ServerProcess:
         port: int | None = None,
         log_level: str = "INFO",
         console_log: Path | None = None,
+        extra_args: tuple[str, ...] = (),
     ) -> None:
         self.__home_dir = home_dir.resolve()
+        self.__extra_args = extra_args
         self.__port = port if port is not None else pick_free_port()
         self.__log_level = log_level
         self.__console_log = console_log or (self.__home_dir / "server-console.log")
@@ -146,6 +152,7 @@ class ServerProcess:
                 str(self.__port),
                 "--log-level",
                 self.__log_level,
+                *self.__extra_args,
                 env=env,
                 stdout=console,
                 stderr=console,

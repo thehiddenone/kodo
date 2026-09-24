@@ -45,6 +45,7 @@ from kodo.transport import EVT_LLAMA_STATE
 
 from ._llama_server import LlamaServer
 from ._manager import ensure_llama_running
+from ._remote import RemoteLlamaEndpoint
 
 __all__ = ["LlamaPlugin", "MalformedToolCallError"]
 
@@ -608,6 +609,23 @@ class LlamaPlugin(LLMPlugin):
     async def __ensure_running(self, model_name: str) -> None:
         registry = get_local_registry(self.__kodo_dir)
         entry = registry.get(model_name)
+
+        remote_url = RemoteLlamaEndpoint.url()
+        if remote_url is not None:
+            # Headless server attached to a llama-server running elsewhere
+            # (doc/HEADLESS.md): never launch or touch a managed one. The
+            # entry keeps its full identity (thinking family, context window,
+            # sampling); verify() checks the endpoint really serves it.
+            if entry is None:
+                raise RuntimeError(f"Unknown local model: {model_name!r}")
+            await RemoteLlamaEndpoint.verify(entry, self.__kodo_dir)
+            if self.__client is None:
+                self.__client = openai.AsyncOpenAI(
+                    api_key=_API_KEY,
+                    base_url=f"{remote_url}/v1",
+                    default_headers=_NO_COMPRESSION_HEADERS,
+                )
+            return
 
         if entry is not None and entry.kind == "custom_server_url":
             # Externally-managed server: stop kodo's own managed process (if

@@ -26,7 +26,14 @@ from kodo.shellparser import (
     redirection_writes_file,
 )
 
-__all__ = ["CD_EXECUTABLES", "NormalizedSegment", "SUB_MARK", "leaf_name", "normalize_segments"]
+__all__ = [
+    "CD_EXECUTABLES",
+    "NormalizedSegment",
+    "SUB_MARK",
+    "leaf_name",
+    "normalize_segments",
+    "peel_prefixes",
+]
 
 # Substitutions are masked to this marker BEFORE parsing (see ._analysis);
 # any token carrying it is statically unresolvable.
@@ -213,7 +220,7 @@ def _normalize(segment: Segment, *, windows: bool, piped_input: bool) -> Normali
     if any(SUB_MARK in r.target for r in segment.redirections):
         has_sub = True
 
-    tokens = _peel_prefixes(tokens, windows=windows)
+    tokens = peel_prefixes(tokens, windows=windows)
     if not tokens:
         return NormalizedSegment(
             executable="",
@@ -255,8 +262,16 @@ def _normalize(segment: Segment, *, windows: bool, piped_input: bool) -> Normali
     )
 
 
-def _peel_prefixes(tokens: list[str], *, windows: bool) -> list[str]:
-    """Strip env assignments and transparent-wrapper prefixes, iteratively."""
+def peel_prefixes(tokens: list[str], *, windows: bool) -> list[str]:
+    """Strip env assignments and transparent-wrapper prefixes, iteratively.
+
+    Args:
+        tokens: A segment's raw words, executable first.
+        windows: PowerShell/cmd dialect vs POSIX.
+
+    Returns:
+        list[str]: The words of the command the wrappers actually run.
+    """
     while tokens:
         # POSIX `VAR=value cmd` prefix assignments.
         if not windows and _ENV_ASSIGN_RE.match(tokens[0]):

@@ -34,6 +34,7 @@ from ._layer import (
     SecurityLayer,
 )
 from ._rules import AskPart, CommandRule, RuleDecision, evaluate_command
+from ._sandbox import SandboxSecurityLayer
 from ._store import (
     add_global_path_rule,
     add_global_rule,
@@ -53,6 +54,7 @@ __all__ = [
     "CommandAnalysis",
     "CommandRule",
     "RuleDecision",
+    "SandboxSecurityLayer",
     "SecurityDecision",
     "SecurityLayer",
     "add_global_path_rule",
