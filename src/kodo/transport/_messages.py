@@ -43,15 +43,6 @@ from __future__ import annotations
 # connection): no session is created; the ack carries only the llama/model
 # snapshot (incl. detected_vram_gb, detected_ram_gb), and the client uses it
 # to reconcile this window's remembered-open sessions once it lands.
-# Session role only, brand-new session only (payload.session_id absent):
-# an optional `thinking_level` (WS_PROTOCOL.md §4.1) seeds `state.
-# thinking_level` instead of the active local model's family default —
-# validated against the active model's thinking family and silently ignored
-# (falls back to the family default) if absent or invalid. kodo-vsix never
-# sends this; it exists for the validator's RVP judge session, whose hello
-# fires before there is a session to attach the tier its preceding
-# `llm.select` pinned to (doc/VALIDATOR.md §9). Ignored on a resumed session
-# (its own persisted thinking_level is restored instead).
 MSG_HELLO = "hello"
 
 # Client → Server. The user's submitted prompt text (payload: {text}), with any
@@ -191,8 +182,8 @@ MSG_AGENT_SET = "agent.set"
 # ``top_agents.list.ack`` ``{agents: [{name, label, description, rank}, ...],
 # default_agent}`` — built by the same ``_top_agents_payload`` hello.ack used
 # to spread inline. ``agents`` lists only the **selectable** ones, in picker
-# order; a non-selectable agent (``kodo_judge``) is absent but still accepted
-# by ``agent.set``. The client is expected to replace its cached catalog with
+# order; a non-selectable agent (``selectable: false`` in its config) is absent
+# but still accepted by ``agent.set``. The client is expected to replace its cached catalog with
 # this response wholesale, not merge into it, so a since-deleted user agent
 # disappears from the picker on the next open.
 MSG_TOP_AGENTS_LIST = "top_agents.list"
@@ -341,7 +332,7 @@ MSG_STUCK_DETECTION_GET = "stuck_detection.get"
 # settings block. Payload: the same three fields ``stuck_detection.get.ack``
 # returns; a missing/unrecognised field is defaulted the same way before
 # being persisted. Settings are read fresh from disk on every stall check
-# (kodo.runtime._engine._watchdog), so — unlike ``llm.select`` — no
+# (kodo.runtime._engine._watchdog), so no
 # ``config.reload`` follow-up is needed for a live session to pick up the new
 # values. Replies ``stuck_detection.set.ack`` echoing the persisted values,
 # so the panel can refresh from the response alone.
@@ -678,36 +669,6 @@ MSG_OPENROUTER_MODELS_REFRESH = "openrouter.models.refresh"
 # failure still replies with whatever was already cached for that region
 # (kodo.llms.refresh_bedrock_catalog's own fallback) rather than an error.
 MSG_BEDROCK_MODELS_REFRESH = "bedrock.models.refresh"
-
-# Client → Server. Synchronous local-model switch (WS_PROTOCOL.md §7.6a).
-# ``{name}`` — ``name`` is a *local registry* name. The server persists the
-# selection into ``~/.kodo/etc/settings.json`` (``mode: "local"`` +
-# ``models.local``), restarts llama-server for the new model, waits until it
-# is actually serving (or has failed to start), and only then replies
-# ``llm.select.done {ok, model, error?}``. Unlike the VSIX's settings-write +
-# ``config.reload`` + ``llama.start`` dance, the reply *confirms readiness* —
-# built for ``kodo.validator``'s LUT↔VLLM swaps (doc/VALIDATOR.md §9), where
-# the next frame must already hit the requested model. Model loads take
-# minutes; callers need a generous response timeout. Carries no thinking-tier
-# field any more — thinking is session-scoped (doc/SESSIONS.md), so the
-# validator's RVP judge pins its tier via its own ``hello``'s
-# ``thinking_level`` field instead, once its session actually exists.
-MSG_LLM_SELECT = "llm.select"
-
-# Client → Server. Session-less one-shot completion (WS_PROTOCOL.md §7.6b):
-# ``{prompt, system?, json_schema?, thinking_level?}`` runs a single
-# tool-less turn on the currently selected *local* model, scheduled through
-# the shared LLMGateway feed like any session dispatch, and replies
-# ``llm.complete.done {ok, model, text, error?}`` with the full concatenated
-# response text (no stream frames reach the client; ``llm.waiting`` may).
-# ``json_schema`` constrains the output via llama-server's grammar
-# enforcement — the validator's UPP answers rely on it being parseable by
-# construction. ``thinking_level`` (a valid tier slug for the active model's
-# thinking family) is a pure per-call override — the UPP uses it to pin a low
-# tier so ``ask_user`` answers don't burn time thinking. Not an agent turn:
-# no tools, no session, no feed events, no persistence (this call has no
-# session to be scoped to, so there is nothing for it to persist into).
-MSG_LLM_COMPLETE = "llm.complete"
 
 # Client → Server. Local Inference Settings webview actions (doc/LLM_REGISTRY.md),
 # sent over the control connection like the block above. All mutate the

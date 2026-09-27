@@ -83,7 +83,7 @@ RESERVED_SAMPLING_FIELDS: dict[str, str] = {
         "starve the Qwen reasoning-budget mechanism of headroom"
     ),
     "n_predict": "llama.cpp's own spelling of max_tokens; same reason",
-    "json_schema": "already carried by response_format for structured LLM calls",
+    "json_schema": "pins every turn to one JSON shape, so no turn could emit a tool call",
     "grammar": "collides with the lazy tool-call grammar --jinja installs",
     "ignore_eos": "would stop any turn from ever ending cleanly",
     "logit_bias": "needs model-specific token IDs, not obtainable from the UI",

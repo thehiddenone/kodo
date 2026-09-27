@@ -141,8 +141,8 @@ async def test_request_shutdown_invokes_the_stop_callback() -> None:
 
 @pytest.mark.asyncio
 async def test_request_shutdown_without_a_stop_callback_is_a_no_op() -> None:
-    """Nothing wires a stop callback outside `kodo.server.__main__` (tests and
-    the validator's in-process app included), so this must not raise."""
+    """Nothing wires a stop callback outside `kodo.server.__main__` (the tests'
+    in-process apps included), so this must not raise."""
     registry = ConnectionRegistry(_FakeManager())  # type: ignore[arg-type]
 
     registry.request_shutdown("no callback set")

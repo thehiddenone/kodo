@@ -559,7 +559,7 @@ class TransientStore:
     def top_agent(self) -> str:
         """Persisted top-level agent selection, exactly as last written.
 
-        A *name* (``"guide"``, ``"problem_solver"``, ``"judge"``), or a legacy
+        A *name* (``"guide"``, ``"problem_solver"``), or a legacy
         workflow-mode value in a session written before the rename — this store
         does not judge which, since it cannot see the registry that knows. The
         engine resolves it on restore. Per-session, so a window hosting several

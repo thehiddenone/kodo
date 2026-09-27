@@ -219,8 +219,8 @@ TAIL_CULLING_KNOB = LlamaKnob(
 #: the ordering is never in doubt. The option *ids* are older than that ladder
 #: and deliberately no longer echo it (``moderate`` is "Tight (0.5)",
 #: ``low`` is "Strict (0.3)", ``very-low`` is "Rigid (0.15)"): an id is the
-#: persisted wire value that appears in saved profiles, per-session overrides
-#: and validator configs, so renaming one would silently invalidate a stored
+#: persisted wire value that appears in saved profiles and per-session
+#: overrides, so renaming one would silently invalidate a stored
 #: selection. Rename a display name freely; never rename an id.
 TEMPERATURE_KNOB = LlamaKnob(
     id="temperature",

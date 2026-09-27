@@ -40,11 +40,7 @@ from kodo.llms import (
     CLOUD_THINKING_FAMILIES,
     DEFAULT_BEDROCK_REGION,
     LLMGateway,
-    LLMRouting,
     LocalLLMEntry,
-    Message,
-    TokenDelta,
-    TurnEnd,
     add_local_entry,
     add_profile,
     clear_llama_server_override_path,
@@ -79,7 +75,6 @@ from kodo.llms import (
 )
 from kodo.llms.llamacpp import (
     LlamaInstall,
-    LlamaPlugin,
     LlamaServer,
     LlamaServerConfig,
     RemoteLlamaEndpoint,
@@ -160,8 +155,6 @@ from kodo.transport import (
     MSG_LLAMACPP_UNINSTALL,
     MSG_LLAMACPP_UPDATE,
     MSG_LLAMACPP_VERSION_INFO,
-    MSG_LLM_COMPLETE,
-    MSG_LLM_SELECT,
     MSG_LOCAL_LLM_ADD_FILE,
     MSG_LOCAL_LLM_ADD_HUGGINGFACE,
     MSG_LOCAL_LLM_ADD_PROFILE,
@@ -307,28 +300,6 @@ def _make_hello_handler(config: Config) -> HandlerFn:
     return _handle_hello
 
 
-def _validate_initial_thinking_level(config: Config, raw: object) -> str | None:
-    """Validate an optional ``hello.thinking_level`` seed for a brand-new session.
-
-    ``None`` (field absent, or invalid for whatever local model is currently
-    configured) lets the new session fall back to its model's thinking-family
-    default, same as if the field were never sent — the validator's RVP judge
-    is the only caller (its preceding ``llm.select`` already switched the
-    active model to the one this value must be valid for, so a mismatch here
-    means a caller bug, and degrading silently keeps ``hello`` itself sturdy
-    rather than failing the whole handshake over an optional field).
-    """
-    if raw is None:
-        return None
-    value = str(raw).strip()
-    settings = config.reload_settings()
-    models_map = settings.get("models")
-    model_key = str(models_map.get("local", "")) if isinstance(models_map, dict) else ""
-    entry = get_local_registry(kodo_user_dir()).get(model_key) if model_key else None
-    base_llm = entry.base_llm if entry is not None else ""
-    return value if value in local_thinking_tiers(base_llm) else None
-
-
 async def _handle_session_hello(
     req: Request, config: Config, payload: dict[str, object], window_id: str
 ) -> None:
@@ -347,8 +318,7 @@ async def _handle_session_hello(
             await req.reply({"type": "hello.ack", "error": "session_in_use"})
             return
     else:
-        thinking_level = _validate_initial_thinking_level(config, payload.get("thinking_level"))
-        session = await req.manager.create(window_id, thinking_level=thinking_level)
+        session = await req.manager.create(window_id)
 
     await req.manager.bind_connection(session, req.connection)
 
@@ -818,8 +788,7 @@ def _persist_stuck_detection(block: dict[str, object]) -> None:
     """Write the ``stuck_detection`` block into settings.json.
 
     Patches the raw user file (not the merged defaults view), so unrelated
-    keys the user never set stay absent — same read-modify-write shape as
-    ``_persist_local_model_selection``.
+    keys the user never set stay absent.
     """
     path = WorkspaceLayout().settings_json
     data: dict[str, object] = {}
@@ -1435,7 +1404,8 @@ def _top_agents_payload(registry: AgentRegistry) -> dict[str, object]:
     renders one row per entry with no name hardcoded on its side — the same
     contract ``housekeeper_llm.get.ack``'s ``options`` array has, and the reason
     adding a top-level agent needs no client change. A non-selectable agent
-    (``judge``) is absent here but still accepted by ``agent.set``.
+    (``selectable: false`` in its config) is absent here but still accepted
+    by ``agent.set``.
 
     ``default_agent`` is what a brand-new session starts on when it sends
     ``agent.set`` with an empty name — the client no longer needs to know this
@@ -2699,205 +2669,6 @@ def _make_server_shutdown_handler(conn_registry: ConnectionRegistry) -> HandlerF
 
 
 # ------------------------------------------------------------------
-# Synchronous model selection + one-shot completion (doc/WS_PROTOCOL.md
-# §7.6a/§7.6b) — built for kodo.validator's LUT↔VLLM swaps, usable by any
-# client.
-# ------------------------------------------------------------------
-
-
-def _persist_local_model_selection(name: str) -> None:
-    """Write ``mode: "local"`` + ``models.local = name`` into settings.json.
-
-    Patches the raw user file (not the merged defaults view), so unrelated
-    keys the user never set stay absent. Every engine dispatch re-reads
-    settings from disk, so live sessions pick the new model up on their next
-    LLM call with no further signal.
-    """
-    path = WorkspaceLayout().settings_json
-    data: dict[str, object] = {}
-    if path.exists():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except (json.JSONDecodeError, OSError) as exc:
-            _log.warning("Rewriting unreadable settings file %s: %s", path, exc)
-    models = data.get("models")
-    if not isinstance(models, dict):
-        models = {}
-    models["local"] = name
-    data["mode"] = "local"
-    data["models"] = models
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-async def _handle_llm_select(req: Request) -> None:
-    """``llm.select {name}`` — switch the active local model and confirm readiness.
-
-    Persists the selection, then (re)starts llama-server for it and waits
-    until it actually serves — the correlated ``llm.select.done`` reply is
-    the caller's guarantee that the next dispatch hits the requested model.
-    A failed start still leaves the selection persisted (matching what a
-    settings-write + failed ``llama.start`` would leave behind); the caller
-    decides whether to retry or select something else.
-
-    Carries no thinking-tier field: thinking is session-scoped (doc/
-    SESSIONS.md), so the validator's RVP judge — the one caller that used to
-    need this — pins its tier via its own ``hello``'s ``thinking_level``
-    field once its session actually exists, instead of persisting through
-    here first.
-    """
-
-    def _fail(error: str, *, model: str | None = None) -> dict[str, object]:
-        return {"type": "llm.select.done", "ok": False, "model": model, "error": error}
-
-    name = str(req.env.payload.get("name", "")).strip()
-    if not name:
-        await req.reply(_fail("name is required"))
-        return
-    user_dir = kodo_user_dir()
-    entry = get_local_registry(user_dir).get(name)
-    if entry is None:
-        await req.reply(_fail(f"Unknown local model: {name!r}"))
-        return
-
-    _persist_local_model_selection(name)
-
-    if entry.kind == "custom_server_url":
-        # Externally-managed server: nothing to start; stop our own process so
-        # it is not shadowing the external one (same rule as llama.start).
-        managed = LlamaServer.get_active_llama_server()
-        if managed is not None and managed.is_running:
-            await managed.stop()
-        await req.connection.send(
-            Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None})
-        )
-        await req.reply({"type": "llm.select.done", "ok": True, "model": name})
-        return
-
-    try:
-        server = await ensure_llama_running(entry, user_dir)
-    except Exception as exc:  # noqa: BLE001 — startup failure is the reply, not a crash
-        await req.connection.send(
-            Envelope.make_event(
-                EVT_LLAMA_STATE, {"running": False, "model": None, "error": str(exc)}
-            )
-        )
-        await req.reply(_fail(str(exc), model=name))
-        return
-    await req.connection.send(
-        Envelope.make_event(
-            EVT_LLAMA_STATE, {"running": True, "model": server.model_name, "port": server.port}
-        )
-    )
-    await req.reply({"type": "llm.select.done", "ok": True, "model": server.model_name})
-
-
-def _make_llm_complete_handler(config: Config, gateway: LLMGateway) -> HandlerFn:
-    """``llm.complete {prompt, system?, json_schema?, thinking_level?}`` — one-shot
-    local completion.
-
-    A single tool-less turn on the currently selected local model, scheduled
-    through the shared gateway feed (serializing with session dispatches).
-    The full response text comes back in the correlated reply; no stream
-    frames are emitted. ``json_schema`` grammar-constrains the output.
-
-    ``thinking_level`` (a valid tier slug for the active model's thinking
-    family) is a pure per-call override — built for the validator's
-    User-Proxy answers (doc/VALIDATOR.md §9), which pin a low tier so
-    ``ask_user`` answers don't burn time thinking. This call has no session
-    to persist into, so there is nothing else for it to affect.
-    """
-
-    async def _handle_llm_complete(req: Request) -> None:
-        def _fail(error: str, *, model: str | None = None) -> dict[str, object]:
-            return {"type": "llm.complete.done", "ok": False, "model": model, "error": error}
-
-        payload = req.env.payload
-        prompt = str(payload.get("prompt", ""))
-        if not prompt:
-            await req.reply(_fail("prompt is required"))
-            return
-        schema_raw = payload.get("json_schema")
-        if schema_raw is not None and not isinstance(schema_raw, dict):
-            await req.reply(_fail("json_schema must be a JSON object"))
-            return
-        schema = cast("dict[str, object] | None", schema_raw)
-
-        settings = config.reload_settings()
-        models_map = settings.get("models", {})
-        model = str(models_map.get("local", "") if isinstance(models_map, dict) else "")
-        user_dir = kodo_user_dir()
-        entry = get_local_registry(user_dir).get(model) if model else None
-        if not model or entry is None:
-            await req.reply(_fail("No local model selected — llm.complete is local-only"))
-            return
-
-        thinking_level_raw = payload.get("thinking_level")
-        thinking_level: str | None = None
-        if thinking_level_raw is not None:
-            thinking_level = str(thinking_level_raw).strip()
-            tiers = local_thinking_tiers(entry.base_llm)
-            if not tiers:
-                await req.reply(
-                    _fail(
-                        f"{model!r} has no thinking-tier family; thinking_level is not applicable",
-                        model=model,
-                    )
-                )
-                return
-            if thinking_level not in tiers:
-                await req.reply(
-                    _fail(
-                        f"Invalid thinking_level {thinking_level!r} for {model!r}; "
-                        f"expected one of {list(tiers)}",
-                        model=model,
-                    )
-                )
-                return
-
-        plugin = LlamaPlugin(sink=req.connection, kodo_dir=user_dir)
-        text_parts: list[str] = []
-        input_tokens = 0
-        output_tokens = 0
-        try:
-            async for event in gateway.stream_query(
-                routing=LLMRouting(residence="local"),
-                plugin=plugin,
-                sink=req.connection,
-                stream_id=uuid.uuid4().hex,
-                model=model,
-                system=str(payload.get("system", "")),
-                messages=[Message(role="user", content=prompt)],
-                tools=[],
-                cache_breakpoints=[],
-                json_schema=schema,
-                thinking_level=thinking_level,
-            ):
-                if isinstance(event, TokenDelta):
-                    text_parts.append(event.text)
-                elif isinstance(event, TurnEnd):
-                    input_tokens = event.usage.input_tokens
-                    output_tokens = event.usage.output_tokens
-        except Exception as exc:  # noqa: BLE001 — surfaced to the caller, not a crash
-            await req.reply(_fail(str(exc), model=model))
-            return
-        await req.reply(
-            {
-                "type": "llm.complete.done",
-                "ok": True,
-                "model": model,
-                "text": "".join(text_parts),
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-            }
-        )
-
-    return _handle_llm_complete
-
-
-# ------------------------------------------------------------------
 # App factory
 # ------------------------------------------------------------------
 
@@ -3137,8 +2908,6 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(
         MSG_SERVER_SHUTDOWN, _make_server_shutdown_handler(conn_registry)
     )
-    conn_registry.register_handler(MSG_LLM_SELECT, _handle_llm_select)
-    conn_registry.register_handler(MSG_LLM_COMPLETE, _make_llm_complete_handler(config, gateway))
 
     app = web.Application()
     app[CONNECTION_REGISTRY_KEY] = conn_registry

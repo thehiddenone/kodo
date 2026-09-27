@@ -2,8 +2,8 @@
 
 A sub-agent is "a tool with agentic behavior": where a plain tool returns a value
 that the engine validates against its ``output_schema``, a sub-agent does the same
-through this terminal tool. Calling it ends the sub-agent's run (it joins the same
-``stop_requested`` mechanism as ``submit_evaluation``). It is the *only* way out:
+through this terminal tool. Calling it ends the sub-agent's run (it sets the
+tool context's ``stop_requested``). It is the *only* way out:
 an author that is blocked returns an escalation through this same call rather
 than a separate tool (see :mod:`kodo.agents.subagents.specs._shapes`).
 

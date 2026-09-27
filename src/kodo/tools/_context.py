@@ -670,8 +670,8 @@ class ToolContext:
             with its own persisted tool call (``ask_user`` forwards it on the
             ``prompt.question`` request). Empty for legacy callers that
             dispatch without an id.
-        stop_requested: Set ``True`` by a terminal tool (``return_result``,
-            ``submit_evaluation``) to end the run.
+        stop_requested: Set ``True`` by the terminal ``return_result`` tool
+            to end the run.
         returned_output: The normalized result the sub-agent passed to
             ``return_result`` (with the engine-owned ``schema_compliance`` field),
             or ``None`` until it calls it. Read back by the engine after the run.

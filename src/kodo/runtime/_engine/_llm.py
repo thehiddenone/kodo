@@ -369,10 +369,8 @@ class LLMPlumbingMixin:
         """*prefer* if it is a valid thinking-tier value for *base_llm*, else the family default.
 
         Shared reconciliation used whenever ``_session.thinking_level`` needs
-        a value for a (possibly new) *base_llm*: a brand-new session prefers
-        an explicit seed (``WorkflowEngine.start``'s ``thinking_level``
-        argument, used by the validator's RVP judge — WS_PROTOCOL.md §4.1),
-        a resumed session prefers its persisted value, and both fall back to
+        a value for a (possibly new) *base_llm*: a resumed session prefers its
+        persisted value, a brand-new one has none (``None``), and both fall back to
         *base_llm*'s family default when *prefer* is ``None`` or no longer
         valid for it (e.g. the active model changed underneath a resumed
         session while it was closed).

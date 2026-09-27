@@ -14,8 +14,8 @@ picker. No code change, no restart, no Kōdo release.
 ## 1. The reserved prefix
 
 **Every built-in agent's name begins `kodo_`** — `kodo_guide`,
-`kodo_problem_solver`, `kodo_judge`, `kodo_coder`, `kodo_architect`, and so on
-for all 26. **A user agent's name may not.**
+`kodo_problem_solver`, `kodo_coder`, `kodo_architect`, and so on
+for all 25. **A user agent's name may not.**
 
 That single rule is what lets both roots share one flat namespace. The registry
 looks an agent up by name without caring which root it came from, and a

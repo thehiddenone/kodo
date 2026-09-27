@@ -686,7 +686,6 @@ def test_clear_llm_request_logs_removes_files_and_dirs(tmp_path: Path) -> None:
         # Agent names, the vocabulary the selection is moving to...
         ("kodo_problem_solver", "kodo_problem_solver"),
         ("kodo_guide", "kodo_guide"),
-        ("kodo_judge", "kodo_judge"),
         # ...while a selection naming no registered agent comes back *unchanged*,
         # so the worker can name the missing agent to the user rather than
         # silently running the session as the default. Covers the pre-``kodo_``

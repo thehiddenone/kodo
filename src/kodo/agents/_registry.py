@@ -492,8 +492,8 @@ def _output_fields(spec: SubAgentSpec) -> frozenset[str]:
 # Schema on the generated ``run_subagent_<name>`` tool, and reach the agent
 # *itself* as the real values under ``## Input Parameters`` at the bottom of its
 # first message (see ``kodo.runtime._engine._subagents._render_task_input``) —
-# no schema is ever shown in a system prompt. Top-level agents (guide/problem_solver
-# /judge) have no spec and are left untouched.
+# no schema is ever shown in a system prompt. Top-level agents (guide,
+# problem_solver) have no spec and are left untouched.
 #: Every **built-in** sub-agent spec, keyed by name. A registry consults its own
 #: union of this and whatever the user root declared (``AgentRegistry.spec``);
 #: this constant stays the packaged catalog, which is what the tests that sweep
@@ -600,7 +600,7 @@ class AgentRegistry:
     Args:
         agents_dir: Directory containing the ``shared_*.md`` blocks, the
             ``subagent_*.md`` files, and the ``agent_*.md`` top-level agent files
-            (``guide``, ``problem_solver``, ``judge``).
+            (``guide``, ``problem_solver``).
 
     Raises:
         AgentLoadError: a shared file is empty or itself contains a
@@ -634,16 +634,16 @@ class AgentRegistry:
         preferred_default: Callable[[], str] | None = None,
         user_dir: Path | None = None,
     ) -> None:
-        # The skills root is injectable purely so tests (and the validator's
-        # isolated home) can point at a temp directory; every production caller
+        # The skills root is injectable purely so tests can point at a temp
+        # directory; every production caller
         # leaves it None and gets ``~/.kodo/skills``. The store itself holds no
         # cache — it re-scans on each read — so binding it once here still sees
         # skills installed after the server started.
         self.__skills_dir = skills_dir
         self.__agents_dir = agents_dir
         # ``None`` means "this registry has no user root at all" — every test
-        # fixture over a temp directory of synthetic agents, and the validator's
-        # isolated home. It is *not* the same as an empty root: a registry with
+        # fixture over a temp directory of synthetic agents. It is *not* the
+        # same as an empty root: a registry with
         # no user root reports no broken rows and refuses a reload.
         self.__user_dir = user_dir
         self.__skills = SkillStore(skills_dir if skills_dir is not None else kodo_skills_dir())

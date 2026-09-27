@@ -41,8 +41,8 @@ switch mid-turn never changes the mode a running turn is already executing under
 The mode picks the top-level agent — `agent_kodo_guide.md` for Guided, and it is that
 prompt, not the engine, that encodes the pipeline order.
 
-A third mode, `"judge"`, exists for the validator (`agent_kodo_judge.md`) and is
-reachable only over the wire; the extension's picker never offers it.
+A third, wire-only mode, `"judge"`, existed for the now-removed validator and
+was removed with it.
 
 ## 3. The cast
 

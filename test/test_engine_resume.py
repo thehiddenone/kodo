@@ -158,9 +158,9 @@ def test_last_top_agent_does_not_resolve_the_pre_rename_vocabulary() -> None:
 
 def test_last_top_agent_prefers_the_current_tag_over_the_legacy_one() -> None:
     engine = _engine_with_lines(
-        [{"role": "assistant", "content": "ok", "top_agent": "kodo_judge", "entry_agent": "guided"}]
+        [{"role": "assistant", "content": "ok", "top_agent": "kodo_guide", "entry_agent": "guided"}]
     )
-    assert engine._last_top_agent() == "kodo_judge"
+    assert engine._last_top_agent() == "kodo_guide"
 
 
 def test_last_top_agent_falls_back_when_tag_names_an_unknown_agent() -> None:

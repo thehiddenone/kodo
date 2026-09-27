@@ -667,7 +667,6 @@ async def test_handle_mode_set_updates_session_and_persists(tmp_path: Path) -> N
         # Agent names round-trip.
         ("kodo_problem_solver", "kodo_problem_solver"),
         ("kodo_guide", "kodo_guide"),
-        ("kodo_judge", "kodo_judge"),
         # The pre-``kodo_`` vocabulary resolves to nothing now — aliases went
         # with the rename — so an old value is simply unrecognized and lands on
         # the default like any other unknown name.
@@ -971,19 +970,6 @@ async def test_start_fresh_session_seeds_thinking_level_from_family_default(
         await engine.start("session-1", resumed=False)
         assert engine._session.thinking_level == "medium"
         assert transient.thinking_level == "medium"
-    finally:
-        await _cancel_worker(engine)
-
-
-async def test_start_fresh_session_seeds_thinking_level_from_explicit_seed(
-    tmp_path: Path,
-) -> None:
-    engine, _transient, _s, _g = _make_engine(
-        tmp_path, settings={"mode": "local", "models": {"local": _QWEN_MODEL}}
-    )
-    try:
-        await engine.start("session-1", resumed=False, thinking_level="minimal")
-        assert engine._session.thinking_level == "minimal"
     finally:
         await _cancel_worker(engine)
 

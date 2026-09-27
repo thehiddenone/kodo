@@ -1,7 +1,7 @@
 """Top-level agent configs — the :class:`TopAgent` record and its JSON files.
 
 A **top-level agent** is the kind a user selects and talks to directly
-(``guide``, ``problem_solver``, ``judge``), as opposed to a sub-agent another
+(``guide``, ``problem_solver``), as opposed to a sub-agent another
 agent delegates to (:mod:`kodo.agents.subagents`). Where a sub-agent's extra
 declaration is a *typed contract* (:class:`~kodo.agents.subagents.SubAgentSpec`),
 a top-level agent has none — it talks to a human in prose — so what it needs
@@ -95,8 +95,9 @@ class TopAgent:
         rank: Sort key for the picker, ascending. Ties break by :attr:`name`.
         selectable: Whether this agent is offered to the user at all. ``False``
             marks one that is reachable only by selecting it explicitly over the
-            wire — ``judge``, which ``kodo.validator`` drives and which has no
-            meaning in an interactive session. A non-selectable agent is still
+            wire — one a programmatic client drives and which has no meaning in
+            an interactive session (the flag was built for the ``judge`` of the
+            now-removed ``kodo.validator``). A non-selectable agent is still
             fully registered and still runs; it is simply absent from the
             catalog the client renders.
         default: Whether an unrecognized selection falls back to this agent.

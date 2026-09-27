@@ -1,8 +1,9 @@
 """The isolated ``~/.kodo`` a headless run's server sees — built from an allowlist.
 
 The server child runs with ``HOME`` pointed at a throwaway directory, so the
-user's real ``~/.kodo`` is never written. Unlike ``kodo.validator``'s
-``clone_kodo_home`` (a denylist: copy everything not excluded), this copies
+user's real ``~/.kodo`` is never written. Unlike ``clone_kodo_home`` of the
+now-removed ``kodo.validator`` (a denylist: copy everything not excluded),
+this copies
 nothing it does not name — a real ``~/.kodo`` holds GBs of checkpoint mirrors
 and a venv, plus secrets, none of which a headless run needs:
 

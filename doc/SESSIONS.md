@@ -480,11 +480,10 @@ the source of truth and validates every change:
   family default — Qwen-family sessions start at `"unlimited"`, GPT-OSS-family
   at `"medium"`, cloud sessions at their vendor's own documented API default
   (Anthropic/Bedrock `"high"`, OpenAI/Google/Meta/OpenRouter `"medium"`,
-  DeepSeek `"high"`, Alibaba `"xhigh"`, Kimi `"max"`), non-thinking models at `""`. A caller can override this seed via `hello`'s optional
-  `thinking_level` field (WS_PROTOCOL.md §4.1) instead — built for the
-  validator's RVP judge session, whose `hello` fires before there is
-  anywhere else to attach the tier its preceding `llm.select` pinned
-  (doc/VALIDATOR.md §9).
+  DeepSeek `"high"`, Alibaba `"xhigh"`, Kimi `"max"`), non-thinking models at `""`. There is no
+  seed override: `hello`'s optional `thinking_level` field, built for the
+  now-removed `kodo.validator`'s judge session, was removed with it; a client
+  that wants another tier sends `thinking_level.set` once the session exists.
 - **A resumed session** restores its persisted value, but only if it is
   still valid for the *currently* active model — the active local model /
   cloud vendor is a machine-global selection, not per-session, so it may have

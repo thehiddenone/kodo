@@ -80,11 +80,8 @@ def _build_thinking_extra_body(
     Args:
         base_llm (str): The active model's ``LocalLLMEntry.base_llm`` (``""``
             for non-hardcoded entries, which have no thinking family).
-        override_tier (str | None): A per-request tier — every caller passes
-            one explicitly: the engine's session-scoped ``thinking_level``
-            (doc/SESSIONS.md) for ordinary turns, or the validator's
-            ``llm.complete`` ``thinking_level`` field (doc/WS_PROTOCOL.md
-            §7.6b) for its session-less one-shot calls. Falls back to
+        override_tier (str | None): A per-request tier — the engine's
+            session-scoped ``thinking_level`` (doc/SESSIONS.md). Falls back to
             *base_llm*'s family default when absent/invalid for it (e.g. no
             override given at all, or a stale value left over from a model
             switch).
@@ -532,7 +529,6 @@ class LlamaPlugin(LLMPlugin):
         messages: list[Message],
         tools: list[ToolSpec],
         cache_breakpoints: list[int],
-        json_schema: dict[str, object] | None = None,
         thinking_level: str | None = None,
         sampling: SamplingParams | None = None,
     ) -> AsyncIterator[StreamEvent]:
@@ -545,23 +541,11 @@ class LlamaPlugin(LLMPlugin):
             messages (list[Message]): Conversation history.
             tools (list[ToolSpec]): Tools the model may invoke.
             cache_breakpoints (list[int]): Ignored — llama-server has no equivalent.
-            json_schema (dict[str, object] | None): When set, llama-server
-                grammar-constrains the content channel to JSON matching this
-                schema (``response_format`` with an attached schema — the
-                output is parseable by construction). llama.cpp-only; the
-                ``llm.complete`` command uses it for the validator's
-                machine-read answers (doc/VALIDATOR.md §9). Mutually exclusive
-                with *tools* in practice: a grammar-pinned content channel
-                cannot also emit tool calls.
             thinking_level (str | None): A tier slug for *model*'s thinking
                 family (see :func:`kodo.llms.local_thinking_tiers`), or
                 ``None``/invalid to fall back to the family default.
                 llama.cpp-only. The engine passes the session's
-                ``thinking_level`` (doc/SESSIONS.md) on every ordinary turn;
-                the ``llm.complete`` command's ``thinking_level`` field
-                (doc/WS_PROTOCOL.md §7.6b) uses this as a pure per-call
-                override so the validator's User-Proxy can pin e.g.
-                ``"minimal"`` for its ``ask_user`` answers.
+                ``thinking_level`` (doc/SESSIONS.md) on every turn.
             sampling (SamplingParams | None): Request-level sampling
                 parameters, already resolved from the active profile's
                 defaults and the session's own per-quant overrides
@@ -585,7 +569,6 @@ class LlamaPlugin(LLMPlugin):
             system=system,
             messages=messages,
             tools=tools,
-            json_schema=json_schema,
             thinking_level=thinking_level,
             sampling=sampling,
         ):
@@ -697,7 +680,6 @@ class LlamaPlugin(LLMPlugin):
         system: str,
         messages: list[Message],
         tools: list[ToolSpec],
-        json_schema: dict[str, object] | None = None,
         thinking_level: str | None = None,
         sampling: SamplingParams | None = None,
     ) -> AsyncIterator[StreamEvent]:
@@ -710,7 +692,6 @@ class LlamaPlugin(LLMPlugin):
                 system=system,
                 messages=messages,
                 tools=tools,
-                json_schema=json_schema,
                 thinking_level=thinking_level,
                 sampling=sampling,
             ):
@@ -726,7 +707,6 @@ class LlamaPlugin(LLMPlugin):
         system: str,
         messages: list[Message],
         tools: list[ToolSpec],
-        json_schema: dict[str, object] | None = None,
         thinking_level: str | None = None,
         sampling: SamplingParams | None = None,
     ) -> AsyncIterator[StreamEvent]:
@@ -770,12 +750,6 @@ class LlamaPlugin(LLMPlugin):
                     events.append(event)
             return events
 
-        # llama-server accepts an inline schema on response_format's
-        # "json_object" form and compiles it to a GBNF grammar server-side, so
-        # a json_schema-constrained response cannot be syntactically invalid.
-        response_format = (
-            {"type": "json_object", "schema": json_schema} if json_schema is not None else None
-        )
         entry = get_local_registry(self.__kodo_dir).get(model)
         extra_body, max_tokens = (
             _build_thinking_extra_body(entry.base_llm, override_tier=thinking_level)
@@ -797,7 +771,6 @@ class LlamaPlugin(LLMPlugin):
             max_tokens=max_tokens,
             messages=oai_messages,
             tools=oai_tools if oai_tools else openai.NOT_GIVEN,
-            response_format=response_format if response_format is not None else openai.NOT_GIVEN,
             extra_body=extra_body if extra_body else None,
             stream=True,
             stream_options={"include_usage": True},

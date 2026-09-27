@@ -9,6 +9,9 @@
 > Supersedes [ADDING_A_SUBAGENT.md](ADDING_A_SUBAGENT.md) §4.3-4.4 **once landed** —
 > until then that section is still accurate for the tree as it stands.
 > Touches both repos: `kodo` (`src/kodo/…`) and `kodo-vsix`.
+> **Update 2026-09-27:** `kodo.validator` and its `kodo_judge` agent have since
+> been removed (superseded by `kodo-harbor`, [HARBOR.md](HARBOR.md)). Their
+> mentions below are kept as the record of why things look the way they do.
 
 Turn Guide, Problem Solver and Judge into **prompt + config** definitions over
 one generic engine, and give kodo-vsix a data-driven agent picker.

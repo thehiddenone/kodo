@@ -56,7 +56,6 @@ from kodo.toolspecs import (
     RUN_COMMAND,
     RUN_SUBAGENT,
     SCAFFOLD_NEW_PROJECT,
-    SUBMIT_EVALUATION,
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,
     UPDATE_WEB_SEARCH_STATE,
@@ -103,7 +102,6 @@ from ._rollback import RollbackTool
 from ._run_command import RunCommandTool
 from ._run_subagent import RunSubagentTool
 from ._scaffold_new_project import ScaffoldNewProjectTool
-from ._submit_evaluation import SubmitEvaluationTool
 from ._tool import Tool
 from ._toolchain_build import ToolchainBuildTool
 from ._toolchain_deps import ToolchainDepsTool
@@ -154,7 +152,6 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (UPDATE_WEB_SEARCH_STATE, UpdateWebSearchStateTool),
     (WAIT, WaitTool),
     (REMAINING_TIME, RemainingTimeTool),
-    (SUBMIT_EVALUATION, SubmitEvaluationTool),
     (USE_SKILL, UseSkillTool),
 )
 

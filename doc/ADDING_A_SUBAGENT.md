@@ -52,11 +52,11 @@ one requires touching the engine at all.
 | Files | `agent_<name>.md` | `subagent_<name>.md` **+** `specs/<name>.json` |
 | Who starts it | the **user**, by selecting a workflow mode | another **agent**, via its `run_subagent_<name>` tool — or an engine service |
 | Typed I/O contract | **none** — it talks to a human in prose | **required** — a `SubAgentSpec` with input + output JSON Schema |
-| Terminal call | none; it just replies (Judge is the exception — `submit_evaluation`) | `return_result`, auto-granted and bound to its `output_schema` |
+| Terminal call | none; it just replies | `return_result`, auto-granted and bound to its `output_schema` |
 | `## Purpose` section | not needed (nobody delegates to it) | **required** if any caller lists it; it becomes the tool description |
 | Conversation | multi-turn, persisted to `session.jsonl`, survives mode switches | one subsession, collapsed in the UI, result handed back to the caller |
 | Engine changes to add one | **yes** — ~6 edits across `kodo`, plus `kodo-vsix` if user-selectable | **none** — drop in two files |
-| Live examples | `kodo_guide`, `kodo_problem_solver`, `kodo_judge` | the other 23 |
+| Live examples | `kodo_guide`, `kodo_problem_solver` | the other 23 |
 
 **Rule of thumb:** if a *human* picks it from the UI, it is an entry agent. If an
 *agent* decides to delegate to it, it is a sub-agent. When in doubt build a
@@ -413,10 +413,12 @@ Your wrapper should add nothing but the name.
 
 ### 4.4 The front-end wiring (`kodo-vsix`)
 
-Only if the mode is **user-selectable**. `kodo_judge` is the worked counter-example:
-it is reachable solely by sending `agent.set` with `name: "judge"` over the
-wire (which `kodo.validator` does), and kodo-vsix's picker never offers it — so
-it needed **zero** VSIX changes.
+Only if the mode is **user-selectable**. The worked counter-example was
+`kodo_judge`, the scoring agent of the now-removed `kodo.validator`: marked
+`selectable: false`, it was reachable solely by sending `agent.set` with its
+name over the wire (which the validator did), and kodo-vsix's picker never
+offered it — so it needed **zero** VSIX changes. Any `selectable: false` agent
+works the same way.
 
 For a selectable mode, `workflowMode` is a hardcoded union in several places —
 grep `'guided' | 'problem_solving'` across `src/`. At minimum:

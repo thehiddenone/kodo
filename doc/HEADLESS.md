@@ -139,7 +139,8 @@ What a run does, in order:
    llama-server; the run stops here with `startup_error` when no environment
    variable carries the vendor's key (the message names the variables).
 3. **Spawns** `kodo-server --headless-sandbox <cwd> [--llama-url <url>]` with the
-   isolated `HOME`, through `kodo.validator.ServerProcess(extra_args=…)`.
+   isolated `HOME`, through `kodo.headless.ServerProcess(extra_args=…)` (moved
+   here from the now-removed `kodo.validator`).
 4. **Drives one session.** It sends `hello`, checks the agent against
    `top_agents.list` (an unknown agent exits with code 4), then sends
    `agent.set`, `workspace.folders` (one root: the cwd), `mode.set

@@ -468,9 +468,10 @@ flag in a profile if you know the IDs.
 
 Constrained decoding: restrict output to a GBNF grammar or a JSON schema.
 
-**Reserved by Kōdo** (§9). `json_schema` is how structured LLM calls are
-already implemented (`response_format`'s `json_object` form carries the schema,
-`_llama.py`), and a user-supplied `grammar` would collide with the lazy
+**Reserved by Kōdo** (§9). A `json_schema` pins every turn's output to one JSON
+shape, so no turn could emit a tool call (it used to carry the one-shot
+`llm.complete` answers of the now-removed `kodo.validator`, the only caller
+that wanted that), and a user-supplied `grammar` would collide with the lazy
 tool-call grammar `--jinja` installs (LOCAL_INFERENCE.md §2). Setting either by
 hand would break tool calling.
 
@@ -824,7 +825,7 @@ from being saved rather than stopping that one field from being sent.
 | Reserved | Why |
 |---|---|
 | `max_tokens` / `n_predict` | Computed per request from the session's thinking tier; a user value can starve the Qwen reasoning-budget mechanism of headroom and truncate turns mid-thought (LOCAL_INFERENCE.md §2a) |
-| `json_schema` | Already carried by `response_format` for structured calls |
+| `json_schema` | Pins every turn to one JSON shape — no tool calls |
 | `grammar` | Collides with `--jinja`'s lazy tool-call grammar (LOCAL_INFERENCE.md §2) |
 | `ignore_eos` | Would prevent any turn from ending cleanly |
 | `logit_bias` | Needs model-specific token IDs, not obtainable from the UI |

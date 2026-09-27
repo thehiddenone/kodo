@@ -813,18 +813,6 @@ async def test_toolchain_deps_missing_dependencies_md_returns_remediation(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_submit_evaluation_compliance(tmp_path: Path) -> None:
-    d = _make_dispatcher(tmp_path)
-    res = _assert_compliant(
-        "submit_evaluation",
-        await _dispatch(d, "submit_evaluation", {"score": 91, "report": "meets the spec"}),
-    )
-    assert res["status"] == "recorded"
-    assert res["score"] == 91.0
-    assert d.stop_requested
-
-
-@pytest.mark.asyncio
 async def test_ask_user_compliance(tmp_path: Path) -> None:
     d = _make_dispatcher(tmp_path)
     res = _assert_compliant(
@@ -1183,7 +1171,6 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "toolchain_build",
         "toolchain_deps",
         "ask_user",
-        "submit_evaluation",
         "run_subagent",
         "return_result",
         "rollback",

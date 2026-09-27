@@ -302,7 +302,7 @@ actual `llama.start` — either the sidebar's explicit button or a local-mode
 gate"). This remains a client-side-only gate: the server performs no hardware
 or version check of its own before launching llama.cpp.
 
-A brand-new session (no `session_id` in the request) may also carry an optional `thinking_level` field — a tier slug valid for the currently-configured active model's thinking family (the active local model's, or the active cloud vendor's), seeding `state.thinking_level` (§5.1) instead of the family default. Silently ignored (falls back to the family default) if invalid, absent, or the request resumes an existing session. kodo-vsix never sends this; it exists for the validator's RVP judge session, whose `hello` fires before there is anywhere else to attach the tier its preceding `llm.select` (§7.6a) pinned (doc/VALIDATOR.md §9).
+A brand-new session always starts on its active model's family-default `thinking_level` (§5.1); a client that wants another tier sends `thinking_level.set` (§7.4e) once the session exists. (`hello` used to accept an optional `thinking_level` seed, built for the now-removed `kodo.validator`'s judge session; it was removed with the validator and is ignored if sent.)
 
 Immediately after the ack the server **also pushes** a `state` event (§5.1) and, if the resumed session has history, a `session.history` event (§5.11). The redundant `state` keeps first-connect and reconnect on identical client logic.
 
@@ -368,7 +368,7 @@ The header toggles split into **two frozen** and **three never-frozen**:
 **Frozen toggles** (`autonomous`, `top_agent`) are reported as a **pair**: the user-facing *selected* value and its per-turn frozen *effective* twin (`effective_*`). The selected value flips the instant the user clicks; the effective value is the one the **in-flight prompt** actually runs under — the engine freezes both from their selected values when it dequeues a prompt (`_freeze_effective_modes`), so a toggle flipped mid-run takes effect only on the *next* prompt. The client renders each as "in effect" (selected == effective, or idle) or "queued for the next prompt" (a turn is running and they differ).
 
 - `autonomous` — Autonomous/Interactive mode. Toggled via `mode.set` (§7.5).
-- `top_agent` — the name of the top-level agent driving prompts, always one the server has registered. Not a fixed set: it is whatever `top_agents.list.ack`'s `agents` catalog lists (§7.4g), plus any non-selectable agent (`kodo_judge`) reachable only by sending it explicitly. Toggled via `agent.set` (§7.4).
+- `top_agent` — the name of the top-level agent driving prompts, always one the server has registered. Not a fixed set: it is whatever `top_agents.list.ack`'s `agents` catalog lists (§7.4g), plus any non-selectable agent (`selectable: false` in its config) reachable only by sending it explicitly. Toggled via `agent.set` (§7.4).
 
 **Never-frozen toggles** (`edit_control`, `command_control`, `thinking_level`) carry a **single** value and **no `effective_*` twin** — a flip applies to the next LLM call, not the next prompt.
 
@@ -1522,7 +1522,7 @@ Selects which top-level agent drives the next prompt. Like `mode.set`, it applie
 
 `name` is an entry from `top_agents.list.ack`'s `agents` catalog (§7.4g), `""` to let the server pick its own default (what a brand-new session sends, since the catalog is no longer pushed unconditionally at connect), **or** a legacy workflow-mode value (`guided` / `problem_solving`) left in a session persisted before the rename — both resolve to the same agent. Anything else unrecognized falls back the same way, so a stale stored selection keeps working rather than failing the prompt.
 
-The accepted set is whatever top-level agents the server has registered; there is no fixed list of modes any more. A non-selectable agent is absent from the catalog but still accepted here — which is how `kodo_judge` is reached.
+The accepted set is whatever top-level agents the server has registered; there is no fixed list of modes any more. A non-selectable agent (`selectable: false` in its config) is absent from the catalog but still accepted here — the only way to reach one.
 
 Response:
 
@@ -1532,7 +1532,7 @@ Response:
 
 A `state` event follows, whose `top_agent` carries the **resolved** name — so a client that sent an alias sees the agent it actually got, not the value it typed.
 
-`kodo_judge` is **validator-only**: `kodo.validator._evaluate` sends it when it opens the second, judge session over a finished run; it is marked non-selectable so it never appears in a user-facing picker. It exists so judging a validation run doesn't go through the Problem Solver's full read/write/execute/sub-agent tool set — Problem Solver's purpose is solving user problems, not judging validator runs, so it carries none of the scoring machinery.
+No shipped agent is non-selectable any more. The flag was built for `kodo_judge`, the scoring agent of the now-removed `kodo.validator` (it opened a second, judge session over a finished run, and had no meaning in an interactive one); it was removed with the validator, and a stored `kodo_judge` selection is now treated like any other unknown agent.
 
 > Replaced `workflow.set {mode}` (removed, not deprecated — nothing accepts it). The old names live on only as read-time fallbacks for data already on disk: the `workflow_mode` key in a session's `transient.json` and the `entry_agent` tag on a `session.jsonl` line.
 
@@ -1677,8 +1677,9 @@ this moved out of it (§4.1). No payload:
 
 Built from the same `_top_agents_payload` helper `hello.ack` used to spread
 inline, so the shape is unchanged — only the timing is. `agents` lists only
-the **selectable** ones, in picker order; a non-selectable agent (`kodo_judge`)
-is absent but still accepted by `agent.set` (§7.4).
+the **selectable** ones, in picker order; a non-selectable agent
+(`selectable: false` in its config) is absent but still accepted by
+`agent.set` (§7.4).
 
 kodo-vsix's Agent picker (`session/mode-toggle-controller.ts`) calls this every
 time its popup opens rather than once at connect, so an agent installed
@@ -1918,109 +1919,27 @@ interrupt a window mid-generation) and no user-defined profile is active
 (knobs aren't what launches then). Reconfiguring an inactive entry just
 persists the change. A restart, when it happens, also emits a fresh
 `llama.state` (§5.12) on the same connection, same as
-`llama.start`/`llm.select`.
+`llama.start`.
 
 `llama.start` on a `custom_server_url` active entry stops kodo's own
 llama-server (if running) and reports `llama.state {running: false}` — it
 does not start a process for that entry (see §5.12).
 
-### 7.6a `llm.select` — synchronous local-model switch
+### 7.6a `llm.select` — RETIRED
 
-Built for `kodo.validator`'s LUT↔VLLM swaps (doc/VALIDATOR.md §9), usable by
-any client. Where the VSIX's model switch is a settings-file write +
-`config.reload` + `llama.start` with no readiness confirmation, `llm.select`
-does the whole switch server-side and **replies only once the outcome is
-known**:
+Formerly a synchronous local-model switch (persist the selection, restart
+llama-server, reply only once it serves), built for the now-removed
+`kodo.validator`'s swaps between the model under test and its validation
+model. Removed with the validator; nothing else sent it. A client switches
+models with a settings write + `config.reload` + `llama.start`.
 
-```json
-{ "type": "llm.select", "name": "qwen36-27b" }        // a *local registry* name
-```
+### 7.6b `llm.complete` — RETIRED
 
-Server-side sequence: persist `mode: "local"` + `models.local = name`
-(raw-file patch to `~/.kodo/etc/settings.json` — untouched keys survive) →
-(re)start llama-server for the entry (`ensure_llama_running`: same-model
-no-op, different-model stop-then-start) → wait until it actually serves.
-Response, correlated:
-
-```json
-{ "type": "llm.select.done", "ok": true,  "model": "qwen36-27b" }
-{ "type": "llm.select.done", "ok": false, "model": "qwen36-27b", "error": "..." }
-```
-
-Notes:
-
-- **Not session-scoped.** The selection is machine-global, exactly like a
-  settings write; every live session's engine reads settings fresh per
-  dispatch and picks the model up on its next LLM call (no `config.reload`
-  needed).
-- A `custom_server_url` entry replies `ok: true` after stopping kodo's own
-  llama-server (nothing to start — same rule as `llama.start`).
-- Carries no thinking-tier field: thinking is session-scoped (doc/
-  SESSIONS.md), not a global setting keyed by `base_llm`, so there is
-  nothing here for it to persist into. `kodo.validator`'s RVP judge — the
-  one caller that used to need this — pins its tier via its own `hello`'s
-  `thinking_level` field (§4.1) once its session actually exists, instead of
-  routing it through here first (doc/VALIDATOR.md §9).
-- `llama.state` events accompany the reply on the requesting connection
-  (same shapes as §5.12).
-- A failed start **still leaves the selection persisted** — identical residue
-  to a settings write followed by a failed `llama.start`; the caller decides
-  what to select next.
-- Model loads take minutes on large GGUFs: callers must use a generous
-  response timeout. The handler runs synchronously on the requesting
-  connection, which serializes that connection's other frames behind it — a
-  dedicated or idle connection (the validator's case) is the intended caller.
-
-### 7.6b `llm.complete` — session-less one-shot completion
-
-One tool-less LLM turn on the currently selected **local** model, with no
-session, no agents, no feed events, and no persistence. Built for the
-validator's grammar-constrained User-Proxy answers (doc/VALIDATOR.md §9);
-local-only by design (the validator's model pair is mandated local — cloud
-callers have their own APIs).
-
-```json
-{ "type": "llm.complete",
-  "prompt": "…",                       // required — the single user message
-  "system": "…",                       // optional system prompt
-  "json_schema": { "type": "object" }, // optional — grammar-enforce the output
-  "thinking_level": "minimal"          // optional — override for this call only
-}
-```
-
-Response, correlated (the full concatenated text — nothing is streamed to the
-client, though `llm.waiting` may fire while queued):
-
-```json
-{ "type": "llm.complete.done", "ok": true, "model": "qwen36-27b",
-  "text": "…", "input_tokens": 123, "output_tokens": 45 }
-{ "type": "llm.complete.done", "ok": false, "model": "qwen36-27b", "error": "..." }
-```
-
-Notes:
-
-- The call is scheduled through the shared `LLMGateway` **local feed**
-  (max_slots = 1), so it serializes with every session's local dispatch
-  rather than racing llama-server.
-- `json_schema` rides llama-server's `response_format` schema→GBNF grammar
-  compilation: the content channel cannot emit syntactically invalid JSON.
-  (A reasoning model's thinking channel is unconstrained and is discarded —
-  only content text is returned.)
-- Errors (`no local model selected`, llama-server start failure, …) come
-  back as `ok: false`; the handler never streams partial output.
-- Thinking-tier resolution (doc/LLM_REGISTRY.md §4.5) happens inside
-  `LlamaPlugin` by the selected model's `base_llm`, regardless of caller —
-  this call has no session, so it always falls back to the model's family
-  default (a `qwen_reasoning_budget`/`gpt_oss_reasoning_effort`/
-  `qwen4exp_reasoning_effort` family member thinks at its default tier)
-  *unless* `thinking_level` is given.
-- `thinking_level` (a valid tier slug for the selected model's thinking
-  family) is a pure per-call override — nothing is persisted anywhere, so it
-  cannot bleed into any other call (this request has no session to persist
-  into in the first place). Rejected (`ok: false`) if the selected model has
-  no thinking family or the value is not one of its tier slugs. Built for
-  the validator's User-Proxy answers (doc/VALIDATOR.md §9), which pin a low
-  tier (e.g. `"minimal"`) so `ask_user` answers don't burn time thinking.
+Formerly a session-less, tool-less one-shot completion on the selected local
+model (with an optional grammar-enforcing `json_schema` and a per-call
+`thinking_level`), built for the now-removed `kodo.validator`'s simulated-user
+answers. Removed with the validator, together with `LlamaPlugin`'s
+`json_schema` parameter that only it used.
 
 ### 7.6c `security.rules.list` / `security.rules.delete` — global rule management
 
@@ -2086,7 +2005,7 @@ values and coerce `auto_unstuck_interactive` to a `bool`; a missing or
 unrecognised field falls back to its documented default (`"local_only"` /
 `"top_level"` / `false`) rather than erroring, mirroring how the watchdog
 itself (`kodo.runtime._engine._watchdog._stuck_settings`) resolves a
-stale/hand-edited settings.json. Unlike `llm.select`, `.set` requires no
+stale/hand-edited settings.json. `.set` requires no
 `config.reload` follow-up — `stuck_detection` is read fresh from disk on
 every stall check, so a live session picks up the new values on its very
 next check.
@@ -2208,7 +2127,7 @@ Control connection only. Backs the Kōdo Settings panel's "General" section's "D
   "selected": "guide", "effective": "guide", "agents": [ … ] }
 ```
 
-The ack carries the whole `.get` shape, so the panel refreshes from the response with no follow-up round trip. A `name` that is neither empty nor a **selectable** agent replies `{ "ok": false, "error": "…" }` and persists nothing — a session must not be able to start on an agent with no interactive prompt, which is what rules out `kodo_judge`.
+The ack carries the whole `.get` shape, so the panel refreshes from the response with no follow-up round trip. A `name` that is neither empty nor a **selectable** agent replies `{ "ok": false, "error": "…" }` and persists nothing — a session must not be able to start on an agent with no interactive prompt.
 
 Persisted as `default_agent` in `~/.kodo/etc/settings.json` and read fresh each time the default is resolved, so live sessions see the change on their next new session without a reload.
 

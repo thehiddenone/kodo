@@ -206,7 +206,7 @@ information in translation. Grouped by what has to happen to them.
 
 | Subsystem | Messages | Why ACP has nothing |
 |---|---:|---|
-| **Local inference & model registry** — llama.cpp install/update/uninstall/version, GGUF download install/pause/resume/update, custom HF/file/server-URL entries, launch profiles, knob selections, server-arg overrides, OpenRouter + Bedrock catalog refresh, `llama.start`/`stop`/`state`, `llm.complete` | 30 | ACP assumes the agent owns its model entirely. The nearest thing is the **draft** `custom-llm-endpoint` RFD (`providers/list`/`set`/`disable`), which covers *routing*, not *installing a 17 GB quant and supervising its server process*. |
+| **Local inference & model registry** — llama.cpp install/update/uninstall/version, GGUF download install/pause/resume/update, custom HF/file/server-URL entries, launch profiles, knob selections, server-arg overrides, OpenRouter + Bedrock catalog refresh, `llama.start`/`stop`/`state`, `llm.complete` (since retired with `kodo.validator`) | 30 | ACP assumes the agent owns its model entirely. The nearest thing is the **draft** `custom-llm-endpoint` RFD (`providers/list`/`set`/`disable`), which covers *routing*, not *installing a 17 GB quant and supervising its server process*. |
 | **Credential brokerage** — `api_key.request`/`revoke`, `hf_token.request`/`revoke` | 4 | ACP inverts this: the *agent* authenticates itself, the client never hands it provider secrets. Worse, it is **explicitly prohibited** to do this over the one mechanism that looks close: form-mode elicitation "**MUST NOT** be used to request secrets or credentials … API keys, access or refresh tokens", and URL mode "**MUST NOT** send credentials … back over ACP". |
 | **Checkpoint mirror** — `checkpoint.undo`/`redo`/`rollback`/`roll_forward`/`list`/`state` | 6 | No concept of agent-authored file history, undo, or per-root shadow commits. |
 | **Security rule store** — `security.add_rule`, global + session `rules.list`/`delete` | 5 | ACP's `allow_always`/`reject_always` permission kinds imply a rule store but give it no management surface: no list, no delete, no scope, no shape. |
@@ -359,7 +359,7 @@ client side in `kodo-vsix`, using `agent-client-protocol` (Python) and
 | W10 | ~63 band-C messages → `_kodo/...` extension methods + capability advertisement via `_meta`. Mechanical but large | both | **XL** |
 | W11 | Advisory channel: 11 messages with no v1 home. Either extension notifications now, or wait for the `session-notices` RFD | both | M |
 | W12 | Error model: ad-hoc code strings → JSON-RPC error codes; an unsolicited-error path that v1 does not have | both | S–M |
-| W13 | `kodo.validator`'s WS client (`validator/_client.py`, ~5 modules) rewritten against the new wire | py-kodo `validator/` | M |
+| W13 | `kodo.validator`'s WS client (`validator/_client.py`, ~5 modules) rewritten against the new wire. *The validator has since been removed; the same item now applies to `kodo-headless`'s client (`headless/_client.py`).* | py-kodo `headless/` | M |
 | W14 | Rewrite [WS_PROTOCOL.md](WS_PROTOCOL.md) (2,534 lines) and every doc that cites it | doc/ | M |
 | W15 | Conformance testing against at least one third-party ACP client, or the interop claim is unverified | both | M |
 

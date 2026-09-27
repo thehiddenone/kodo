@@ -185,7 +185,7 @@ def test_guides_picker_label_matches_its_display_name() -> None:
 def test_only_selectable_agents_would_reach_a_picker() -> None:
     registry = AgentRegistry(_REAL_AGENTS_DIR)
     hidden = {a.name for a in registry.top_agents() if not a.selectable}
-    assert hidden == {"kodo_judge"}, "judge is validator-only; everything else is user-facing"
+    assert hidden == set(), "every shipped top-level agent is user-facing"
 
 
 # ---------------------------------------------------------------------------

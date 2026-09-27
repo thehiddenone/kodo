@@ -9,6 +9,12 @@
 > runs it through `uv tool run`. Phase 4(a) (ATIF) and the control arm are
 > built; `GatedEnvironment` (§5 Reading 3, D10) was **dropped** — see D10.
 > This document remains the design record.
+> **Update 2026-09-27:** `kodo.validator` (with its `kodo-validator` command,
+> the `kodo_judge` agent and `VALIDATOR.md`) has since been **removed** as tech
+> debt — `kodo-harbor` is now Kōdo's measurement instrument. The §1 non-goal,
+> phase 5 and D13 were superseded by that removal rather than carried out; the
+> validator's `ServerProcess` lives on as `kodo.headless.ServerProcess`. Its
+> mentions below are kept as the record of why things look the way they do.
 > Scope: **server-side only** (`py-kodo`). No `kodo-vsix` change is required by
 > any option below, and none is proposed.
 > Sources read for this document (2026-09-17):
@@ -20,7 +26,7 @@
 > plus `docs.harborframework.com` (`core-concepts/agents/custom-agents`,
 > `core-concepts/sandboxes/custom-sandboxes`, `core-concepts/agents/acp`,
 > `core-concepts/jobs/run-a-job`, `getting-started/installation`).
-> Kōdo-side references: [VALIDATOR.md](VALIDATOR.md), [WS_PROTOCOL.md](WS_PROTOCOL.md),
+> Kōdo-side references: VALIDATOR.md (since removed), [WS_PROTOCOL.md](WS_PROTOCOL.md),
 > [SECURITY.md](SECURITY.md), [SETTINGS.md](SETTINGS.md),
 > [LLM_REGISTRY.md](LLM_REGISTRY.md), [LLM_GATEWAY.md](LLM_GATEWAY.md),
 > [SKILLS.md](SKILLS.md), [INTERNALS.md](INTERNALS.md).
@@ -33,7 +39,7 @@ Kōdo currently has exactly one way to measure itself: `kodo.validator`, which
 runs real sessions and scores them with an LLM judge. That instrument has two
 known defects — **no control arm** (every scenario runs Kōdo, so a score is
 never an effect size) and **a judge made of the thing being measured** (the RVP
-judge is a Kōdo session, [VALIDATOR.md](VALIDATOR.md) §9.2).
+judge is a Kōdo session, VALIDATOR.md §9.2 — since removed).
 
 Harbor fixes the second defect outright and makes the first cheap:
 
@@ -55,7 +61,8 @@ adapter class, and what it has to be handed to work.
 Non-goal: replacing `kodo.validator`. The validator exercises the *interactive*
 product (gates, questions, approvals, multi-root workspaces) which Harbor tasks
 deliberately have no notion of. Harbor is the outcome instrument; the validator
-stays the behavior instrument.
+stays the behavior instrument. *(Superseded 2026-09-27: the validator was
+removed instead, leaving `kodo-harbor` as the only instrument.)*
 
 ---
 
@@ -210,7 +217,7 @@ into typed exceptions (`ApiRateLimitError`, `ContextWindowExceededError`,
 
 The adapter is small **because most of it already exists**. `kodo.validator` is
 a headless client that drives a real Kōdo server end to end with no VS Code and
-no human ([VALIDATOR.md](VALIDATOR.md) §2):
+no human (VALIDATOR.md §2, since removed):
 
 | Piece | Module | Reusable as-is? |
 |---|---|---|
@@ -532,8 +539,8 @@ src/kodo/harbor/            # NEW — imports harbor; never installed in a task
 Layering (extends the table in [INTERNALS.md](INTERNALS.md) §2.1):
 
 - `kodo.headless` imports **only** `kodo.common` + `kodo.transport` — the same
-  client-side discipline `kodo.validator` holds ([VALIDATOR.md](VALIDATOR.md)
-  §2): it must never import `runtime`, `llms`, `agents` or `server` internals,
+  client-side discipline `kodo.validator` held (VALIDATOR.md §2, since
+  removed): it must never import `runtime`, `llms`, `agents` or `server` internals,
   so protocol drift breaks it loudly. Enforced by
   `grep -rE "^\s*(from|import) kodo\.(runtime|llms|agents|server|tools)" src/kodo/headless`
   being empty (the `python -m kodo.server` subprocess is spawned by name, not
@@ -848,6 +855,8 @@ aggregator that turns a job's audit records into a security-rule report.
 **Phase 5 — fold `kodo.validator` onto `kodo.headless`.**
 Remove the duplicated client/server/user plumbing; the validator keeps scenario,
 suite, judge and local-model concerns. Strictly after phase 3 is green.
+*(Superseded 2026-09-27: the validator was removed outright instead; only its
+`ServerProcess` survives, moved into `kodo.headless`.)*
 
 **Phase 6 — Option B, if funded.** §7, gated on a product decision about remote
 execution, not on Harbor.
@@ -943,4 +952,4 @@ not designed for — or a Kōdo-authored dataset that verifies the artifacts too
 | D10 | ~~`BaseEnvironment` implemented as `GatedEnvironment` (audit/enforce)~~ **Dropped 2026-09-25** | An exec-level gate cannot measure what it was meant to: installed agents (claude-code, codex, mini-swe-agent) run their whole loop inside one `environment.exec`, so their commands never reach it; terminus-2's arrive as `tmux send-keys` keystrokes; and Harbor marks no phases on the environment, so setup and verifier commands would be judged too. An offline audit of ATIF trajectories would work for every agent but was not requested. |
 | D11 | Option B is phase 6, gated on a remote-execution product decision | ~11 tool modules + mirror + resolver, two permanent code paths, per-call latency |
 | D12 | ACP (Option D) parked | a second permanent front door; buys nothing Option A does not, for Harbor specifically |
-| D13 | `kodo.validator` is refactored onto `kodo.headless` only after Harbor trials are green | never destabilize the existing instrument to build the new one |
+| D13 | `kodo.validator` is refactored onto `kodo.headless` only after Harbor trials are green | never destabilize the existing instrument to build the new one. *Superseded 2026-09-27: the validator was removed instead.* |

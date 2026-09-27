@@ -11,11 +11,12 @@ wide component every session's engine schedules through. LLM plugins stay
 stateless one-shot facades — **all** queue / concurrency / throttle policy lives
 in the gateway.
 
-Not every caller is a session: the `llm.complete` handler (WS_PROTOCOL.md
-§7.6b, built for `kodo.validator`) schedules a session-less one-shot local
-completion through the same local feed, with the requesting *connection* as
-its `llm.waiting` sink — so it serializes with session dispatches instead of
-racing llama-server.
+Every caller today is a session's engine. The `sink` does not have to be a
+session, though: the retired `llm.complete` handler (WS_PROTOCOL.md §7.6b,
+built for the now-removed `kodo.validator`) scheduled session-less one-shot
+local completions through the same local feed, with the requesting
+*connection* as its `llm.waiting` sink, so they serialized with session
+dispatches instead of racing llama-server.
 
 ## API
 

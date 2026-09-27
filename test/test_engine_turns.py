@@ -244,18 +244,6 @@ async def test_run_problem_solver_with_input_delegates() -> None:
     assert calls == [("kodo_problem_solver", "fix it", None)]
 
 
-async def test_run_judge_with_input_delegates() -> None:
-    engine = object.__new__(WorkflowEngine)
-    calls = []
-
-    async def _run_top_agent(agent_name, text, attachments=None, nudge_detail=None):
-        calls.append((agent_name, text, attachments))
-
-    engine._run_top_agent = _run_top_agent
-    await engine._run_top_agent("kodo_judge", "score it")
-    assert calls == [("kodo_judge", "score it", None)]
-
-
 # ---------------------------------------------------------------------------
 # _store_attachments
 # ---------------------------------------------------------------------------

@@ -72,7 +72,6 @@ _ALLOWED_TOOLS = frozenset(
         "return_result",
         "rollback",
         "run_subagent",
-        "submit_evaluation",
         "update_web_search_state",
         "use_skill",
         "wait",

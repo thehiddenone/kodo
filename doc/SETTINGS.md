@@ -331,9 +331,10 @@ must never stop a session from starting. (Resuming an *existing* session whose
 stored agent is gone behaves differently, and deliberately: it reports the
 missing agent rather than quietly starting on another — USER_AGENTS.md §7.)
 There are no aliases: the pre-rename vocabulary (`"guided"`,
-`"problem_solving"`) names no agent and simply falls through. `kodo_judge` is rejected for the same reason it
-is absent from the picker: it has no interactive prompt, so a session must not
-begin there.
+`"problem_solving"`) names no agent and simply falls through. A non-selectable
+agent (`selectable: false` — the rule was built for the now-removed
+validator's `kodo_judge`) is rejected for the same reason it is absent from the
+picker: it has no interactive prompt, so a session must not begin there.
 
 Read **fresh** each time the default is resolved, so a change applies to the
 next session with no server restart. Exposed in the Kōdo Settings panel's

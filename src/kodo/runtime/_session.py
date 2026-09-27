@@ -34,8 +34,8 @@ class SessionState:
             value even if the user toggles mid-run. Tools read this, never
             ``autonomous``.
         top_agent: Which top-level agent drives prompts, as the user selected
-            it. Holds an agent *name* (``"guide"``, ``"problem_solver"``,
-            ``"judge"``), or a legacy workflow-mode alias (``"guided"``,
+            it. Holds an agent *name* (``"guide"``, ``"problem_solver"``),
+            or a legacy workflow-mode alias (``"guided"``,
             ``"problem_solving"``) on a session persisted before the rename —
             resolved through ``AgentRegistry.resolve_top_agent`` on every read,
             so both spellings work and an unrecognized one falls back to the

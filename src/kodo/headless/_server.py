@@ -1,4 +1,4 @@
-"""Kodo server subprocess management for validation runs.
+"""Kodo server subprocess management for headless runs.
 
 Starts the real singleton server (``python -m kodo.server``) exactly the way
 the VS Code extension does — as a child process on a loopback port — but with
@@ -18,12 +18,11 @@ import sys
 import time
 from pathlib import Path
 
-__all__ = ["ServerProcess", "ServerStartError", "build_child_env"]
+__all__ = ["ServerProcess", "ServerStartError", "pick_free_port"]
 
 _log = logging.getLogger(__name__)
 
 _READY_POLL_SECONDS = 0.2
-_TERMINATE_GRACE_SECONDS = 10.0
 
 
 def build_child_env(home_dir: Path) -> dict[str, str]:
@@ -32,17 +31,11 @@ def build_child_env(home_dir: Path) -> dict[str, str]:
     The child's ``HOME``/``USERPROFILE`` are redirected to the throwaway run
     home so the server roots itself at the isolated ``.kodo``. ``HF_HOME`` is
     pinned to the **real, global** HuggingFace cache (captured from the parent
-    env before the HOME redirect), so every validation run shares one cache
-    instead of re-fetching metadata under its throwaway home — this covers
-    both GGUF downloads (``kodo.llms.local``, resolved through
-    ``huggingface_hub``) and the session titler's own model download
-    (``kodo.titling``, doc/INTERNALS.md §10c), which also resolves through
-    ``huggingface_hub``. The titler additionally never re-downloads or
-    re-lists its model at all once ``~/.kodo/titler`` (symlinked into every
-    run, see ``_home.py``) already has it — ``start_titling`` checks its local
-    manager state before doing any network call — so, unlike the old
-    ``transformers``-based titler, there is no separate offline flag needed
-    here to avoid repeated Hub traffic per run.
+    env before the HOME redirect), so every run shares one cache instead of
+    re-fetching metadata under its throwaway home — this covers both GGUF
+    downloads (``kodo.llms.local``, resolved through ``huggingface_hub``) and
+    the session titler's own model download (``kodo.titling``,
+    doc/INTERNALS.md §10c), which also resolves through ``huggingface_hub``.
 
     Args:
         home_dir (Path): The prepared run home to export as ``HOME``.
@@ -79,7 +72,8 @@ class ServerProcess:
 
     Args:
         home_dir: Directory exported as ``HOME``/``USERPROFILE`` to the child
-            (must contain the prepared ``.kodo``; see :func:`clone_kodo_home`).
+            (must contain the prepared ``.kodo``; see
+            :func:`~._home.build_headless_home`).
         port: WebSocket port; a free one is picked when omitted.
         log_level: ``--log-level`` passed to the server.
         console_log: File capturing the child's stdout+stderr; defaults to
@@ -87,6 +81,8 @@ class ServerProcess:
         extra_args: Further ``kodo.server`` CLI arguments, appended verbatim
             (``kodo-headless`` passes ``--headless-sandbox``/``--llama-url``,
             doc/HEADLESS.md); empty by default.
+        terminate_grace: Seconds :meth:`stop` waits after SIGTERM before it
+            sends SIGKILL.
     """
 
     __home_dir: Path
@@ -94,6 +90,7 @@ class ServerProcess:
     __log_level: str
     __console_log: Path
     __extra_args: tuple[str, ...]
+    __terminate_grace: float
     __process: asyncio.subprocess.Process | None
 
     def __init__(
@@ -104,9 +101,21 @@ class ServerProcess:
         log_level: str = "INFO",
         console_log: Path | None = None,
         extra_args: tuple[str, ...] = (),
+        terminate_grace: float = 10.0,
     ) -> None:
+        """Describe the child; nothing is spawned until :meth:`start`.
+
+        Args:
+            home_dir (Path): The prepared run home to export as ``HOME``.
+            port (int | None): WebSocket port; a free one when omitted.
+            log_level (str): ``--log-level`` passed to the server.
+            console_log (Path | None): Capture file for the child's output.
+            extra_args (tuple[str, ...]): Further ``kodo.server`` arguments.
+            terminate_grace (float): SIGTERM-to-SIGKILL grace in seconds.
+        """
         self.__home_dir = home_dir.resolve()
         self.__extra_args = extra_args
+        self.__terminate_grace = terminate_grace
         self.__port = port if port is not None else pick_free_port()
         self.__log_level = log_level
         self.__console_log = console_log or (self.__home_dir / "server-console.log")
@@ -191,7 +200,7 @@ class ServerProcess:
         with contextlib.suppress(ProcessLookupError):
             process.terminate()
         try:
-            await asyncio.wait_for(process.wait(), timeout=_TERMINATE_GRACE_SECONDS)
+            await asyncio.wait_for(process.wait(), timeout=self.__terminate_grace)
         except TimeoutError:
             _log.warning("kodo server pid=%d ignored SIGTERM; killing", process.pid)
             with contextlib.suppress(ProcessLookupError):

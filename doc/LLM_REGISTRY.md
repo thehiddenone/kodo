@@ -1502,8 +1502,7 @@ __raw_stream` (`kodo/llms/llamacpp/_llama.py`) resolves the active request's
 `base_llm` from the registry and calls `_build_thinking_extra_body(base_llm,
 override_tier=thinking_level)`, where `thinking_level` is the caller-supplied
 tier for this call — the engine passes the session's `thinking_level` on
-every ordinary turn, and the validator's `llm.complete` command passes its
-own per-call override — falling back to the family default when absent or
+every turn — falling back to the family default when absent or
 invalid for `base_llm`. Entries with no thinking family (`base_llm == ""`,
 or a hardcoded model outside both families) get no `extra_body` at all — no
 behavior change.

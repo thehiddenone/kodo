@@ -369,9 +369,7 @@ class WorkflowEngine(
     # Session lifecycle
     # ------------------------------------------------------------------
 
-    async def start(
-        self, session_id: str, resumed: bool, thinking_level: str | None = None
-    ) -> None:
+    async def start(self, session_id: str, resumed: bool) -> None:
         """Attach the given session and start the worker.
 
         The session id + resumed flag are supplied by the ``SessionManager``
@@ -385,14 +383,6 @@ class WorkflowEngine(
         Args:
             session_id (str): Session identifier to attach.
             resumed (bool): ``True`` if an existing session dir was found.
-            thinking_level (str | None): For a brand-new session only, an
-                explicit seed for ``_session.thinking_level`` instead of the
-                active model's family default — a valid tier slug for the
-                active model's thinking family, pre-validated by the caller
-                (``hello``'s optional field, WS_PROTOCOL.md §4.1; built for
-                the validator's RVP judge session, whose ``hello`` fires
-                before there is anywhere else to attach the tier its
-                preceding ``llm.select`` pinned). Ignored when *resumed*.
         """
         self._orch_session_id = session_id
         self._clear_llm_request_logs()
@@ -450,16 +440,12 @@ class WorkflowEngine(
             # the same value as ``default_agent`` and does not pick one itself.
             self._session.top_agent = self._registry.default_top_agent()
             self._transient.update(top_agent=self._session.top_agent)
-            # Seed thinking_level from the caller's
-            # explicit *thinking_level* if given and valid, else the active
-            # model's family default — same reconciliation as the resumed
-            # path, just against ``thinking_level`` instead of a persisted
-            # value (doc/SESSIONS.md).
+            # Seed thinking_level from the active model's family default —
+            # same reconciliation as the resumed path, with no persisted
+            # value to prefer (doc/SESSIONS.md).
             base_llm = self._current_base_llm()
             self._last_thinking_base_llm = base_llm
-            self._session.thinking_level = self._thinking_level_for_model(
-                base_llm, prefer=thinking_level
-            )
+            self._session.thinking_level = self._thinking_level_for_model(base_llm, prefer=None)
             self._transient.update(thinking_level=self._session.thinking_level)
             # Opening greeting (doc/WS_PROTOCOL.md `session.greeting`) — only
             # for a genuinely brand-new session, never a resumed one.
@@ -669,8 +655,8 @@ class WorkflowEngine(
         agent it actually got rather than the value it typed.
 
         Args:
-            name: A top-level agent name (``"guide"``, ``"problem_solver"``,
-                ``"judge"``) or a legacy workflow-mode alias (``"guided"``,
+            name: A top-level agent name (``"guide"``, ``"problem_solver"``)
+                or a legacy workflow-mode alias (``"guided"``,
                 ``"problem_solving"``) from a session persisted before the
                 rename. Unknown values fall back to the registry's default.
         """

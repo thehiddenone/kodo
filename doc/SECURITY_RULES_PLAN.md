@@ -603,9 +603,10 @@ an always-allow rule for `<executable> <subcommand>` — this session." /
 3. **Windows depth**: flesh out the PowerShell/cmd tables (cmdlet parameter
    matching such as `Remove-Item -Recurse`, `Invoke-Expression`,
    `Start-Process -Verb RunAs`) beyond the Phase 1 core.
-4. **Validator coverage**: scenarios that exercise the gate end-to-end (a
+4. **End-to-end coverage**: scenarios that exercise the gate end-to-end (a
    scripted deployment attempt must ask; a build command must pass
-   silently).
+   silently). Originally planned for `kodo.validator`, which has since been
+   removed; `kodo-harbor` benchmark tasks are the place for them now.
 
 ---
 

@@ -7,11 +7,11 @@ request. Every frame worth showing becomes a stdout event
 (:class:`~._events.EventSink`), and a running tally feeds the final
 :class:`~._result.RunResult`.
 
-Turn-end detection is the validator's: the phase was seen ``running`` and
-now rests (``awaiting_user`` / ``done`` / ``stopped`` / ``error``) with no
-answer in flight, stable across a short settle window — a resting phase is
-also what a pending question looks like, and the engine flips back to
-``running`` right after an answer lands.
+Turn-end detection (inherited from the now-removed ``kodo.validator``): the
+phase was seen ``running`` and now rests (``awaiting_user`` / ``done`` /
+``stopped`` / ``error``) with no answer in flight, stable across a short
+settle window — a resting phase is also what a pending question looks like,
+and the engine flips back to ``running`` right after an answer lands.
 """
 
 from __future__ import annotations

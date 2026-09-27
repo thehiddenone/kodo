@@ -6,6 +6,10 @@
 > [USER_AGENTS.md](USER_AGENTS.md); read this one for *why* those options and
 > not the others.
 >
+> **Update 2026-09-27:** `kodo.validator` and its `kodo_judge` agent have since
+> been removed (superseded by `kodo-harbor`, [HARBOR.md](HARBOR.md)). Their
+> mentions below are kept as the record of why things look the way they do.
+>
 > Four things landed differently from the sketch below, each for a reason the
 > spec states: bundles are **directories**, not flat files (§4.1); the
 > namespace is kept clean by a reserved **`kodo_` prefix on every built-in
@@ -444,7 +448,7 @@ That reframing changes the mitigation:
 ## 7. Decisions still needed
 
 1. **`selectable: false` for user agents — keep it?** It exists for `kodo_judge`
-   (wire-only, validator-driven). A user agent that opts out of the picker is
+   (wire-only, validator-driven; both since removed — the flag was kept). A user agent that opts out of the picker is
    only reachable by something sending `workflow.set` directly. Probably keep
    for symmetry, but it has no user story yet.
 2. **Auto-fall-back or hold** when a session's mode names a deleted agent

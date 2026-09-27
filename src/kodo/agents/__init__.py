@@ -3,7 +3,7 @@
 Two kinds of agent live here, and the package is laid out along that split:
 
 **Top-level agents** (``agent_<name>.md`` plus a ``<name>.json`` config beside
-it) are what a *human* selects and talks to — ``guide``, ``problem_solver``, ``judge``. They
+it) are what a *human* selects and talks to — ``guide``, ``problem_solver``. They
 have no typed contract, because nothing calls them with arguments; what they
 declare instead is how they are *chosen* (:class:`TopAgent`).
 

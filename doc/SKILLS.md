@@ -339,7 +339,7 @@ produces the code or documents a skill would guide.
 
 - **Critics** (`kodo_architect_critic`, `kodo_code_critic`, `kodo_e2e_test_code_critic`,
   `kodo_e2e_test_design_critic`, `kodo_functional_design_critic`, `kodo_requirements_critic`,
-  `kodo_test_design_critic`) and `kodo_judge` — they evaluate someone else's output
+  `kodo_test_design_critic`) — they evaluate someone else's output
   against a spec; they never author anything a skill would guide.
 - **Toolchain agents** (`kodo_toolchain_builder`, `kodo_toolchain_depsmgr`) — their task
   is fixed by the toolchain itself, not by a user-installed convention.

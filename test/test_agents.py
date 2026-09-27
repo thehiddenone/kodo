@@ -834,24 +834,6 @@ def test_shipped_problem_solver_delegates_to_four_standalone_specialists() -> No
         assert "standalone specialist" in spec.description
 
 
-def test_real_judge_has_scoped_toolchain_build_tool() -> None:
-    """Judge is almost entirely read-only, but carries one scoped exception.
-
-    ``toolchain_build`` lets an RVP ask the judge for real, executed build/test
-    evidence (doc/VALIDATOR.md §9.2) without granting general command
-    execution, editing, or sub-agent capability.
-    """
-    registry = AgentRegistry(_REAL_AGENTS_DIR)
-    agent = registry.get("kodo_judge")
-    assert agent.tools == frozenset(
-        {"read_file", "find_files", "find_text_in_files", "toolchain_build", "submit_evaluation"}
-    )
-    # The grant is the tool set alone. The judge's own role instructions discuss
-    # `toolchain_build` in prose, but no *rendered* spec block is injected — tool
-    # descriptions reach the model via the LLM `tools` argument instead.
-    assert "### Build & Test Project" not in agent.system_prompt
-
-
 # ---------------------------------------------------------------------------
 # Build-time scan of every shipped agent file
 #

@@ -6,7 +6,7 @@
    cloud model (``--model VENDOR/MODEL_ID``) has no llama-server at all, and
    fails here already when no environment variable carries its API key.
 3. Spawn ``kodo-server --headless-sandbox <cwd> [--llama-url <url>]`` with the
-   isolated home, via :class:`kodo.validator.ServerProcess`.
+   isolated home, via :class:`~._server.ServerProcess`.
 4. Drive one session: ``hello`` → ``agent.set`` → ``workspace.folders`` (the
    one root) → ``mode.set {autonomous}`` → optional ``thinking_level.set`` →
    ``prompt.submit`` → wait for the turn to end (bounded by ``timeout``).
@@ -16,8 +16,7 @@
    to keep it — then report a :class:`~._result.RunResult`.
 
 Never imports the engine: the server and llama-server are spawned by module
-name, so protocol drift breaks this loudly instead of silently (the same rule
-``kodo.validator`` holds).
+name, so protocol drift breaks this loudly instead of silently.
 """
 
 from __future__ import annotations
@@ -28,7 +27,6 @@ import logging
 import os
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
@@ -46,7 +44,6 @@ from kodo.transport import (
     MSG_TOP_AGENTS_LIST,
     MSG_WORKSPACE_FOLDERS,
 )
-from kodo.validator import ServerProcess, ServerStartError
 
 from ._client import HeadlessClient, RequestError
 from ._credentials import bedrock_region, resolve_vendor_api_key, vendor_credential_env_names
@@ -54,6 +51,7 @@ from ._events import EventSink
 from ._home import build_headless_home
 from ._model import ModelSpec
 from ._result import RunOutcome, RunResult
+from ._server import ServerProcess, ServerStartError, pick_free_port
 
 __all__ = ["HeadlessOptions", "HeadlessRun", "install_signal_handlers"]
 
@@ -185,7 +183,7 @@ class HeadlessRun:
             if not spec.is_cloud:
                 url = opts.llama_url
                 if url is None:
-                    llama_port = opts.llama_port or _free_port()
+                    llama_port = opts.llama_port or pick_free_port()
                     llama = self.__spawn_llama(spec.name, llama_port)
                     url = await self.__wait_llama(llama, llama_port)
                 server_args = (*server_args, "--llama-url", url)
@@ -413,12 +411,6 @@ class HeadlessRun:
 
 class _StartupError(RuntimeError):
     """The run could not get as far as submitting the prompt."""
-
-
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 def _healthy(url: str) -> bool:

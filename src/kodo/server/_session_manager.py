@@ -116,19 +116,14 @@ class SessionManager:
     # Open / create
     # ------------------------------------------------------------------
 
-    async def create(self, window_id: str, *, thinking_level: str | None = None) -> Session:
+    async def create(self, window_id: str) -> Session:
         """Mint a brand-new session owned by *window_id*.
 
         Args:
             window_id: Stable id of the requesting VS Code window.
-            thinking_level: Optional seed for the new session's
-                ``thinking_level`` (validated by the caller — see
-                ``_handle_session_hello``'s ``hello.thinking_level``,
-                doc/SESSIONS.md); ``None`` uses the active model's family
-                default.
         """
         session_id = self.__mint_id()
-        session = await self.__build(session_id, resumed=False, thinking_level=thinking_level)
+        session = await self.__build(session_id, resumed=False)
         self.__owner_window[session_id] = window_id
         _log.info("Session created: %s (window=%s)", session_id, window_id[:8])
         return session
@@ -361,8 +356,8 @@ class SessionManager:
         value may be a legacy workflow-mode string, and the *label* is a
         presentation fact only the registry knows. Sending both spares the
         client a mapping it would otherwise have to hardcode — which is exactly
-        how a validator-created ``"judge"`` session came to display as
-        "Guided".
+        how a ``"judge"`` session created by the now-removed validator came to
+        display as "Guided".
 
         An unknown or missing selection reports ``None`` for both rather than
         inventing a default: the row is describing what a session *is*, and
@@ -398,9 +393,7 @@ class SessionManager:
             suffix += 1
         return candidate
 
-    async def __build(
-        self, session_id: str, *, resumed: bool, thinking_level: str | None = None
-    ) -> Session:
+    async def __build(self, session_id: str, *, resumed: bool) -> Session:
         channel = SessionChannel(Outbox())
         transient = TransientStore(self.__layout.kodo_dir)
         gate = GateOrchestrator(channel, transient)
@@ -418,7 +411,7 @@ class SessionManager:
             session_workspace=session_workspace,
             sandbox_root=self.__sandbox_root,
         )
-        await engine.start(session_id, resumed, thinking_level=thinking_level)
+        await engine.start(session_id, resumed)
         session = Session(
             id=session_id,
             channel=channel,

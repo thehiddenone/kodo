@@ -12,6 +12,7 @@ otherwise reach a real model resolution / API-key round-trip.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -305,29 +306,61 @@ async def test_top_agents_list_returns_the_full_catalog(
     assert resp.payload["default_agent"] == registry.default_top_agent()
 
 
+# No shipped agent is non-selectable, so these tests install one of their own
+# as a user agent (doc/USER_AGENTS.md) rather than borrowing a real one.
+_HIDDEN_AGENT = "hidden_agent"
+
+
+async def _install_hidden_agent(ws: aiohttp.ClientWebSocketResponse, home: Path) -> None:
+    """Install a ``selectable: false`` user agent and reload the registry."""
+    bundle = home / ".kodo" / "agents" / _HIDDEN_AGENT
+    bundle.mkdir(parents=True)
+    (bundle / f"agent_{_HIDDEN_AGENT}.md").write_text(
+        f"---\nname: {_HIDDEN_AGENT}\nversion: 1.0.0\n---\nYou are an agent.\n",
+        encoding="utf-8",
+    )
+    (bundle / f"{_HIDDEN_AGENT}.json").write_text(
+        json.dumps(
+            {
+                "name": _HIDDEN_AGENT,
+                "description": "Driven over the wire only.",
+                "rank": 50,
+                "selectable": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    req = _make_request("agents.reload")
+    await ws.send_str(req.to_json())
+    reloaded = await _recv_response(ws, req.id)
+    assert reloaded.payload["ok"] is True, reloaded.payload
+
+
 async def test_top_agents_list_omits_non_selectable_agents(
-    ws: aiohttp.ClientWebSocketResponse,
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
 ) -> None:
-    """``judge`` is registered and reachable, but never offered to a user.
+    """A non-selectable agent is registered and reachable, but never offered to a user.
 
     It is absent from the catalog and still accepted by ``agent.set`` — the
     whole point of the ``selectable`` flag.
     """
     sid = str((await _hello(ws)).payload["session_id"])
-    hidden = {a.name for a in AgentRegistry(_AGENTS_DIR).top_agents() if not a.selectable}
-    assert hidden, "expected at least one non-selectable agent to make this meaningful"
+    await _install_hidden_agent(ws, _temp_home)
 
     req = _make_request("top_agents.list", session_id=sid)
     await ws.send_str(req.to_json())
     resp = await _recv_response(ws, req.id)
-    assert hidden.isdisjoint({a["name"] for a in resp.payload["agents"]})
+    names = {a["name"] for a in resp.payload["agents"]}
+    assert names, "the catalog should still list the selectable agents"
+    assert _HIDDEN_AGENT not in names
 
 
 async def test_agent_set_accepts_a_non_selectable_agent(
-    ws: aiohttp.ClientWebSocketResponse,
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
 ) -> None:
     sid = str((await _hello(ws)).payload["session_id"])
-    req = _make_request("agent.set", session_id=sid, name="kodo_judge")
+    await _install_hidden_agent(ws, _temp_home)
+    req = _make_request("agent.set", session_id=sid, name=_HIDDEN_AGENT)
     await ws.send_str(req.to_json())
     resp = await _recv_response(ws, req.id)
     assert resp.payload["type"] == "agent.accepted"
@@ -407,15 +440,16 @@ async def test_default_agent_set_changes_what_a_new_session_starts_on(
 
 
 async def test_default_agent_set_rejects_a_non_selectable_agent(
-    ws: aiohttp.ClientWebSocketResponse,
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
 ) -> None:
     """A session must not be able to start on an agent with no interactive prompt."""
     await _hello(ws)
-    req = _make_request("default_agent.set", name="kodo_judge")
+    await _install_hidden_agent(ws, _temp_home)
+    req = _make_request("default_agent.set", name=_HIDDEN_AGENT)
     await ws.send_str(req.to_json())
     resp = await _recv_response(ws, req.id)
     assert resp.payload["ok"] is False
-    assert "kodo_judge" in resp.payload["error"]
+    assert _HIDDEN_AGENT in resp.payload["error"]
 
     req = _make_request("default_agent.get")
     await ws.send_str(req.to_json())
@@ -1295,22 +1329,21 @@ async def test_remove_profile_rejects_unknown_profile_id(
 
 
 async def test_reconfiguring_the_currently_selected_model_does_not_crash_without_server(
-    ws: aiohttp.ClientWebSocketResponse,
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
 ) -> None:
     """Exercises the restart-check path (_restart_llama_server_if_running) for
     the entry that IS the currently selected local model — it must no-op
     cleanly when nothing is actually running (llama.cpp isn't installed in
     this sandboxed test environment), not raise. Covers both triggers, a
     profile switch and a knob change. The actual subprocess restart itself is
-    out of scope here, same as llm.select's (untested elsewhere in this file
-    for the same reason)."""
-    # Persist models.local = _PROFILE_TEST_ENTRY the same way llm.select does,
-    # without requiring a real llama-server process to actually start.
-    req = _make_request("llm.select", name=_PROFILE_TEST_ENTRY)
-    await ws.send_str(req.to_json())
-    await _recv(ws)  # llama.state {running: false, error: "llama.cpp is not installed"}
-    select_done = await _recv_response(ws, req.id)
-    assert select_done.payload["ok"] is False
+    out of scope here."""
+    # Select the entry the way the panel's settings write does, without
+    # requiring a real llama-server process to actually start.
+    settings = _temp_home / ".kodo" / "etc" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(
+        json.dumps({"mode": "local", "models": {"local": _PROFILE_TEST_ENTRY}}), encoding="utf-8"
+    )
 
     req = _make_request(
         "local_llm.set_knobs", name=_PROFILE_TEST_ENTRY, knobs={"tail-culling": "strong"}

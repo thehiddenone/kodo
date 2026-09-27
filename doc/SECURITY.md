@@ -1317,7 +1317,7 @@ Phase 2 user rules (§3.2a) are implemented. What's left:
   (list/revoke a session's or the machine's granted rules outside the flow
   of answering a live prompt — `security.add_rule`/`security.rules.list`/
   `security.rules.delete` stay reserved in WS_PROTOCOL.md §7.7 for this),
-  deeper PowerShell/cmd tables, validator scenarios for the gate; and
+  deeper PowerShell/cmd tables, `kodo-harbor` benchmark tasks for the gate; and
   possibly an AST-based safe-subset analysis for inline `python -c` code
   (a *Python* AST, unrelated to the shell flattening above), today's main
   deterministic-ask friction. Full design: SECURITY_RULES_PLAN.md Phase 3.
