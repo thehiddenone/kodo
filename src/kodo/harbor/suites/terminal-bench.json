@@ -1,0 +1,5 @@
+{
+  "name": "terminal-bench",
+  "description": "Terminal-Bench 2.0: all 89 tasks.",
+  "datasets": [{"name": "terminal-bench", "version": "2.0"}]
+}

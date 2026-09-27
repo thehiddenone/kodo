@@ -58,10 +58,19 @@ source:
 | `server` | `common`, `transport`, `project`, `state`, `subagents`, `llms`, `titling`, `runtime`, `binutils` |
 | `llamaserver` | `llms`, `project` |
 | `headless` | `common`, `transport`, `validator` |
+| `harbor` | `headless`, `llms`, `binutils`, `project` |
+| `harbor.agent` | `headless` (+ the third-party `harbor`) |
 
-`llamaserver` (the `kodo-llama-server` command) and `headless` (the
-`kodo-headless` command) are leaves in the other direction: nothing in `kodo`
-imports either one. `headless` is a pure client with the same discipline as
+`llamaserver` (the `kodo-llama-server` command) is a leaf in the other
+direction: nothing in `kodo` imports it. `headless` (the `kodo-headless`
+command) is imported only by `harbor` (the `kodo-harbor` command,
+[HARBOR.md](HARBOR.md)), which is itself a leaf. `harbor.agent` is the one
+module in `kodo` that imports the third-party `harbor` package, and only
+Harbor's own process imports it: nothing in `kodo` imports `harbor.agent`, and
+`harbor` (the orchestrator) spawns Harbor through `uv tool run` instead of
+importing it — verify with `grep -rnE "^\s*(from|import) (harbor|kodo\.harbor\.agent)"
+src/kodo --include='*.py'`, which must list only files under
+`src/kodo/harbor/agent/`. `headless` is a pure client with the same discipline as
 `validator`: it never imports `runtime`, `llms`, `agents`, `server`, `tools`,
 `security` or `llamaserver`, and spawns the server and llama-server by module
 name ([HEADLESS.md](HEADLESS.md)). The server's headless mode reaches the

@@ -54,6 +54,7 @@ from kodo.transport import (
     SREQ_WORKSPACE_CONFIRM_FOLDER,
 )
 
+from ._credentials import resolve_vendor_api_key
 from ._events import EventSink
 
 __all__ = ["HEADLESS_ANSWERED_REQUESTS", "HeadlessClient", "RequestError"]
@@ -101,7 +102,11 @@ class RequestError(RuntimeError):
 
 
 class _Usage:
-    """Per-model / per-agent call accounting."""
+    """Per-model / per-agent call accounting.
+
+    ``input_tokens`` counts every input token (uncached, cache reads and cache
+    writes); ``cache_read_tokens`` is the subset served from the cache.
+    """
 
     __rows: dict[str, dict[str, float]]
 
@@ -112,12 +117,22 @@ class _Usage:
     def rows(self) -> dict[str, dict[str, float]]:
         return {key: dict(value) for key, value in self.__rows.items()}
 
-    def add(self, key: str, input_tokens: int, output_tokens: int, usd: float) -> None:
+    def add(
+        self, key: str, input_tokens: int, cache_read_tokens: int, output_tokens: int, usd: float
+    ) -> None:
         row = self.__rows.setdefault(
-            key, {"calls": 0, "input_tokens": 0, "output_tokens": 0, "usd": 0.0}
+            key,
+            {
+                "calls": 0,
+                "input_tokens": 0,
+                "cache_read_tokens": 0,
+                "output_tokens": 0,
+                "usd": 0.0,
+            },
         )
         row["calls"] += 1
         row["input_tokens"] += input_tokens
+        row["cache_read_tokens"] += cache_read_tokens
         row["output_tokens"] += output_tokens
         row["usd"] = round(row["usd"] + usd, 6)
 
@@ -578,19 +593,21 @@ class HeadlessClient:
             value = tokens.get(name)
             return int(value) if isinstance(value, (int, float)) else 0
 
-        input_tokens = _int("input") + _int("cache_read") + _int("cache_write")
+        cache_read_tokens = _int("cache_read")
+        input_tokens = _int("input") + cache_read_tokens + _int("cache_write")
         output_tokens = _int("output")
         usd_raw = payload.get("usd_cost")
         usd = float(usd_raw) if isinstance(usd_raw, (int, float)) else 0.0
         model = str(payload.get("model", "") or "unknown")
         agent = str(payload.get("agent", "") or self.__current_agent or "unknown")
-        self.__by_model.add(model, input_tokens, output_tokens, usd)
-        self.__by_agent.add(agent, input_tokens, output_tokens, usd)
+        self.__by_model.add(model, input_tokens, cache_read_tokens, output_tokens, usd)
+        self.__by_agent.add(agent, input_tokens, cache_read_tokens, output_tokens, usd)
         self.__sink.emit(
             "usage",
             **self.__scope(),
             model=model,
             input_tokens=input_tokens,
+            cache_read_tokens=cache_read_tokens,
             output_tokens=output_tokens,
             usd=usd,
             stop_reason=payload.get("stop_reason"),
@@ -690,8 +707,7 @@ class HeadlessClient:
                 "error": f"The workspace of this headless run is fixed to {self.__root}.",
             }
         if request_type == SREQ_API_KEY_REQUEST:
-            vendor = str(payload.get("vendor", "")).upper().replace("-", "_")
-            key = os.environ.get(f"{vendor}_API_KEY", "")
+            key = resolve_vendor_api_key(str(payload.get("vendor", "")).lower(), os.environ)
             return {"api_key": key} if key else {"error": "cancelled"}
         if request_type == SREQ_HF_TOKEN_REQUEST:
             return {"hf_token": os.environ.get("HF_TOKEN", "")}

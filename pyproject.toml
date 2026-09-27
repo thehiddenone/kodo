@@ -29,6 +29,7 @@ kodo-server = "kodo.server.__main__:main"
 kodo-validator = "kodo.validator.__main__:main"
 kodo-llama-server = "kodo.llamaserver:main"
 kodo-headless = "kodo.headless:main"
+kodo-harbor = "kodo.harbor:main"
 
 
 [tool.hatch.build.targets.wheel]
@@ -51,6 +52,11 @@ dependencies = [
     "ruff>=0.9",
     "mypy>=1.13",
     "aiohttp>=3.14.0",
+    # Dev-only: the kodo.harbor.agent adapter subclasses Harbor's classes, so
+    # mypy and its tests need Harbor importable. Never a runtime dependency —
+    # kodo-harbor runs the same pin through `uv tool run` (doc/HARBOR.md).
+    # Keep in lockstep with kodo.harbor.HARBOR_VERSION.
+    "harbor==0.23.0",
 ]
 
 [tool.hatch.envs.default.scripts]
@@ -85,6 +91,14 @@ files = ["src"]
 [[tool.mypy.overrides]]
 module = ["boto3.*", "botocore.*"]
 ignore_missing_imports = true
+
+# Harbor (a dev-only dependency, see [tool.hatch.envs.default]) ships no
+# py.typed marker, but its code is fully annotated pydantic. Analyzing it keeps
+# kodo.harbor.agent type-checked against Harbor's real signatures instead of
+# treating every base class and model as Any.
+[[tool.mypy.overrides]]
+module = ["harbor.*"]
+follow_untyped_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["test"]

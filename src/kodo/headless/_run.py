@@ -1,17 +1,19 @@
 """One headless run, end to end.
 
 1. Build the isolated home (:func:`~._home.build_headless_home`).
-2. Spawn mode only: start ``kodo-llama-server --foreground`` on a free port,
-   with the user's *real* home (that is where the models are).
-3. Spawn ``kodo-server --headless-sandbox <cwd> --llama-url <url>`` with the
+2. Local model, spawn mode only: start ``kodo-llama-server --foreground`` on a
+   free port, with the user's *real* home (that is where the models are). A
+   cloud model (``--model VENDOR/MODEL_ID``) has no llama-server at all, and
+   fails here already when no environment variable carries its API key.
+3. Spawn ``kodo-server --headless-sandbox <cwd> [--llama-url <url>]`` with the
    isolated home, via :class:`kodo.validator.ServerProcess`.
 4. Drive one session: ``hello`` → ``agent.set`` → ``workspace.folders`` (the
    one root) → ``mode.set {autonomous}`` → optional ``thinking_level.set`` →
    ``prompt.submit`` → wait for the turn to end (bounded by ``timeout``).
 5. Always clean up — stop the turn on timeout or signal, shut down the server
-   and llama-server, remove ``<cwd>/.kodo`` if this run created it, and the
-   isolated home unless asked to keep it — then report a
-   :class:`~._result.RunResult`.
+   and llama-server, export the session log (``transcript_dir``), remove
+   ``<cwd>/.kodo`` if this run created it, and the isolated home unless asked
+   to keep it — then report a :class:`~._result.RunResult`.
 
 Never imports the engine: the server and llama-server are spawned by module
 name, so protocol drift breaks this loudly instead of silently (the same rule
@@ -23,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import shutil
 import signal
 import socket
@@ -46,8 +49,10 @@ from kodo.transport import (
 from kodo.validator import ServerProcess, ServerStartError
 
 from ._client import HeadlessClient, RequestError
+from ._credentials import bedrock_region, resolve_vendor_api_key, vendor_credential_env_names
 from ._events import EventSink
 from ._home import build_headless_home
+from ._model import ModelSpec
 from ._result import RunOutcome, RunResult
 
 __all__ = ["HeadlessOptions", "HeadlessRun", "install_signal_handlers"]
@@ -65,13 +70,17 @@ class HeadlessOptions:
 
     Attributes:
         prompt: The instruction for the agent.
-        model: Local-registry entry name (LLM + quant). Required even with
+        model: ``ENTRY`` / ``local/ENTRY`` (a local-registry entry: LLM +
+            quant) or ``VENDOR/MODEL_ID`` (a cloud model), see
+            :class:`~._model.ModelSpec`. A local entry is required even with
             ``llama_url``: it is kodo's model identity (thinking family,
             context window, sampling defaults), checked against the endpoint.
         cwd: The sandbox root — the only directory the run may mutate.
         agent: Top-level agent (``agent.set``).
         llama_url: Attach to this running llama-server; ``None`` spawns one.
+            Local models only.
         llama_port: Port for a spawned llama-server (``None`` picks a free one).
+            Local models only.
         registry_file: Local-LLM registry to use instead of ``~/.kodo``'s.
         thinking_level: Thinking tier for the session, or ``None``.
         timeout: Seconds the turn may take.
@@ -79,6 +88,9 @@ class HeadlessOptions:
         keep_home: Keep a temporary isolated home after the run.
         keep_kodo_dir: Keep ``<cwd>/.kodo`` even if this run created it.
         result_path: Also write the result JSON here.
+        transcript_dir: Copy the session's own log here when the run ends
+            (``session.jsonl`` + ``subsessions/*.jsonl``, doc/SESSIONS.md) —
+            the full LLM-visible transcript, e.g. for a trajectory export.
         log_level: The spawned server's log level.
     """
 
@@ -95,6 +107,7 @@ class HeadlessOptions:
     keep_home: bool = False
     keep_kodo_dir: bool = False
     result_path: Path | None = None
+    transcript_dir: Path | None = None
     log_level: str = "INFO"
 
 
@@ -148,6 +161,7 @@ class HeadlessRun:
         outcome = RunOutcome.COMPLETED
         error: str | None = None
         final_phase = ""
+        model_label = opts.model
 
         self.__sink.emit(
             "run.start",
@@ -158,23 +172,29 @@ class HeadlessRun:
             home=str(home),
         )
         try:
+            spec = self.__model_spec()
+            model_label = spec.label
             build_headless_home(
                 home,
-                model=opts.model,
+                model=spec,
                 template_kodo_dir=Path.home() / ".kodo",
                 registry_file=opts.registry_file,
+                bedrock_region=bedrock_region(os.environ),
             )
-            url = opts.llama_url
-            if url is None:
-                llama_port = opts.llama_port or _free_port()
-                llama = self.__spawn_llama(llama_port)
-                url = await self.__wait_llama(llama, llama_port)
+            server_args: tuple[str, ...] = ("--headless-sandbox", str(cwd))
+            if not spec.is_cloud:
+                url = opts.llama_url
+                if url is None:
+                    llama_port = opts.llama_port or _free_port()
+                    llama = self.__spawn_llama(spec.name, llama_port)
+                    url = await self.__wait_llama(llama, llama_port)
+                server_args = (*server_args, "--llama-url", url)
 
             server = ServerProcess(
                 home,
                 log_level=opts.log_level,
                 console_log=home / "server-console.log",
-                extra_args=("--headless-sandbox", str(cwd), "--llama-url", url),
+                extra_args=server_args,
             )
             await server.start(timeout=_SERVER_START_TIMEOUT)
             client = HeadlessClient(
@@ -206,6 +226,8 @@ class HeadlessRun:
                 await server.stop()
             if llama is not None:
                 self.__stop_llama(llama, llama_port)
+            if opts.transcript_dir is not None and client is not None and client.session_id:
+                self.__export_transcript(home, client.session_id, opts.transcript_dir)
             if not kodo_dir_existed and not opts.keep_kodo_dir:
                 shutil.rmtree(cwd / ".kodo", ignore_errors=True)
             if temporary_home and not opts.keep_home:
@@ -216,7 +238,7 @@ class HeadlessRun:
             outcome=outcome.value,
             session_id=client.session_id if client is not None else "",
             agent=opts.agent,
-            model=opts.model,
+            model=model_label,
             final_phase=final_phase,
             assistant_text=client.assistant_text if client is not None else "",
             cumulative_input_tokens=int(cumulative.get("cumulative_input_tokens", 0)),
@@ -240,6 +262,36 @@ class HeadlessRun:
             opts.result_path.write_text(result.to_json(), encoding="utf-8")
         self.__sink.write_line(result.summary_line())
         return result
+
+    def __model_spec(self) -> ModelSpec:
+        opts = self.__options
+        try:
+            spec = ModelSpec.parse(opts.model)
+        except ValueError as exc:
+            raise _StartupError(f"Invalid --model {opts.model!r}: {exc}") from exc
+        vendor = spec.vendor
+        if vendor is None:
+            return spec
+        if opts.llama_url is not None or opts.llama_port is not None:
+            raise _StartupError(
+                f"{spec.label!r} is a cloud model; --llama-url/--llama-port are for local models"
+            )
+        if resolve_vendor_api_key(vendor, os.environ) is None:
+            names = ", ".join(vendor_credential_env_names(vendor))
+            raise _StartupError(f"No API key for {vendor!r} in the environment; set one of {names}")
+        return spec
+
+    def __export_transcript(self, home: Path, session_id: str, target: Path) -> None:
+        source = home / ".kodo" / "sessions" / session_id
+        if not source.is_dir():
+            self.__sink.emit("warning", message=f"No session log to export at {source}")
+            return
+        try:
+            shutil.copytree(source, target, dirs_exist_ok=True)
+        except OSError as exc:
+            self.__sink.emit("warning", message=f"Could not export the session log: {exc}")
+            return
+        self.__sink.emit("transcript.exported", path=str(target))
 
     # ------------------------------------------------------------------
     # Session
@@ -299,7 +351,7 @@ class HeadlessRun:
     # Spawned llama-server
     # ------------------------------------------------------------------
 
-    def __spawn_llama(self, port: int) -> subprocess.Popen[bytes]:
+    def __spawn_llama(self, entry: str, port: int) -> subprocess.Popen[bytes]:
         log_dir = Path.home() / ".kodo" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log = open(log_dir / f"llama-server-{port}-headless.log", "wb")  # noqa: SIM115
@@ -311,7 +363,7 @@ class HeadlessRun:
                     "kodo.llamaserver",
                     "start",
                     "--model",
-                    self.__options.model,
+                    entry,
                     "--port",
                     str(port),
                     "--foreground",
@@ -322,7 +374,7 @@ class HeadlessRun:
             )
         finally:
             log.close()
-        self.__sink.emit("llama.spawn", model=self.__options.model, port=port, pid=proc.pid)
+        self.__sink.emit("llama.spawn", model=entry, port=port, pid=proc.pid)
         return proc
 
     async def __wait_llama(self, proc: subprocess.Popen[bytes], port: int) -> str:

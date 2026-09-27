@@ -9,14 +9,17 @@
 > `test/test_headless.py`, `test/test_server_headless.py`,
 > `test/test_sandbox_security.py`, `test/test_llamaserver_standalone.py`.
 > Built for the Harbor "option A′" integration ([HARBOR_INTEGRATION.md](HARBOR_INTEGRATION.md) §4, "Option A′").
+> Cloud models, credentials from the environment and `--transcript-dir` were added
+> 2026-09-25 for `kodo-harbor` ([HARBOR.md](HARBOR.md)), which drives this command
+> inside Harbor task containers.
 
 Two console scripts:
 
 - **`kodo-llama-server`** serves one local-registry model on a chosen port,
   outside any kodo server, and can start, stop and report on it.
-- **`kodo-headless`** runs one prompt through one top-level agent. There is no
-  user and no VS Code. Every change is confined to the working directory, and
-  everything the run does is written to stdout.
+- **`kodo-headless`** runs one prompt through one top-level agent, on a local
+  or a cloud model. There is no user and no VS Code. Every change is confined
+  to the working directory, and everything the run does is written to stdout.
 
 They are meant to be split across a boundary: the model runs on the host under
 `kodo-llama-server`, and Kōdo runs wherever the task lives (for Harbor, a task
@@ -77,14 +80,30 @@ kodo-llama-server status [--port N] [--json]
 ## 2. `kodo-headless`
 
 ```bash
-kodo-headless (--prompt TEXT | --prompt-file PATH) --model ENTRY
+kodo-headless (--prompt TEXT | --prompt-file PATH) --model (ENTRY | VENDOR/MODEL_ID)
   [--agent kodo_problem_solver] [--llama-url URL | --llama-port N] [--cwd DIR]
   [--registry-file PATH] [--thinking-level TIER] [--timeout SEC]
-  [--format jsonl|text] [--stream-deltas] [--result PATH]
+  [--format jsonl|text] [--stream-deltas] [--result PATH] [--transcript-dir DIR]
   [--home DIR] [--keep-home] [--keep-kodo-dir] [--log-level INFO]
 ```
 
-**`--model` is required even with `--llama-url`.** The URL only says *where*
+**`--model`** has three spellings (`kodo.headless.ModelSpec`):
+
+| Spelling | Meaning |
+|---|---|
+| `ENTRY` | a local-registry entry (LLM + quant), e.g. `unsloth-qwen36-27b-q4-k-xl` |
+| `local/ENTRY` | the same, explicitly — the only way to name an entry whose name contains `/` |
+| `VENDOR/MODEL_ID` | a cloud model, e.g. `anthropic/claude-sonnet-5`, `openrouter/qwen/qwen3-coder` (only the first `/` splits) |
+
+A cloud model is pinned for every effort tier (`models.cloud_uniform.<vendor>`,
+[SETTINGS.md](SETTINGS.md) §2.2d), so a sub-agent's declared `capability`
+cannot switch models mid-run. Whether the vendor and model id exist is the
+server's knowledge: an unknown one fails at the first LLM call as
+`runtime_error` (`kodo-harbor` checks both before queueing anything). A cloud
+model takes no llama-server at all; `--llama-url` / `--llama-port` with one is
+a `startup_error`.
+
+**A local `--model` is required even with `--llama-url`.** The URL only says *where*
 inference runs. The registry entry is *which model Kōdo thinks it is using*,
 and three things depend on it:
 
@@ -99,9 +118,12 @@ What a run does, in order:
 
 1. **Builds an isolated home** (`build_headless_home`) from an **allowlist**,
    so the user's real `~/.kodo` is never written and nothing large is copied:
-   - *copied:* `etc/settings.json` (with `mode: local` and
-     `models.local: ENTRY` merged in) and `etc/local-llm-registry.json`, or
-     the `--registry-file` in its place. It is copied, never linked, so no
+   - *copied:* `etc/settings.json` (with the model merged in — `mode: local`
+     + `models.local: ENTRY`, or `mode: cloud` + `active_cloud_vendor` + an
+     enabled `models.cloud_uniform.<vendor>`; OpenRouter also gets
+     `openrouter_auto_mode: false`, Bedrock gets `bedrock_region` from
+     `AWS_REGION` / `AWS_DEFAULT_REGION`) and `etc/local-llm-registry.json`,
+     or the `--registry-file` in its place. It is copied, never linked, so no
      write can reach the original.
    - *symlinked:* `bin`, `agents`, `skills`.
    - *omitted:* everything else, including `llama.cpp`, `checkpoints`, `venv`,
@@ -110,11 +132,13 @@ What a run does, in order:
    The home is a temporary directory that is deleted afterwards. With
    `--home DIR` it is built in that directory and kept; `--keep-home` keeps
    the temporary one.
-2. **Spawn mode (no `--llama-url`):** runs
+2. **Local model, spawn mode (no `--llama-url`):** runs
    `kodo-llama-server start --foreground` on a free port (or `--llama-port`)
    with the *real* home, where the models are, and stops it through
-   `kodo-llama-server stop` when the run ends.
-3. **Spawns** `kodo-server --headless-sandbox <cwd> --llama-url <url>` with the
+   `kodo-llama-server stop` when the run ends. **Cloud model:** no
+   llama-server; the run stops here with `startup_error` when no environment
+   variable carries the vendor's key (the message names the variables).
+3. **Spawns** `kodo-server --headless-sandbox <cwd> [--llama-url <url>]` with the
    isolated `HOME`, through `kodo.validator.ServerProcess(extra_args=…)`.
 4. **Drives one session.** It sends `hello`, checks the agent against
    `top_agents.list` (an unknown agent exits with code 4), then sends
@@ -130,15 +154,33 @@ What a run does, in order:
    | `prompt.approval` / `prompt.edit_review` | accept / approve |
    | `prompt.stuck_alert` | unstick |
    | `prompt.choose_project_folder` / `workspace.confirm_folder` | refused (the workspace is fixed) |
-   | `api_key.request` / `hf_token.request` | `<VENDOR>_API_KEY` / `HF_TOKEN` from the environment |
+   | `api_key.request` / `hf_token.request` | the vendor's credential (below) / `HF_TOKEN` from the environment |
 
    `test_every_server_request_type_has_a_deterministic_answer` fails as soon as
    a new `SREQ_*` constant appears without an answer here.
+
+   Credentials (`kodo.headless.resolve_vendor_api_key`): the first non-empty of
+
+   | Vendor | Variables |
+   |---|---|
+   | every vendor | `<VENDOR>_API_KEY` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, …) |
+   | `google` | + `GEMINI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` |
+   | `alibaba` | + `DASHSCOPE_API_KEY` |
+   | `kimi` | + `MOONSHOT_API_KEY` |
+   | `meta` | + `LLAMA_API_KEY` |
+   | `bedrock` | `BEDROCK_API_KEY` (kodo's JSON pair), else built from `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (no session token: kodo's Bedrock credential is a long-term key pair) |
 6. **Cleans up in every case**, including a timeout or SIGINT/SIGTERM (it sends
    `stop` first). It shuts down the server and any llama-server it started,
    and removes `<cwd>/.kodo` (the checkpoint mirror) if this run created it,
    so verifiers see a clean task directory; `--keep-kodo-dir` keeps it. The
    project's own `.git` is never touched.
+7. **`--transcript-dir DIR`** copies the session's own log out of the isolated
+   home before it is deleted: `session.jsonl` plus `subsessions/<id>.jsonl`
+   ([SESSIONS.md](SESSIONS.md)) — the exact LLM-visible conversation, with every
+   tool input and result as the model saw it (the stdout `tool.call` document
+   is rendered Markdown and not reversible). `kodo.harbor.agent` converts it
+   into Harbor's ATIF `trajectory.json`. A `transcript.exported` event reports
+   the copy.
 
 ### 2.1 stdout
 
@@ -158,8 +200,8 @@ renders the same events for people.
 | `tool.denied` | a call the sandbox refused, with its reason |
 | `subsession.start` / `subsession.end` | a sub-agent run (with its task brief) |
 | `agent.start` / `agent.finish` | agent invocation boundaries |
-| `usage` | per LLM call: model, tokens, USD, stop reason, duration |
-| `question`, `nudge`, `autonomous.changed`, `error`, `warning` | as named |
+| `usage` | per LLM call: model, `input_tokens` (cache included), `cache_read_tokens`, `output_tokens`, USD, stop reason, duration |
+| `question`, `nudge`, `autonomous.changed`, `error`, `warning`, `transcript.exported` | as named |
 | `run.result` | the result record (§2.2), always last |
 
 After `run.result`, one plain line follows:
@@ -172,9 +214,12 @@ doesn't start with `{`. Server and llama logs go to files, never to stdout.
 `RunResult` (`schema_version` 1) is the `run.result` event, and is also written
 to `--result` when given. Its fields:
 
-- `outcome`, `session_id`, `agent`, `model`, `final_phase`, `assistant_text`
+- `outcome`, `session_id`, `agent`, `model` (the canonical `ENTRY` or
+  `VENDOR/MODEL_ID`), `final_phase`, `assistant_text`
 - the token totals and `cumulative_usd`
-- `per_model` and `per_agent` usage (answers "did that sub-agent pay for itself")
+- `per_model` and `per_agent` usage, each row `{calls, input_tokens,
+  cache_read_tokens, output_tokens, usd}` (`input_tokens` includes cache
+  reads; answers "did that sub-agent pay for itself")
 - `tool_calls`, `tool_denials`, `questions_asked`, `nudges`
 - `wall_seconds`, `error`
 
@@ -266,6 +311,11 @@ Command Control and Autonomous mode are ignored.
   forces a decision whenever a tool is added.
 
 ## 5. Harbor recipe (option A′)
+
+`kodo-harbor run` ([HARBOR.md](HARBOR.md)) does all of this — starts the host
+llama-server, mounts the registry, opens the host to the container, installs
+Kōdo and runs `kodo-headless` in every trial. The manual recipe below is what
+it automates.
 
 On the host:
 

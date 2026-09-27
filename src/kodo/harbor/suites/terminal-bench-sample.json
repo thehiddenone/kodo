@@ -1,0 +1,5 @@
+{
+  "name": "terminal-bench-sample",
+  "description": "The 10-task Terminal-Bench 2.0 sample: a quick, representative terminal-agent check.",
+  "datasets": [{"name": "terminal-bench-sample", "version": "2.0"}]
+}

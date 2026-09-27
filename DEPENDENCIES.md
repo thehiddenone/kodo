@@ -6,6 +6,17 @@
 - **Manifest** — `pyproject.toml` (PEP 621 project table + hatch env configuration).
 - **Lockfile** — none. Hatch resolves dependencies on-the-fly when the environment is (re)created; there is no lockfile to maintain.
 
+## Pinned dev dependency: `harbor`
+
+`harbor==0.23.0` is a **dev** dependency only: `kodo.harbor.agent` subclasses
+Harbor's classes, so mypy and `test/test_harbor_*.py` need it importable.
+It is never a runtime dependency (it pulls in litellm, fastapi, supabase, … —
+and `py-kodo` is installed inside every benchmark task container).
+`kodo-harbor` runs the same pin through `uv tool run`. Upgrading it means
+changing both `pyproject.toml` and `kodo.harbor.HARBOR_VERSION`
+(`test_harbor_version_matches_the_dev_pin` fails otherwise) and re-running the
+Harbor tests (doc/HARBOR.md).
+
 ## Kinds
 
 | Kind     | Manifest location                          |

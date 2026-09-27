@@ -7,7 +7,10 @@ nothing it does not name — a real ``~/.kodo`` holds GBs of checkpoint mirrors
 and a venv, plus secrets, none of which a headless run needs:
 
 - **copied** (small files the run itself changes): ``etc/settings.json`` with
-  the model selection merged in, and ``etc/local-llm-registry.json`` — or the
+  the model selection merged in (``mode: local`` + ``models.local`` for a local
+  entry; ``mode: cloud`` + ``active_cloud_vendor`` + an enabled
+  ``models.cloud_uniform.<vendor>`` for a cloud model), and
+  ``etc/local-llm-registry.json`` — or the
   ``--registry-file`` (a Harbor read-only mount of the host's registry), copied
   rather than linked so nothing can write through to the original;
 - **symlinked** (read-only use): ``bin`` (rg/fd/uv), ``agents``, ``skills``;
@@ -24,6 +27,8 @@ import shutil
 from pathlib import Path
 from typing import cast
 
+from ._model import ModelSpec
+
 __all__ = ["build_headless_home"]
 
 _SYMLINKED = ("bin", "agents", "skills")
@@ -34,27 +39,33 @@ _REGISTRY = Path("etc") / "local-llm-registry.json"
 def build_headless_home(
     home_dir: Path,
     *,
-    model: str,
+    model: ModelSpec | str,
     template_kodo_dir: Path | None,
     registry_file: Path | None = None,
+    bedrock_region: str | None = None,
 ) -> Path:
     """Create ``home_dir/.kodo`` for a headless run's server.
 
     Args:
         home_dir (Path): The directory the server will see as ``HOME``.
-        model (str): Local-registry entry to select (``models.local``).
+        model (ModelSpec | str): The model to select — a :class:`ModelSpec`,
+            or a ``--model`` spelling parsed with :meth:`ModelSpec.parse`.
         template_kodo_dir (Path | None): The user's real ``~/.kodo`` to take
             settings, registry and links from; ``None`` or missing gives an
             empty home (the server fills in defaults).
         registry_file (Path | None): Registry to use instead of the
             template's (e.g. a read-only mount of the host's).
+        bedrock_region (str | None): ``bedrock_region`` to set for a Bedrock
+            model; ``None`` keeps the template's (or kodo's default).
 
     Returns:
         Path: The isolated ``.kodo`` directory.
 
     Raises:
         FileNotFoundError: *registry_file* is given but does not exist.
+        ValueError: *model* is a malformed ``--model`` spelling.
     """
+    spec = model if isinstance(model, ModelSpec) else ModelSpec.parse(model)
     kodo_dir = home_dir / ".kodo"
     (kodo_dir / "etc").mkdir(parents=True, exist_ok=True)
     template = template_kodo_dir if template_kodo_dir is not None else None
@@ -80,10 +91,29 @@ def build_headless_home(
         loaded = json.loads((template / _SETTINGS).read_text(encoding="utf-8"))
         if isinstance(loaded, dict):
             settings = cast(dict[str, object], loaded)
-    models = settings.get("models")
-    models_map = dict(cast(dict[str, object], models)) if isinstance(models, dict) else {}
-    models_map["local"] = model
-    settings["models"] = models_map
-    settings["mode"] = "local"
+    _select_model(settings, spec, bedrock_region)
     (kodo_dir / _SETTINGS).write_text(json.dumps(settings, indent=2), encoding="utf-8")
     return kodo_dir
+
+
+def _select_model(settings: dict[str, object], spec: ModelSpec, region: str | None) -> None:
+    models = settings.get("models")
+    models_map = dict(cast(dict[str, object], models)) if isinstance(models, dict) else {}
+    vendor = spec.vendor
+    if vendor is None:
+        models_map["local"] = spec.name
+        settings["models"] = models_map
+        settings["mode"] = "local"
+        return
+    uniform = models_map.get("cloud_uniform")
+    uniform_map = dict(cast(dict[str, object], uniform)) if isinstance(uniform, dict) else {}
+    uniform_map[vendor] = {"enabled": True, "model_id": spec.name}
+    models_map["cloud_uniform"] = uniform_map
+    settings["models"] = models_map
+    settings["mode"] = "cloud"
+    settings["active_cloud_vendor"] = vendor
+    if vendor == "openrouter":
+        # Auto mode would override the uniform pin (doc/SETTINGS.md §2.2d).
+        settings["openrouter_auto_mode"] = False
+    if vendor == "bedrock" and region is not None:
+        settings["bedrock_region"] = region

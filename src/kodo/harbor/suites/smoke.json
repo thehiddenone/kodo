@@ -1,0 +1,5 @@
+{
+  "name": "smoke",
+  "description": "Harbor's one-task hello-world: checks the whole loop (install, run, verify) before a real benchmark.",
+  "datasets": [{"name": "hello-world", "version": "1.0"}]
+}

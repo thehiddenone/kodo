@@ -251,7 +251,13 @@ async def test_client_walks_a_turn_and_reports_everything(
     assert client.assistant_text == "all done"  # the planner's text is a sub-session's
     assert (client.tool_calls, client.tool_denials, client.questions_asked) == (2, 1, 1)
     assert client.per_agent == {
-        "planner": {"calls": 1, "input_tokens": 10, "output_tokens": 3, "usd": 0.0}
+        "planner": {
+            "calls": 1,
+            "input_tokens": 10,
+            "cache_read_tokens": 0,
+            "output_tokens": 3,
+            "usd": 0.0,
+        }
     }
     assert client.cumulative["cumulative_input_tokens"] == 30
 

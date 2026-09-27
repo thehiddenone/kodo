@@ -1,9 +1,14 @@
 # Kōdo × Harbor — Integration Proposal & Plan
 
-> Status: **proposal**, plus the **option A′ building blocks implemented**
-> (2026-09-23): `kodo-headless`, `kodo-llama-server` and the headless server
-> mode. See §4 ("Option A′") and [HEADLESS.md](HEADLESS.md). The `kodo.harbor` adapter
-> itself (§6.3) is not built yet.
+> Status: **implemented (option A′)**. The building blocks landed 2026-09-23
+> (`kodo-headless`, `kodo-llama-server`, the headless server mode —
+> [HEADLESS.md](HEADLESS.md)); the adapter and the benchmark command landed
+> 2026-09-25 — **[HARBOR.md](HARBOR.md) is the operator document**. As built,
+> the adapter is `kodo.harbor.agent:KodoAgent` (not `kodo.harbor:KodoAgent`):
+> `kodo.harbor` is the `kodo-harbor` command, which never imports Harbor and
+> runs it through `uv tool run`. Phase 4(a) (ATIF) and the control arm are
+> built; `GatedEnvironment` (§5 Reading 3, D10) was **dropped** — see D10.
+> This document remains the design record.
 > Scope: **server-side only** (`py-kodo`). No `kodo-vsix` change is required by
 > any option below, and none is proposed.
 > Sources read for this document (2026-09-17):
@@ -935,7 +940,7 @@ not designed for — or a Kōdo-authored dataset that verifies the artifacts too
 | D7 | `RunResult` JSON is the only adapter↔runner contract, versioned | lets both sides evolve; keeps parsing out of shell text |
 | D8 | Model selection maps to `models.cloud_uniform.<vendor>` | pins one model across effort tiers so sub-agents cannot change what is being measured |
 | D9 | `rollout_details` left unpopulated; ATIF deferred to phase 4 | needs token ids Kōdo does not surface / a schema not yet read |
-| D10 | `BaseEnvironment` implemented as `GatedEnvironment` (audit/enforce), not as a sandbox provider | measures Kōdo's security layer against real agent traffic; a Kōdo sandbox adds no isolation Docker does not already give |
+| D10 | ~~`BaseEnvironment` implemented as `GatedEnvironment` (audit/enforce)~~ **Dropped 2026-09-25** | An exec-level gate cannot measure what it was meant to: installed agents (claude-code, codex, mini-swe-agent) run their whole loop inside one `environment.exec`, so their commands never reach it; terminus-2's arrive as `tmux send-keys` keystrokes; and Harbor marks no phases on the environment, so setup and verifier commands would be judged too. An offline audit of ATIF trajectories would work for every agent but was not requested. |
 | D11 | Option B is phase 6, gated on a remote-execution product decision | ~11 tool modules + mirror + resolver, two permanent code paths, per-call latency |
 | D12 | ACP (Option D) parked | a second permanent front door; buys nothing Option A does not, for Harbor specifically |
 | D13 | `kodo.validator` is refactored onto `kodo.headless` only after Harbor trials are green | never destabilize the existing instrument to build the new one |

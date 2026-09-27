@@ -48,14 +48,16 @@ class RunResult:
         outcome: How the run ended (:class:`RunOutcome` value).
         session_id: The kodo session that ran.
         agent: Top-level agent requested.
-        model: Local-registry entry the run used.
+        model: The model the run used: a local-registry entry, or
+            ``VENDOR/MODEL_ID`` for a cloud model.
         final_phase: The session phase the turn rested in.
         assistant_text: The top-level agent's final visible response.
         cumulative_input_tokens: Every input token, cached or not.
         cumulative_input_tokens_uncached: The subset not served from cache.
         cumulative_output_tokens: Every generated token.
         cumulative_usd: Total cost (``0`` for local models).
-        per_model: Per-model ``{calls, input_tokens, output_tokens, usd}``.
+        per_model: Per-model ``{calls, input_tokens, cache_read_tokens,
+            output_tokens, usd}``; ``input_tokens`` includes cache reads.
         per_agent: The same, per agent (top-level agent and every sub-agent).
         tool_calls: Tool calls dispatched.
         tool_denials: Calls the headless sandbox refused.

@@ -2,10 +2,10 @@
 
 ::
 
-    kodo-headless (--prompt TEXT | --prompt-file PATH) --model ENTRY
+    kodo-headless (--prompt TEXT | --prompt-file PATH) --model (ENTRY | VENDOR/MODEL_ID)
       [--agent kodo_problem_solver] [--llama-url URL | --llama-port N] [--cwd DIR]
       [--registry-file PATH] [--thinking-level TIER] [--timeout SEC]
-      [--format jsonl|text] [--stream-deltas] [--result PATH]
+      [--format jsonl|text] [--stream-deltas] [--result PATH] [--transcript-dir DIR]
       [--home DIR] [--keep-home] [--keep-kodo-dir] [--log-level INFO]
 
 The working directory (``--cwd``, default: where it was launched) is the
@@ -40,7 +40,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         required=True,
-        help="Local-registry entry name (LLM + quant); required even with --llama-url.",
+        help=(
+            "Local-registry entry (LLM + quant; required even with --llama-url), "
+            "or VENDOR/MODEL_ID for a cloud model (key read from the environment)."
+        ),
     )
     parser.add_argument("--agent", default="kodo_problem_solver", help="Top-level agent.")
     llama = parser.add_mutually_exclusive_group()
@@ -59,6 +62,9 @@ def _parser() -> argparse.ArgumentParser:
         "--stream-deltas", action="store_true", help="Emit every thinking/text chunk."
     )
     parser.add_argument("--result", type=Path, help="Also write the result JSON here.")
+    parser.add_argument(
+        "--transcript-dir", type=Path, help="Copy the session log (session.jsonl) here."
+    )
     parser.add_argument("--home", type=Path, help="Build the isolated kodo home here (kept).")
     parser.add_argument("--keep-home", action="store_true", help="Keep a temporary home.")
     parser.add_argument(
@@ -111,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         keep_home=args.keep_home,
         keep_kodo_dir=args.keep_kodo_dir,
         result_path=args.result,
+        transcript_dir=args.transcript_dir,
         log_level=args.log_level,
     )
     sink = EventSink(args.format)
