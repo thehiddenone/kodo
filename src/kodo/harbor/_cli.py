@@ -86,7 +86,11 @@ def _parser() -> argparse.ArgumentParser:
         "--concurrency", type=int, help="Trials at once (default: 4 cloud, 1 local model)."
     )
     how.add_argument("--max-retries", type=int, default=0, help="Retries for errored trials.")
-    how.add_argument("--thinking-level", help="Kodo thinking tier.")
+    how.add_argument(
+        "--thinking-level",
+        help="Kodo thinking tier for the model, e.g. unlimited for a local Qwen-family "
+        "model (no thinking cap); default: the model's own default tier.",
+    )
     how.add_argument("--timeout", type=float, help="Kodo-side turn bound in seconds.")
     how.add_argument(
         "--platform",
@@ -188,6 +192,8 @@ def _summarize(job_dir: Path, as_json: bool) -> int:
 def _run(args: argparse.Namespace, catalog: SuiteCatalog) -> int:
     kodo_dir = kodo_user_dir()
     model = BenchModel.resolve(args.model, os.environ, kodo_dir)
+    if args.thinking_level is not None:
+        model.check_thinking_level(args.thinking_level)
     selection = _selection(args, catalog)
     harbor_args = [a for a in args.harbor_args if a != "--"]
     job_name = args.job_name or _job_name(args.agent, model)
@@ -254,7 +260,11 @@ def _run(args: argparse.Namespace, catalog: SuiteCatalog) -> int:
         config_path = job_dir / _JOB_CONFIG
         config_path.write_text(json.dumps(plan.to_config(), indent=2), encoding="utf-8")
         invocation = HarborInvocation(uv, config_path, harbor_kodo, harbor_args)
-        print(f"kodo-harbor: {model.spec.label} · {args.agent} · {', '.join(selection.labels)}")
+        thinking = args.thinking_level or model.default_thinking_tier
+        tier = f" · thinking {thinking}" if thinking else ""
+        print(
+            f"kodo-harbor: {model.spec.label} · {args.agent}{tier} · {', '.join(selection.labels)}"
+        )
         print(f"kodo-harbor: job config {config_path}")
         if args.dry_run:
             print(" ".join(invocation.command()))

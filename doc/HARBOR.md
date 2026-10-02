@@ -178,6 +178,7 @@ A mistake fails in seconds, not on trial 400:
 | cloud: the model id is in the vendor's catalog (OpenRouter and Bedrock catalogs are fetched at runtime, so any id passes) | lists the known ids |
 | cloud: a credential for the vendor is set in this shell | names the variables |
 | local: the entry is in the host's local registry | suggests similar names |
+| `--thinking-level` is one of the model's thinking tiers | lists the valid tiers and the default |
 | a non-built-in `--agent`: `~/.kodo/agents` exists | |
 | something to run was given; suite files are valid | |
 | a `--control` other than `terminus-2` with a local model | refused (see §5) |
@@ -213,6 +214,14 @@ replaces its cap.
 - **`--timeout SEC`** bounds Kōdo's own turn. Without it, Harbor's per-task
   agent timeout governs, as it does for every other agent (§4.3).
 - **`--thinking-level TIER`**: Kōdo's thinking tier for the model's family.
+  Without it, a run gets the model's own default tier (`high` for the local
+  Qwen-style family). `--thinking-level unlimited` runs a local Qwen-style
+  model (Qwen 3.x, Gemma 4, Ornith, Laguna, Nemotron 3.5, Nanbeige) with **no
+  thinking cap** ([LOCAL_INFERENCE.md](LOCAL_INFERENCE.md) §2a). An unlimited
+  turn can run for many minutes, so consider `--timeout` or the task's own
+  agent timeout. `run` checks the tier against the model before anything
+  starts and lists the valid ones; the opening line shows the tier in effect
+  (`· thinking unlimited`).
 - **`--platform OS/ARCH`** (e.g. `linux/amd64`): the platform Docker builds
   or pulls every task image for. The default is Docker's own platform. Use it
   on an Apple Silicon or other arm64 host for a dataset whose images are

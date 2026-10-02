@@ -39,7 +39,14 @@ from kodo.harbor import (
 )
 from kodo.harbor.agent import KodoAgent, KodoAgentOptions
 from kodo.headless import vendor_credential_env_names
-from kodo.llms import LocalLLMEntry, add_local_entry, get_cloud_registry, get_local_registry
+from kodo.llms import (
+    UNLIMITED_THINKING_TIER,
+    LocalLLMEntry,
+    add_local_entry,
+    get_cloud_registry,
+    get_local_registry,
+    local_thinking_tiers,
+)
 
 _SECRET = "sk-ant-test-secret-value"
 
@@ -463,6 +470,56 @@ def test_dry_run_for_a_local_model_runs_one_trial_at_a_time(cli_home: Path) -> N
     assert config["n_concurrent_trials"] == 1
     kwargs = _kodo_row(config)["kwargs"]
     assert kwargs["llama_url"] == f"http://{CONTAINER_HOST}:8090"
+
+
+def _local_entry_where(kodo_dir: Path, tiered: bool) -> str:
+    """A catalog entry whose thinking family has the unlimited tier, or none at all."""
+    for name, entry in get_local_registry(kodo_dir).items():
+        tiers = local_thinking_tiers(entry.base_llm) if entry.base_llm else ()
+        if (UNLIMITED_THINKING_TIER in tiers) if tiered else not tiers:
+            return name
+    raise AssertionError(f"the catalog has no entry with tiered={tiered}")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a shell-script uv stand-in")
+def test_unlimited_thinking_reaches_the_kodo_agent(
+    cli_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    entry = _local_entry_where(cli_home / ".kodo", tiered=True)
+    argv = ["run", "--model", entry, "--dataset", "hello-world@1.0", "--kodo-version", "0.5.28"]
+    code = main(
+        [*argv, "--thinking-level", UNLIMITED_THINKING_TIER, "--job-name", "dry", "--dry-run"]
+    )
+
+    assert code == 0
+    config = json.loads(
+        (cli_home.parent / "jobs" / "dry" / "kodo-job.json").read_text(encoding="utf-8")
+    )
+    assert _kodo_row(config)["kwargs"]["thinking_level"] == UNLIMITED_THINKING_TIER
+    assert f"thinking {UNLIMITED_THINKING_TIER}" in capsys.readouterr().out
+
+
+def test_a_tier_the_model_lacks_fails_before_the_job_exists(
+    cli_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    entry = _local_entry_where(cli_home / ".kodo", tiered=True)
+    argv = ["run", "--model", entry, "--suite", "smoke", "--thinking-level", "no-such-tier"]
+    code = main([*argv, "--job-name", "dry", "--dry-run"])
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "--thinking-level 'no-such-tier'" in err
+    assert UNLIMITED_THINKING_TIER in err
+    assert not (cli_home.parent / "jobs" / "dry").exists()
+
+
+def test_a_model_without_thinking_tiers_refuses_any_level(cli_home: Path) -> None:
+    kodo_dir = cli_home / ".kodo"
+    model = BenchModel.resolve(_local_entry_where(kodo_dir, tiered=False), {}, kodo_dir)
+
+    assert model.thinking_tiers == ()
+    with pytest.raises(HarborRunError, match="has no thinking tiers"):
+        model.check_thinking_level(UNLIMITED_THINKING_TIER)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="a shell-script uv stand-in")

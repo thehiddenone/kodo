@@ -13,6 +13,10 @@ fails in a second instead of on trial 400:
 - **local** (``ENTRY``): the entry is in the host's local registry. The model
   runs on the host under ``kodo-llama-server`` (:class:`~._llama.HostLlama`).
 
+Both record the model's thinking tiers, so ``--thinking-level`` is checked
+here too (:meth:`BenchModel.check_thinking_level`) instead of failing at the
+start of every trial, when ``kodo-headless`` sends it to the engine.
+
 The same object answers what the control arm needs: the LiteLLM model name
 and credential variables Harbor's ``terminus-2`` uses for the same model.
 
@@ -30,7 +34,15 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from kodo.headless import ModelSpec, resolve_vendor_api_key, vendor_credential_env_names
-from kodo.llms import get_cloud_entry, get_cloud_registry, get_local_registry
+from kodo.llms import (
+    cloud_thinking_default_tier,
+    cloud_thinking_tiers,
+    get_cloud_entry,
+    get_cloud_registry,
+    get_local_registry,
+    local_thinking_default_tier,
+    local_thinking_tiers,
+)
 from kodo.llms.llamacpp import find_installed_model_path
 
 from ._errors import HarborRunError
@@ -71,16 +83,30 @@ class BenchModel:
 
     __spec: ModelSpec
     __env: dict[str, str]
+    __thinking_tiers: tuple[str, ...]
+    __default_thinking_tier: str
 
-    def __init__(self, spec: ModelSpec, env: Mapping[str, str]) -> None:
+    def __init__(
+        self,
+        spec: ModelSpec,
+        env: Mapping[str, str],
+        thinking_tiers: tuple[str, ...] = (),
+        default_thinking_tier: str = "",
+    ) -> None:
         """Bind an already-validated model.
 
         Args:
             spec (ModelSpec): The model.
             env (Mapping[str, str]): The host environment it was checked against.
+            thinking_tiers (tuple[str, ...]): The tiers its thinking family
+                takes, lowest first; ``()`` for a model with none.
+            default_thinking_tier (str): The tier a run gets without
+                ``--thinking-level``; ``""`` for a model with none.
         """
         self.__spec = spec
         self.__env = dict(env)
+        self.__thinking_tiers = thinking_tiers
+        self.__default_thinking_tier = default_thinking_tier
 
     @classmethod
     def resolve(cls, text: str, env: Mapping[str, str], kodo_dir: Path) -> BenchModel:
@@ -108,7 +134,13 @@ class BenchModel:
                 close = sorted(n for n in entries if spec.name.split("-")[0] in n)[:8]
                 hint = f"; similar: {', '.join(close)}" if close else ""
                 raise HarborRunError(f"No local model {spec.name!r} in the registry{hint}")
-            return cls(spec, env)
+            base_llm = entries[spec.name].base_llm
+            return cls(
+                spec,
+                env,
+                local_thinking_tiers(base_llm),
+                local_thinking_default_tier(base_llm) if base_llm else "",
+            )
         catalog = get_cloud_registry()
         known = sorted({*catalog, *_RUNTIME_CATALOG_VENDORS})
         if vendor not in known:
@@ -121,12 +153,42 @@ class BenchModel:
         if resolve_vendor_api_key(vendor, env) is None:
             names = ", ".join(vendor_credential_env_names(vendor))
             raise HarborRunError(f"No {vendor} credential in this environment; set one of {names}")
-        return cls(spec, env)
+        return cls(spec, env, cloud_thinking_tiers(vendor), cloud_thinking_default_tier(vendor))
 
     @property
     def spec(self) -> ModelSpec:
         """The parsed model."""
         return self.__spec
+
+    @property
+    def thinking_tiers(self) -> tuple[str, ...]:
+        """The tiers ``--thinking-level`` takes for this model, lowest first."""
+        return self.__thinking_tiers
+
+    @property
+    def default_thinking_tier(self) -> str:
+        """The tier a run gets without ``--thinking-level`` (``""``: none)."""
+        return self.__default_thinking_tier
+
+    def check_thinking_level(self, level: str) -> None:
+        """Refuse a ``--thinking-level`` the model's thinking family does not take.
+
+        Args:
+            level (str): The requested tier.
+
+        Raises:
+            HarborRunError: The model has no thinking tiers, or *level* is not one.
+        """
+        if not self.__thinking_tiers:
+            raise HarborRunError(
+                f"--thinking-level {level!r}: {self.__spec.label} has no thinking tiers"
+            )
+        if level not in self.__thinking_tiers:
+            raise HarborRunError(
+                f"--thinking-level {level!r} is not a tier of {self.__spec.label}; "
+                f"choose from {', '.join(self.__thinking_tiers)} "
+                f"(default {self.__default_thinking_tier})"
+            )
 
     @property
     def is_local(self) -> bool:
