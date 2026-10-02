@@ -15,6 +15,13 @@ fails in a second instead of on trial 400:
 
 The same object answers what the control arm needs: the LiteLLM model name
 and credential variables Harbor's ``terminus-2`` uses for the same model.
+
+:class:`ListedModel` is the other direction — ``kodo-harbor list-models``:
+every ``--model`` value ``run`` can actually run. Local: the installed GGUFs
+(a ``custom_server_url`` entry is not a model ``kodo-llama-server`` can
+launch). Cloud: the whole catalog, marked with whether this environment holds
+the vendor's credential; a runtime-catalog vendor is one row with
+``<MODEL_ID>`` as a placeholder.
 """
 
 from __future__ import annotations
@@ -24,10 +31,11 @@ from pathlib import Path
 
 from kodo.headless import ModelSpec, resolve_vendor_api_key, vendor_credential_env_names
 from kodo.llms import get_cloud_entry, get_cloud_registry, get_local_registry
+from kodo.llms.llamacpp import find_installed_model_path
 
 from ._errors import HarborRunError
 
-__all__ = ["BenchModel"]
+__all__ = ["BenchModel", "ListedModel"]
 
 # Vendors whose catalog is fetched at runtime (doc/LLM_REGISTRY.md §3a/§3b):
 # any model id may be valid, so none is rejected up front.
@@ -183,3 +191,105 @@ class BenchModel:
             name for name in vendor_credential_env_names(vendor) if self.__env.get(name, "").strip()
         )
         return f"{prefix}/{self.__spec.name}", {key_name: f"${{{source}}}"}
+
+
+class ListedModel:
+    """One row of ``kodo-harbor list-models``: a ``--model`` value and what it is."""
+
+    LOCAL = "local"
+    CLOUD = "cloud"
+
+    __model: str
+    __kind: str
+    __description: str
+    __credential: bool | None
+
+    def __init__(self, model: str, kind: str, description: str, credential: bool | None) -> None:
+        """Bind one row.
+
+        Args:
+            model (str): The ``--model`` spelling.
+            kind (str): :attr:`LOCAL` or :attr:`CLOUD`.
+            description (str): One line on the model.
+            credential (bool | None): Cloud: whether the vendor's credential is
+                set; ``None`` for a local model.
+        """
+        self.__model = model
+        self.__kind = kind
+        self.__description = description
+        self.__credential = credential
+
+    @classmethod
+    def local(cls, kodo_dir: Path) -> list[ListedModel]:
+        """The local models ``run`` can serve: installed, launchable entries.
+
+        Args:
+            kodo_dir (Path): The host's ``~/.kodo`` (the local registry).
+
+        Returns:
+            list[ListedModel]: One row per installed entry, in registry order.
+        """
+        return [
+            cls(entry.name, cls.LOCAL, entry.description, None)
+            for entry in get_local_registry(kodo_dir).values()
+            if entry.kind != "custom_server_url"
+            and find_installed_model_path(entry, kodo_dir) is not None
+        ]
+
+    @classmethod
+    def cloud(cls, env: Mapping[str, str]) -> list[ListedModel]:
+        """Every cloud model ``run`` accepts, marked by credential.
+
+        Args:
+            env (Mapping[str, str]): The host environment (credentials).
+
+        Returns:
+            list[ListedModel]: The catalog's models vendor by vendor, then one
+            ``VENDOR/<MODEL_ID>`` row per runtime-catalog vendor.
+        """
+        rows: list[ListedModel] = []
+        for vendor, entries in get_cloud_registry().items():
+            credential = resolve_vendor_api_key(vendor, env) is not None
+            rows.extend(
+                cls(f"{vendor}/{entry.model_id}", cls.CLOUD, entry.name, credential)
+                for entry in entries
+            )
+        for vendor in sorted(_RUNTIME_CATALOG_VENDORS):
+            credential = resolve_vendor_api_key(vendor, env) is not None
+            rows.append(
+                cls(f"{vendor}/<MODEL_ID>", cls.CLOUD, "any model id it serves", credential)
+            )
+        return rows
+
+    @property
+    def model(self) -> str:
+        """The ``--model`` spelling."""
+        return self.__model
+
+    @property
+    def kind(self) -> str:
+        """:attr:`LOCAL` or :attr:`CLOUD`."""
+        return self.__kind
+
+    @property
+    def description(self) -> str:
+        """One line on the model."""
+        return self.__description
+
+    @property
+    def credential(self) -> bool | None:
+        """Cloud: whether the vendor's credential is set; ``None`` for local."""
+        return self.__credential
+
+    def to_dict(self) -> dict[str, object]:
+        """The row as ``list-models --json`` prints it.
+
+        Returns:
+            dict[str, object]: ``model``, ``kind``, ``description``, ``credential``.
+        """
+        return {
+            "model": self.__model,
+            "kind": self.__kind,
+            "description": self.__description,
+            "credential": self.__credential,
+        }

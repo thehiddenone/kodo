@@ -6,19 +6,23 @@
         (--dataset NAME[@VER] | --task ORG/NAME[@REF] | --path DIR | --suite NAME|FILE)...
         [--include GLOB]... [--exclude GLOB]... [--n-tasks N]
         [--control terminus-2]... [--attempts K] [--concurrency N] [--max-retries N]
-        [--thinking-level TIER] [--timeout SEC]
+        [--thinking-level TIER] [--timeout SEC] [--platform OS/ARCH]
         [--kodo-wheel PATH | --kodo-version VERSION]
         [--jobs-dir jobs] [--job-name NAME]
         [--llama-port 8090] [--llama-bind ADDR] [--keep-llama]
         [--dry-run] [-- HARBOR_RUN_ARGS...]
     kodo-harbor summarize JOB_DIR [--json]
     kodo-harbor suites [--json]
+    kodo-harbor list-models [local|cloud] [--json]
 
 ``run`` checks everything it can before Docker starts (the model, its
 credential, the tasks, Docker itself), starts the host llama-server for a
 local model, writes ``<job>/kodo-job.json``, runs Harbor on it, and writes
 ``kodo-summary.md`` / ``kodo-summary.json`` next to Harbor's own results.
 Exit code: Harbor's, or ``2`` when the run could not start (doc/HARBOR.md).
+``list-models`` prints the ``--model`` values ``run`` can run: installed local
+models, and the cloud catalog marked with whether this shell has each
+vendor's credential.
 """
 
 from __future__ import annotations
@@ -34,9 +38,9 @@ from pathlib import Path
 from kodo.project import kodo_agents_dir, kodo_user_dir
 
 from ._errors import HarborRunError
-from ._job import TERMINUS_2, JobPlan, KodoInstall
+from ._job import TERMINUS_2, JobPlan, KodoInstall, platform_overlay
 from ._llama import HostLlama, LlamaAccess
-from ._model import BenchModel
+from ._model import BenchModel, ListedModel
 from ._runner import HarborInvocation, KodoSource, check_docker, find_uv
 from ._selection import Selection
 from ._suites import SuiteCatalog
@@ -46,6 +50,7 @@ __all__ = ["main"]
 
 _JOB_CONFIG = "kodo-job.json"
 _COMPOSE_OVERLAY = "kodo-compose.yaml"
+_PLATFORM_OVERLAY = "kodo-platform.yaml"
 _SUMMARY_MD = "kodo-summary.md"
 _SUMMARY_JSON = "kodo-summary.json"
 _BUILTIN_PREFIX = "kodo_"
@@ -83,6 +88,10 @@ def _parser() -> argparse.ArgumentParser:
     how.add_argument("--max-retries", type=int, default=0, help="Retries for errored trials.")
     how.add_argument("--thinking-level", help="Kodo thinking tier.")
     how.add_argument("--timeout", type=float, help="Kodo-side turn bound in seconds.")
+    how.add_argument(
+        "--platform",
+        help="Docker platform for the task images, e.g. linux/amd64 (default: Docker's own).",
+    )
     source = how.add_mutually_exclusive_group()
     source.add_argument("--kodo-wheel", type=Path, help="py-kodo wheel for the containers.")
     source.add_argument("--kodo-version", help="py-kodo release (PyPI) for the containers.")
@@ -102,6 +111,15 @@ def _parser() -> argparse.ArgumentParser:
 
     suites = commands.add_parser("suites", help="List the benchmark suites.")
     suites.add_argument("--json", action="store_true", help="Machine-readable output.")
+
+    models = commands.add_parser("list-models", help="List the models --model accepts.")
+    models.add_argument(
+        "kind",
+        nargs="?",
+        choices=[ListedModel.LOCAL, ListedModel.CLOUD],
+        help="Only installed local models, or only cloud ones (default: both).",
+    )
+    models.add_argument("--json", action="store_true", help="Machine-readable output.")
     return parser
 
 
@@ -119,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "suites":
             return _suites(catalog, args.json)
+        if args.command == "list-models":
+            return _list_models(args.kind, args.json)
         if args.command == "summarize":
             return _summarize(args.job_dir, args.json)
         return _run(args, catalog)
@@ -135,6 +155,24 @@ def _suites(catalog: SuiteCatalog, as_json: bool) -> int:
         return 0
     for suite in suites:
         print(f"{suite.name}\t{suite.description}")
+    return 0
+
+
+def _list_models(kind: str | None, as_json: bool) -> int:
+    rows: list[ListedModel] = []
+    if kind != ListedModel.CLOUD:
+        rows.extend(ListedModel.local(kodo_user_dir()))
+    if kind != ListedModel.LOCAL:
+        rows.extend(ListedModel.cloud(os.environ))
+    if as_json:
+        print(json.dumps([row.to_dict() for row in rows], indent=2))
+        return 0
+    if kind != ListedModel.CLOUD and not any(row.kind == ListedModel.LOCAL for row in rows):
+        print("(no local model is installed; install one in the Kodo extension)", file=sys.stderr)
+    width = max((len(row.model) for row in rows), default=0)
+    for row in rows:
+        status = {None: "installed", True: "key set", False: "no key"}[row.credential]
+        print(f"{row.model:<{width}}  {status:<9}  {row.description}")
     return 0
 
 
@@ -157,10 +195,16 @@ def _run(args: argparse.Namespace, catalog: SuiteCatalog) -> int:
     job_dir = jobs_dir / job_name
     if (job_dir / "config.json").exists():
         raise HarborRunError(f"Job {job_dir} already exists; pass another --job-name")
+    platform = platform_overlay(args.platform) if args.platform is not None else None
     uv = find_uv(kodo_dir)
     if not args.dry_run:
         check_docker()
     job_dir.mkdir(parents=True, exist_ok=True)
+    overlays: list[Path] = []
+    if platform is not None:
+        overlay = job_dir / _PLATFORM_OVERLAY
+        overlay.write_text(platform, encoding="utf-8")
+        overlays.append(overlay)
 
     source = KodoSource.detect()
     install, harbor_kodo = _install_source(args, source, uv, job_dir)
@@ -171,7 +215,6 @@ def _run(args: argparse.Namespace, catalog: SuiteCatalog) -> int:
     llama: HostLlama | None = None
     access: LlamaAccess | None = None
     registry: Path | None = None
-    overlay: Path | None = None
     bind = str(args.llama_bind or HostLlama.default_bind())
     if model.is_local:
         llama = HostLlama(model.spec.name, args.llama_port, bind)
@@ -181,6 +224,7 @@ def _run(args: argparse.Namespace, catalog: SuiteCatalog) -> int:
         if text is not None:
             overlay = job_dir / _COMPOSE_OVERLAY
             overlay.write_text(text, encoding="utf-8")
+            overlays.append(overlay)
     try:
         if llama is not None:
             # A dry run starts nothing, so the served context is not known yet.
@@ -205,7 +249,7 @@ def _run(args: argparse.Namespace, catalog: SuiteCatalog) -> int:
             agents_dir=agents_dir,
             llama=access,
             registry_file=registry,
-            compose_overlay=overlay,
+            compose_overlays=overlays,
         )
         config_path = job_dir / _JOB_CONFIG
         config_path.write_text(json.dumps(plan.to_config(), indent=2), encoding="utf-8")

@@ -23,9 +23,10 @@ from ._job import (
     TERMINUS_2,
     JobPlan,
     KodoInstall,
+    platform_overlay,
 )
 from ._llama import CONTAINER_HOST, HostLlama, LlamaAccess
-from ._model import BenchModel
+from ._model import BenchModel, ListedModel
 from ._runner import HARBOR_VERSION, HarborInvocation, KodoSource, check_docker, find_uv
 from ._selection import Selection
 from ._suites import BUILTIN_SUITES_DIR, Suite, SuiteCatalog
@@ -46,6 +47,7 @@ __all__ = [
     "JobSummary",
     "KodoInstall",
     "KodoSource",
+    "ListedModel",
     "LlamaAccess",
     "Selection",
     "Suite",
@@ -53,5 +55,6 @@ __all__ = [
     "check_docker",
     "find_uv",
     "main",
+    "platform_overlay",
     "sign_test_p_value",
 ]

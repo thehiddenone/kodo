@@ -16,10 +16,17 @@ sandbox:
   ``terminus-2`` runs on the host through LiteLLM, so it also serves a local
   model (the llama-server's OpenAI endpoint); other agents take a cloud model
   by the same ``VENDOR/MODEL_ID`` and credentials.
+
+Compose overlays (``environment.extra_docker_compose``) adjust the task's
+``main`` service: Linux maps ``host.docker.internal`` for a local model, and
+``--platform`` pins the platform the image is built or pulled for
+(:func:`platform_overlay`) — SWE-bench images are ``linux/amd64`` only, which
+an arm64 Docker cannot build natively.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from ._errors import HarborRunError
@@ -33,6 +40,7 @@ __all__ = [
     "TERMINUS_2",
     "JobPlan",
     "KodoInstall",
+    "platform_overlay",
 ]
 
 #: How Harbor loads the adapter.
@@ -43,6 +51,26 @@ TERMINUS_2 = "terminus-2"
 CONTAINER_REGISTRY_PATH = "/kodo-host/local-llm-registry.json"
 
 _LOCAL_API_KEY = "sk-no-key-required"
+
+# Docker's OS/ARCH[/VARIANT] spelling, e.g. linux/amd64 or linux/arm/v7.
+_PLATFORM = re.compile(r"[a-z0-9]+/[a-z0-9_]+(/[a-z0-9]+)?")
+
+
+def platform_overlay(platform: str) -> str:
+    """The compose overlay that builds and runs a task's ``main`` service on *platform*.
+
+    Args:
+        platform (str): Docker's ``OS/ARCH[/VARIANT]``, e.g. ``linux/amd64``.
+
+    Returns:
+        str: The overlay YAML.
+
+    Raises:
+        HarborRunError: *platform* is not spelled ``OS/ARCH[/VARIANT]``.
+    """
+    if _PLATFORM.fullmatch(platform) is None:
+        raise HarborRunError(f"--platform {platform!r}: expected OS/ARCH, e.g. linux/amd64")
+    return f'services:\n  main:\n    platform: "{platform}"\n'
 
 
 class KodoInstall:
@@ -90,7 +118,7 @@ class JobPlan:
     __agents_dir: Path | None
     __llama: LlamaAccess | None
     __registry_file: Path | None
-    __compose_overlay: Path | None
+    __compose_overlays: tuple[Path, ...]
 
     def __init__(
         self,
@@ -110,7 +138,7 @@ class JobPlan:
         agents_dir: Path | None = None,
         llama: LlamaAccess | None = None,
         registry_file: Path | None = None,
-        compose_overlay: Path | None = None,
+        compose_overlays: list[Path] | None = None,
     ) -> None:
         """Bind and check the run's parameters.
 
@@ -130,7 +158,8 @@ class JobPlan:
             agents_dir (Path | None): User agents to install in containers.
             llama (LlamaAccess | None): The host llama-server (local model).
             registry_file (Path | None): The host registry to mount (local model).
-            compose_overlay (Path | None): A compose overlay (Linux, local model).
+            compose_overlays (list[Path] | None): Compose overlays for the task's
+                ``main`` service (Linux local-model host mapping, ``--platform``).
 
         Raises:
             HarborRunError: The combination cannot run.
@@ -163,7 +192,7 @@ class JobPlan:
         self.__agents_dir = agents_dir
         self.__llama = llama
         self.__registry_file = registry_file
-        self.__compose_overlay = compose_overlay
+        self.__compose_overlays = tuple(compose_overlays or ())
 
     @property
     def job_dir(self) -> Path:
@@ -186,8 +215,8 @@ class JobPlan:
                     "read_only": True,
                 }
             ]
-        if self.__compose_overlay is not None:
-            environment["extra_docker_compose"] = [str(self.__compose_overlay)]
+        if self.__compose_overlays:
+            environment["extra_docker_compose"] = [str(p) for p in self.__compose_overlays]
         config: dict[str, object] = {
             "job_name": self.__job_name,
             "jobs_dir": str(self.__jobs_dir),

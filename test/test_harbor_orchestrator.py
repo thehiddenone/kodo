@@ -39,7 +39,7 @@ from kodo.harbor import (
 )
 from kodo.harbor.agent import KodoAgent, KodoAgentOptions
 from kodo.headless import vendor_credential_env_names
-from kodo.llms import get_cloud_registry, get_local_registry
+from kodo.llms import LocalLLMEntry, add_local_entry, get_cloud_registry, get_local_registry
 
 _SECRET = "sk-ant-test-secret-value"
 
@@ -300,7 +300,7 @@ def test_local_job_attaches_to_the_host_llama(tmp_path: Path) -> None:
         controls=[TERMINUS_2],
         llama=access,
         registry_file=registry,
-        compose_overlay=overlay,
+        compose_overlays=[overlay],
     )
 
     config = plan.to_config()
@@ -465,6 +465,39 @@ def test_dry_run_for_a_local_model_runs_one_trial_at_a_time(cli_home: Path) -> N
     assert kwargs["llama_url"] == f"http://{CONTAINER_HOST}:8090"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a shell-script uv stand-in")
+def test_platform_pins_the_task_images_through_a_compose_overlay(
+    cli_home: Path, cloud_env: dict[str, str]
+) -> None:
+    model = f"anthropic/{_cloud_model_id('anthropic')}"
+    argv = ["run", "--model", model, "--dataset", "swebench-verified@1.0"]
+    argv += ["--platform", "linux/amd64", "--kodo-version", "0.5.28"]
+    code = main([*argv, "--job-name", "dry", "--dry-run"])
+
+    assert code == 0
+    job = cli_home.parent / "jobs" / "dry"
+    config = json.loads((job / "kodo-job.json").read_text(encoding="utf-8"))
+    JobConfig.model_validate(config)
+    (overlay,) = cast(
+        list[str], cast(dict[str, object], config["environment"])["extra_docker_compose"]
+    )
+    assert Path(overlay).read_text(encoding="utf-8") == (
+        'services:\n  main:\n    platform: "linux/amd64"\n'
+    )
+
+
+def test_a_malformed_platform_fails_before_the_job_exists(
+    cli_home: Path, cloud_env: dict[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    model = f"anthropic/{_cloud_model_id('anthropic')}"
+    argv = ["run", "--model", model, "--suite", "smoke", "--platform", "amd64"]
+    code = main([*argv, "--job-name", "dry", "--dry-run"])
+
+    assert code == 2
+    assert "--platform 'amd64'" in capsys.readouterr().err
+    assert not (cli_home.parent / "jobs" / "dry").exists()
+
+
 def test_run_errors_are_reported_not_raised(
     cli_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -479,6 +512,79 @@ def test_suites_command_lists_the_builtins(
     assert main(["suites", "--json"]) == 0
     names = {row["name"] for row in json.loads(capsys.readouterr().out)}
     assert "terminal-bench" in names
+
+
+def _listed(capsys: pytest.CaptureFixture[str], *argv: str) -> list[dict[str, object]]:
+    assert main(["list-models", *argv, "--json"]) == 0
+    return cast(list[dict[str, object]], json.loads(capsys.readouterr().out))
+
+
+def test_list_models_local_shows_only_what_run_can_serve(
+    cli_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    kodo_dir = cli_home / ".kodo"
+    gguf = cli_home / "mine.gguf"
+    gguf.write_bytes(b"GGUF")
+    add_local_entry(
+        kodo_dir,
+        LocalLLMEntry(name="my-gguf", kind="custom_file", description="Mine.", path=str(gguf)),
+    )
+    add_local_entry(
+        kodo_dir,
+        LocalLLMEntry(
+            name="my-box",
+            kind="custom_server_url",
+            description="An external server.",
+            url="http://192.168.1.50:8042",
+        ),
+    )
+
+    rows = _listed(capsys, "local")
+
+    # A fresh home has downloaded nothing, so no catalog entry is installed,
+    # and a custom_server_url entry is not a model kodo-llama-server launches.
+    assert rows == [
+        {"model": "my-gguf", "kind": "local", "description": "Mine.", "credential": None}
+    ]
+    assert BenchModel.resolve("my-gguf", {}, kodo_dir).is_local
+
+
+def test_list_models_cloud_marks_which_vendors_have_a_credential(
+    cli_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    catalog = get_cloud_registry()
+    for vendor in [*catalog, "openrouter", "bedrock"]:
+        for name in vendor_credential_env_names(vendor):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", _SECRET)
+
+    rows = _listed(capsys, "cloud")
+
+    credential = {row["model"]: row["credential"] for row in rows}
+    for vendor, entries in catalog.items():
+        for entry in entries:
+            assert credential[f"{vendor}/{entry.model_id}"] is (vendor == "anthropic")
+    assert credential["openrouter/<MODEL_ID>"] is False
+    assert credential["bedrock/<MODEL_ID>"] is False
+    assert {row["kind"] for row in rows} == {"cloud"}
+
+
+def test_list_models_without_a_kind_lists_both(
+    cli_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gguf = cli_home / "mine.gguf"
+    gguf.write_bytes(b"GGUF")
+    add_local_entry(
+        cli_home / ".kodo",
+        LocalLLMEntry(name="my-gguf", kind="custom_file", description="Mine.", path=str(gguf)),
+    )
+
+    rows = _listed(capsys)
+
+    assert rows[0]["model"] == "my-gguf"
+    assert {row["kind"] for row in rows} == {"local", "cloud"}
+    assert main(["list-models"]) == 0
+    assert "my-gguf" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

@@ -45,6 +45,10 @@ kodo-harbor run --model anthropic/claude-sonnet-5 --suite terminal-bench \
 kodo-harbor run --model unsloth-qwen36-27b-q4-k-xl --agent kodo_guide \
   --suite terminal-bench-sample --control terminus-2
 
+# One SWE-bench Verified task on an Apple Silicon Mac: its images are amd64-only (§2.3).
+kodo-harbor run --model anthropic/claude-sonnet-5 --dataset swebench-verified@1.0 \
+  --include django__django-15098 --platform linux/amd64
+
 # See the plan without running anything.
 kodo-harbor run --model anthropic/claude-sonnet-5 --dataset terminal-bench@2.0 \
   --include 'fix-*' --n-tasks 5 --dry-run
@@ -54,6 +58,95 @@ Each run prints a summary and writes it next to Harbor's results
 (`jobs/<job>/kodo-summary.md`, `kodo-summary.json`). `harbor view jobs` shows
 every trial, including Kōdo's trajectory.
 
+### 1.1 One task, or a few, from a dataset
+
+`--include` picks tasks out of a dataset by Harbor task name, exact or as a
+shell-style glob. Repeat it to pick more than one.
+
+```bash
+# One Terminal-Bench 2.0 task, by name.
+kodo-harbor run --model anthropic/claude-sonnet-5 \
+  --dataset terminal-bench@2.0 --include regex-log
+
+# The same task on a local model, five attempts.
+kodo-harbor run --model unsloth-qwen36-27b-q4-k-xl \
+  --dataset terminal-bench@2.0 --include regex-log --attempts 5
+
+# Two named tasks plus every task matching a glob (quote the glob).
+kodo-harbor run --model anthropic/claude-sonnet-5 --dataset terminal-bench@2.0 \
+  --include regex-log --include sqlite-with-gcov --include 'qemu-*'
+
+# One task, Kōdo against Harbor's reference agent on the same model.
+kodo-harbor run --model anthropic/claude-sonnet-5 --dataset terminal-bench@2.0 \
+  --include chess-best-move --control terminus-2
+
+# One Harbor package task (ORG/NAME[@REF]).
+kodo-harbor run --model anthropic/claude-sonnet-5 --task acme/one-task@latest
+
+# A task downloaded to disk, so you can read (or edit) its instruction and tests first.
+uvx --from harbor==0.23.0 harbor datasets download terminal-bench@2.0 -o tasks
+kodo-harbor run --model anthropic/claude-sonnet-5 --path tasks/terminal-bench/regex-log
+```
+
+- **Finding task names:** `harbor datasets download` writes one directory per
+  task, named after the task (`<dir>/<dataset>/<task>/`).
+- **A misspelled name** isn't caught by the preflight checks or by
+  `--dry-run`. Harbor rejects it when it expands the dataset, with
+  `No tasks matched the filter(s) …` and five example task names.
+- `--include` applies to **every** dataset in the run (§2.2). To filter
+  datasets differently, use separate runs or a suite with per-dataset
+  `task_names` (§3).
+
+### 1.2 A whole dataset on one machine, one container at a time
+
+Harbor gives every task its own container: each task ships its own image
+(Terminal-Bench 2.0: `ghcr.io/laude-institute/terminal-bench/<task>:2.0`) and
+its own verifier, so tasks can't share a container. To run a whole dataset
+on a laptop, run **one trial at a time**. Only one task container exists at
+any moment, and Harbor removes it after its verifier finishes and before the
+next trial starts.
+
+`--concurrency 1` does this. A local model already defaults to it, because
+one llama-server serves one request at a time. A cloud model defaults to 4,
+so pass the flag yourself.
+
+```bash
+# Every Terminal-Bench 2.0 task (89), local model, one container at a time.
+# kodo-harbor starts the host llama-server first and stops it at the end.
+kodo-harbor run --model unsloth-qwen36-27b-q4-k-xl --suite terminal-bench
+
+# The same run, naming the dataset instead of the suite, with the Guide.
+kodo-harbor run --model unsloth-qwen36-27b-q4-k-xl --agent kodo_guide \
+  --dataset terminal-bench@2.0
+
+# Every task, cloud model, one container at a time.
+export ANTHROPIC_API_KEY=…
+kodo-harbor run --model anthropic/claude-sonnet-5 --dataset terminal-bench@2.0 \
+  --concurrency 1
+
+# The 10-task sample first, to check the model before committing to a full run.
+kodo-harbor run --model unsloth-qwen36-27b-q4-k-xl --suite terminal-bench-sample
+
+# A whole dataset downloaded to disk (the directory holds one directory per task).
+kodo-harbor run --model unsloth-qwen36-27b-q4-k-xl --path tasks/terminal-bench
+```
+
+- **Duration:** a Terminal-Bench 2.0 task gives the agent up to 15 minutes
+  (`[agent] timeout_sec = 900` in its `task.toml`). Each trial also spends
+  about 30 s installing Kōdo (§8), and each task's image is pulled the first
+  time it runs. A sequential full run takes hours. `--timeout SEC` caps
+  Kōdo's own turn below the task's limit.
+- **Disk:** Harbor removes each task container after its trial, but the
+  pulled task images stay in Docker's image cache. `-- --no-delete` keeps
+  every container for inspection, and those containers add up over a full run.
+- **Stopping:** Ctrl+C winds down the trial in progress, stops the
+  llama-server, and reports the trials that finished. `kodo-harbor` won't reuse
+  an existing job directory, so the next run needs a new `--job-name` (the
+  default name is timestamped, so leaving `--job-name` off also works).
+- **Several local runs in a row:** `--keep-llama` leaves the llama-server
+  running, and the next run on the same model and port reuses it instead of
+  loading the model again (§5, Local).
+
 ## 2. `kodo-harbor`
 
 ```
@@ -61,13 +154,14 @@ kodo-harbor run --model (VENDOR/MODEL_ID | ENTRY) [--agent kodo_problem_solver]
     (--dataset NAME[@VER] | --task ORG/NAME[@REF] | --path DIR | --suite NAME|FILE)...
     [--include GLOB]... [--exclude GLOB]... [--n-tasks N]
     [--control AGENT]... [--attempts K] [--concurrency N] [--max-retries N]
-    [--thinking-level TIER] [--timeout SEC]
+    [--thinking-level TIER] [--timeout SEC] [--platform OS/ARCH]
     [--kodo-wheel PATH | --kodo-version VERSION]
     [--jobs-dir jobs] [--job-name NAME]
     [--llama-port 8090] [--llama-bind ADDR] [--keep-llama]
     [--dry-run] [-- HARBOR_RUN_ARGS...]
 kodo-harbor summarize JOB_DIR [--json]
 kodo-harbor suites [--json]
+kodo-harbor list-models [local|cloud] [--json]
 ```
 
 Exit code: Harbor's own, or `2` when the run could not start (the message says
@@ -119,6 +213,17 @@ replaces its cap.
 - **`--timeout SEC`** bounds Kōdo's own turn. Without it, Harbor's per-task
   agent timeout governs, as it does for every other agent (§4.3).
 - **`--thinking-level TIER`**: Kōdo's thinking tier for the model's family.
+- **`--platform OS/ARCH`** (e.g. `linux/amd64`): the platform Docker builds
+  or pulls every task image for. The default is Docker's own platform. Use it
+  on an Apple Silicon or other arm64 host for a dataset whose images are
+  amd64-only. SWE-bench's are (`swebench/sweb.eval.x86_64.*`), and without
+  the flag their build fails with `no match for platform in manifest`. The
+  container then runs under emulation, so turn on Docker Desktop's Rosetta
+  setting and expect slower trials. The model is unaffected: a local model
+  still runs natively on the host's llama-server. The flag is written to the
+  job as a compose overlay (`kodo-platform.yaml`, §2.5) that sets
+  `services.main.platform`, so `harbor run -c` reproduces it. A malformed
+  value fails before the job directory is created.
 - **`-- ARGS`**: anything after `--` goes to `harbor run` verbatim (e.g.
   `-- --debug`, `-- -y`).
 - **`--dry-run`** writes the job config, prints the Harbor command, and stops:
@@ -149,10 +254,34 @@ resuming a job, never files):
 |---|---|
 | `kodo-job.json` | the Harbor `JobConfig` — `harbor run -c` reproduces the run from it alone |
 | `kodo-compose.yaml` | Linux, local model: the compose overlay that maps `host.docker.internal` |
+| `kodo-platform.yaml` | `--platform`: the compose overlay that pins the task image's platform |
 | `py_kodo-*.whl` | the wheel built from an editable checkout |
 | `kodo-summary.md` / `.json` | the report (§6) |
 
 Each trial's `agent/` directory holds Kōdo's outputs (§4.2).
+
+### 2.6 Which models `--model` accepts — `list-models`
+
+`kodo-harbor list-models` prints every `--model` value `run` can run, local
+models first. `local` or `cloud` narrows it to one kind; `--json` prints
+`{model, kind, description, credential}` rows.
+
+```
+$ kodo-harbor list-models
+bartowski-ornith15-35b-a3b-bf16  installed  Ornith 1.5 35B A3B BF16 by bartowski
+anthropic/claude-sonnet-5        key set    Claude Sonnet 5
+openai/gpt-5.6-sol               no key     GPT-5.6 Sol
+openrouter/<MODEL_ID>            no key     any model id it serves
+```
+
+- **Local:** only the entries `kodo-llama-server` can serve: an installed
+  GGUF (a catalog download or a `custom_file`). A `custom_server_url` entry is
+  left out, because it is not a model Kōdo launches. When nothing is
+  installed, a hint goes to stderr. `credential` is `null`.
+- **Cloud:** the whole catalog, each row marked by whether this shell holds
+  the vendor's credential (`key set` / `no key`). That is the same check `run`
+  makes (§2.1). OpenRouter and Bedrock fetch their catalogs at runtime, so
+  each gets one `VENDOR/<MODEL_ID>` placeholder row.
 
 ## 3. Suites
 
