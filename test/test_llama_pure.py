@@ -1071,15 +1071,12 @@ def test_build_thinking_extra_body_no_family_returns_default() -> None:
 
 
 def test_build_thinking_extra_body_qwen_reasoning_budget_unlimited_tier() -> None:
-    """Qwen36-27B with explicit 'unlimited' tier gets thinking_budget_tokens=24576 and headroom."""
-    from kodo.llms.llamacpp._llama import (
-        _QWEN_MAX_TOKENS_HEADROOM,
-        _build_thinking_extra_body,
-    )
+    """Qwen36-27B with explicit 'unlimited' tier gets no thinking budget and no max_tokens."""
+    from kodo.llms.llamacpp._llama import _build_thinking_extra_body
 
     extra_body, max_tokens = _build_thinking_extra_body("Qwen36-27B", override_tier="unlimited")
-    assert extra_body == {"thinking_budget_tokens": 24576}
-    assert max_tokens == 24576 + _QWEN_MAX_TOKENS_HEADROOM
+    assert extra_body == {"thinking_budget_tokens": -1}
+    assert max_tokens is None
 
 
 def test_build_thinking_extra_body_qwen_reasoning_budget_low_tier() -> None:

@@ -13,6 +13,7 @@ __all__ = [
     "QWEN_REASONING_BUDGET_FAMILY",
     "QWEN_TIER_TOKEN_BUDGETS",
     "REASONING_BUDGET_MESSAGE",
+    "UNLIMITED_THINKING_TIER",
     "RESERVED_REASONING_CAP_ARGS",
     "local_thinking_default_tier",
     "local_thinking_family",
@@ -62,17 +63,28 @@ GPT_OSS_REASONING_EFFORT_FAMILY: frozenset[str] = frozenset({"GPT-OSS-120B", "GP
 #: template argument, so ``--reasoning-budget`` plays no part.
 QWEN4EXP_REASONING_EFFORT_FAMILY: frozenset[str] = frozenset({"Qwen38-Flash-Next"})
 
-_QWEN_TIERS: tuple[str, ...] = ("minimal", "low", "medium", "high", "huge", "unlimited")
+#: The Qwen family's top tier, and the only one with no budget at all: it sends
+#: ``thinking_budget_tokens: -1`` and no ``max_tokens``, so llama-server
+#: generates until the model ends its thinking itself or the slot's context is
+#: full (doc/LOCAL_INFERENCE.md §2a). Every other tier is a finite cap.
+UNLIMITED_THINKING_TIER = "unlimited"
+
+_QWEN_TIERS: tuple[str, ...] = (
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "huge",
+    UNLIMITED_THINKING_TIER,
+)
 _GPT_OSS_TIERS: tuple[str, ...] = ("low", "medium", "high")
 _QWEN4EXP_TIERS: tuple[str, ...] = ("low", "medium", "xhigh")
 
-#: Per-base_llm token budget for each Qwen-family tier, including
-#: "unlimited" — despite the name this is now a real finite cap (1.5x the
-#: "huge" tier), not the ``-1``/no-limit sentinel it used to be. A true
-#: uncapped budget left ``max_tokens`` sizing (see ``_llama.py``) with no
-#: number to size against, and every "huge"/"unlimited" turn could exhaust the
-#: *entire* per-request ``max_tokens`` on reasoning alone with zero room left
-#: for ``--reasoning-budget-message`` to actually print (see doc/
+#: Per-base_llm token budget for each finite Qwen-family tier — every tier but
+#: :data:`UNLIMITED_THINKING_TIER`, which has no budget and is deliberately
+#: absent here. ``_llama.py`` sizes each request's ``max_tokens`` as the
+#: budget plus headroom, so a capped tier always leaves room for
+#: ``--reasoning-budget-message`` and the answer after it (see doc/
 #: LOCAL_INFERENCE.md §2a). Best-effort starting point, not sourced from an
 #: official per-model spec — see doc/LLM_REGISTRY.md for the rationale behind
 #: each family's scale (e.g. the Ornith 35B-A3B builds' RL-trained thinking efficiency vs.
@@ -85,7 +97,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 4096,
         "high": 8192,
         "huge": 16384,
-        "unlimited": 24576,
     },
     "Qwen36-27B": {
         "minimal": 512,
@@ -93,7 +104,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 4096,
         "high": 8192,
         "huge": 16384,
-        "unlimited": 24576,
     },
     "Qwen36-35B-A3B": {
         "minimal": 512,
@@ -101,7 +111,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 4096,
         "high": 8192,
         "huge": 16384,
-        "unlimited": 24576,
     },
     "Qwen35-9B": {
         "minimal": 2048,
@@ -109,7 +118,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 8192,
         "high": 16384,
         "huge": 32768,
-        "unlimited": 49152,
     },
     "Gemma4-26B-A4B": {
         "minimal": 1024,
@@ -117,7 +125,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 4096,
         "high": 8192,
         "huge": 16384,
-        "unlimited": 24576,
     },
     "Gemma4-31B": {
         "minimal": 1024,
@@ -125,7 +132,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 4096,
         "high": 8192,
         "huge": 16384,
-        "unlimited": 24576,
     },
     "Ornith15-35B-A3B": {
         "minimal": 256,
@@ -133,7 +139,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 1536,
         "high": 3072,
         "huge": 6144,
-        "unlimited": 9216,
     },
     "Ornith15-9B": {
         "minimal": 2048,
@@ -141,7 +146,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 8192,
         "high": 16384,
         "huge": 32768,
-        "unlimited": 49152,
     },
     "Ornith10-35B-A3B": {
         "minimal": 256,
@@ -149,7 +153,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 1536,
         "high": 3072,
         "huge": 6144,
-        "unlimited": 9216,
     },
     "Ornith10-9B": {
         "minimal": 2048,
@@ -157,7 +160,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 8192,
         "high": 16384,
         "huge": 32768,
-        "unlimited": 49152,
     },
     "Laguna-S-2.1": {
         "minimal": 512,
@@ -165,7 +167,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 4096,
         "high": 8192,
         "huge": 16384,
-        "unlimited": 24576,
     },
     "Laguna-XS-2.1": {
         "minimal": 512,
@@ -173,7 +174,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 4096,
         "high": 8192,
         "huge": 16384,
-        "unlimited": 24576,
     },
     "Nanbeige4.2-3B": {
         "minimal": 2048,
@@ -181,7 +181,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 8192,
         "high": 16384,
         "huge": 32768,
-        "unlimited": 49152,
     },
     "Nemotron35-30B-A3B": {
         "minimal": 512,
@@ -189,7 +188,6 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 4096,
         "high": 8192,
         "huge": 16384,
-        "unlimited": 24576,
     },
 }
 

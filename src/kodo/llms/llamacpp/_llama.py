@@ -23,6 +23,7 @@ import openai
 from kodo.common import Envelope, MessageSink
 from kodo.llms import (
     QWEN_TIER_TOKEN_BUDGETS,
+    UNLIMITED_THINKING_TIER,
     LLMPlugin,
     Message,
     SamplingParams,
@@ -74,7 +75,7 @@ _NO_COMPRESSION_HEADERS = {"Accept-Encoding": "identity"}
 
 def _build_thinking_extra_body(
     base_llm: str, *, override_tier: str | None = None
-) -> tuple[dict[str, object], int]:
+) -> tuple[dict[str, object], int | None]:
     """Build the llama-server request fields for *base_llm*'s thinking tier.
 
     Args:
@@ -87,7 +88,7 @@ def _build_thinking_extra_body(
             switch).
 
     Returns:
-        tuple[dict[str, object], int]: ``(extra_body, max_tokens)`` —
+        tuple[dict[str, object], int | None]: ``(extra_body, max_tokens)`` —
         *extra_body* is merged into the OpenAI-compatible request body via
         ``extra_body`` (``{}`` if *base_llm* has no thinking family); *
         max_tokens* is the per-request token cap to send alongside it. For
@@ -95,7 +96,9 @@ def _build_thinking_extra_body(
         plus ``_QWEN_MAX_TOKENS_HEADROOM``, so the model always has room left
         over for the forced end-of-thinking tag, ``REASONING_BUDGET_MESSAGE``,
         and real answer content even at the tier's full budget (see doc/
-        LOCAL_INFERENCE.md §2a). Families with no numeric budget (GPT-OSS,
+        LOCAL_INFERENCE.md §2a) — except ``UNLIMITED_THINKING_TIER``, which
+        sends ``thinking_budget_tokens: -1`` and ``None`` here (no
+        ``max_tokens`` at all). Families with no numeric budget (GPT-OSS,
         Qwen3.8-Flash-Next) or no thinking family at all get the flat
         ``_DEFAULT_MAX_TOKENS``.
     """
@@ -111,13 +114,21 @@ def _build_thinking_extra_body(
     )
 
     if family == "qwen_reasoning_budget":
-        budget = QWEN_TIER_TOKEN_BUDGETS.get(base_llm, {}).get(tier, -1)
+        unlimited = tier == UNLIMITED_THINKING_TIER
+        budget = -1 if unlimited else QWEN_TIER_TOKEN_BUDGETS.get(base_llm, {}).get(tier, -1)
         extra_body: dict[str, object] = {"thinking_budget_tokens": budget}
         if base_llm == "Qwen35-9B":
             # Qwen3.5-9B's chat template has thinking off by default, unlike
             # the rest of the Qwen-tiering family — force it on so the
             # configured budget actually has something to apply to.
             extra_body["chat_template_kwargs"] = {"enable_thinking": True}
+        if unlimited:
+            # No max_tokens either: any number would be a cap on thinking by
+            # another name, and a flat one cut "unlimited" thinking off
+            # mid-thought before. llama-server then stops only at the model's
+            # own end of turn or a full slot context (finish_reason "length",
+            # which the stuck-watchdog's truncated-generation check catches).
+            return extra_body, None
         max_tokens = budget + _QWEN_MAX_TOKENS_HEADROOM if budget >= 0 else _DEFAULT_MAX_TOKENS
         return extra_body, max_tokens
 
@@ -768,7 +779,7 @@ class LlamaPlugin(LLMPlugin):
             extra_body = {**extra_body, **sampling.to_request_body()}
         response = await self.__client.chat.completions.create(  # type: ignore[call-overload]
             model=model,
-            max_tokens=max_tokens,
+            max_tokens=max_tokens if max_tokens is not None else openai.NOT_GIVEN,
             messages=oai_messages,
             tools=oai_tools if oai_tools else openai.NOT_GIVEN,
             extra_body=extra_body if extra_body else None,

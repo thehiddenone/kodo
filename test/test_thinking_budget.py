@@ -3,12 +3,13 @@
 Covers three things the launch-config refactor put at risk (see doc/
 LOCAL_INFERENCE.md §2a):
 
-1. ``QWEN_TIER_TOKEN_BUDGETS["unlimited"]`` is a real finite cap (1.5x
-   "huge"), not the old ``-1``/no-limit sentinel.
+1. ``QWEN_TIER_TOKEN_BUDGETS`` holds a real finite cap for every tier but
+   ``UNLIMITED_THINKING_TIER``, which has no budget at all.
 2. ``_build_thinking_extra_body`` (``kodo/llms/llamacpp/_llama.py``) sizes
    per-request ``max_tokens`` against the resolved tier's budget plus
    headroom, instead of a flat constant that could collide with (or be
-   smaller than) the budget itself.
+   smaller than) the budget itself — and sends no budget and no
+   ``max_tokens`` for ``UNLIMITED_THINKING_TIER``.
 3. ``ensure_llama_running`` (``kodo/llms/llamacpp/_manager.py``) force-
    assigns ``--reasoning-budget``/``--reasoning-budget-message`` at launch
    regardless of what a profile's own ``llama_args`` says — the second line
@@ -27,28 +28,30 @@ from kodo.llms import (
     QWEN_REASONING_BUDGET_FAMILY,
     QWEN_TIER_TOKEN_BUDGETS,
     REASONING_BUDGET_MESSAGE,
+    UNLIMITED_THINKING_TIER,
     LocalLLMEntry,
     local_thinking_default_tier,
+    local_thinking_tiers,
 )
 from kodo.llms.llamacpp import _manager
 from kodo.llms.llamacpp._llama import _DEFAULT_MAX_TOKENS, _build_thinking_extra_body
 
 # ---------------------------------------------------------------------------
-# QWEN_TIER_TOKEN_BUDGETS — "unlimited" is 1.5x "huge" for every family member
+# QWEN_TIER_TOKEN_BUDGETS — a finite cap for every tier but "unlimited"
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("base_llm", sorted(QWEN_REASONING_BUDGET_FAMILY))
-def test_unlimited_tier_is_one_and_a_half_times_huge(base_llm: str) -> None:
-    tiers = QWEN_TIER_TOKEN_BUDGETS[base_llm]
-    assert tiers["unlimited"] == int(tiers["huge"] * 1.5)
+def test_every_capped_tier_has_a_positive_budget(base_llm: str) -> None:
+    capped = [t for t in local_thinking_tiers(base_llm) if t != UNLIMITED_THINKING_TIER]
+    budgets = QWEN_TIER_TOKEN_BUDGETS[base_llm]
+    assert sorted(budgets) == sorted(capped)
+    assert all(budgets[tier] > 0 for tier in capped)
 
 
 @pytest.mark.parametrize("base_llm", sorted(QWEN_REASONING_BUDGET_FAMILY))
-def test_every_tier_is_a_positive_finite_budget(base_llm: str) -> None:
-    # No -1 sentinel left anywhere in the table — every tier, including
-    # "unlimited", is a real number now.
-    assert all(budget > 0 for budget in QWEN_TIER_TOKEN_BUDGETS[base_llm].values())
+def test_unlimited_is_every_family_members_top_tier(base_llm: str) -> None:
+    assert local_thinking_tiers(base_llm)[-1] == UNLIMITED_THINKING_TIER
 
 
 # ---------------------------------------------------------------------------
@@ -67,17 +70,17 @@ def test_qwen_max_tokens_is_budget_plus_headroom() -> None:
     assert max_tokens > _DEFAULT_MAX_TOKENS
 
 
-def test_qwen_unlimited_tier_max_tokens_has_headroom_too() -> None:
-    # Before this fix "unlimited" resolved to a literal -1 (uncapped)
-    # thinking_budget_tokens with a flat 8192 max_tokens — meaning an
-    # unbounded amount of reasoning could consume the entire response with
-    # zero room for the exhaustion message. It must now be a large but finite
-    # number with real headroom on top.
-    extra_body, max_tokens = _build_thinking_extra_body("Qwen36-27B", override_tier="unlimited")
-    budget = QWEN_TIER_TOKEN_BUDGETS["Qwen36-27B"]["unlimited"]
-    assert budget > 0
-    assert extra_body["thinking_budget_tokens"] == budget
-    assert max_tokens == budget + 8192
+@pytest.mark.parametrize("base_llm", sorted(QWEN_REASONING_BUDGET_FAMILY))
+def test_qwen_unlimited_tier_sends_no_budget_and_no_max_tokens(base_llm: str) -> None:
+    # An unlimited thinking budget once rode with the flat 8192 max_tokens,
+    # which cut long thinking off mid-thought: max_tokens was the real cap.
+    # Unlimited now means neither — llama-server runs until the model ends
+    # its turn or the slot's context is full.
+    extra_body, max_tokens = _build_thinking_extra_body(
+        base_llm, override_tier=UNLIMITED_THINKING_TIER
+    )
+    assert extra_body["thinking_budget_tokens"] == -1
+    assert max_tokens is None
 
 
 def test_qwen35_9b_still_forces_enable_thinking() -> None:

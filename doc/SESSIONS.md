@@ -477,7 +477,7 @@ fixed 3-way enums the client owns and the server just mirrors,
 the source of truth and validates every change:
 
 - **A brand-new session** seeds `thinking_level` from the active model's
-  family default — Qwen-family sessions start at `"unlimited"`, GPT-OSS-family
+  family default — Qwen-family sessions start at `"high"`, GPT-OSS-family
   at `"medium"`, cloud sessions at their vendor's own documented API default
   (Anthropic/Bedrock `"high"`, OpenAI/Google/Meta/OpenRouter `"medium"`,
   DeepSeek `"high"`, Alibaba `"xhigh"`, Kimi `"max"`), non-thinking models at `""`. There is no

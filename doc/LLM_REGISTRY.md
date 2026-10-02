@@ -1408,9 +1408,9 @@ before it must answer. Three mechanisms exist, keyed off `base_llm` (never
   correct values at launch regardless, as a second line of defense.
   Each chat request then sets the effective budget via a **top-level**
   `thinking_budget_tokens` field (`0` immediate end / `N>0` token budget —
-  see `QWEN_TIER_TOKEN_BUDGETS` for the per-tier `N`, including `unlimited`,
-  which despite the name is a real finite cap now — 1.5x the `huge` tier, not
-  the `-1`/no-limit sentinel it used to be). Default tier is `unlimited`.
+  see `QWEN_TIER_TOKEN_BUDGETS` for the per-tier `N`; `-1` no limit for
+  `unlimited`, which sends no `max_tokens` either — doc/LOCAL_INFERENCE.md
+  §2a). Default tier is `high`.
   `Qwen35-9B` additionally needs
   `chat_template_kwargs: {"enable_thinking": true}` on every request, since
   its chat template has thinking off by default (the other family
@@ -1419,10 +1419,11 @@ before it must answer. Three mechanisms exist, keyed off `base_llm` (never
   resolved tier's budget plus a fixed 8192-token headroom
   (`_QWEN_MAX_TOKENS_HEADROOM`), so the model always has room left, even at
   the tier's full budget, for llama.cpp to print
-  `--reasoning-budget-message` and still answer — a truly unbounded
-  `unlimited` tier (or any tier whose budget reached the old flat cap, as
-  `high` already did) left no such room, and the exhaustion message could
-  never print at all. See doc/LOCAL_INFERENCE.md §2a for the full mechanism.
+  `--reasoning-budget-message` and still answer — a tier whose budget reached
+  the old flat cap (as `high` already did) left no such room, and the
+  exhaustion message could never print at all. `unlimited` gets neither a
+  budget nor a `max_tokens`. See doc/LOCAL_INFERENCE.md §2a for the full
+  mechanism.
 - **`gpt_oss_reasoning_effort`** (3 tiers: `low`, `medium`, `high`) —
   `GPT-OSS-120B`, `GPT-OSS-20B` (`GPT_OSS_REASONING_EFFORT_FAMILY`). No
   launch-time flags. Each request sets a **nested**

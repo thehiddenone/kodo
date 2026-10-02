@@ -77,7 +77,7 @@ class SessionState:
             change against the active model's family rather than mirroring
             the client unconditionally (doc/SESSIONS.md). A brand-new session
             seeds it from the active model's family default (the Qwen family
-            defaults to ``"unlimited"``, GPT-OSS to ``"medium"``), and a
+            defaults to ``"high"``, GPT-OSS to ``"medium"``), and a
             mid-session model switch to a different thinking family
             re-derives it the same way (``WorkflowEngine.
             _sync_thinking_level_to_model``).

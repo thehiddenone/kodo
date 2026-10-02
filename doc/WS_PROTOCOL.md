@@ -891,7 +891,7 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
   "thinking_families": {
     "Qwen36-27B": { "family": "qwen_reasoning_budget",
                      "tiers": ["minimal", "low", "medium", "high", "huge", "unlimited"],
-                     "default": "unlimited" },
+                     "default": "high" },
     "GPT-OSS-20B": { "family": "gpt_oss_reasoning_effort",
                       "tiers": ["low", "medium", "high"], "default": "medium" },
     "Qwen38-Flash-Next": { "family": "qwen4exp_reasoning_effort",

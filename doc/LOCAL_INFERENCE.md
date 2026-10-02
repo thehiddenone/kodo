@@ -100,9 +100,8 @@ both on every launch regardless, covering anything saved before that
 restriction existed.
 
 **Per-request `max_tokens` is sized against the resolved thinking budget, not
-a flat constant.** Every finite Qwen-family tier — including `unlimited`,
-which is a real 1.5x-`huge` cap now, not the `-1`/no-limit sentinel it used to
-be (see `QWEN_TIER_TOKEN_BUDGETS`, `local_registry/`) — could otherwise
+a flat constant.** Every finite Qwen-family tier (every tier but `unlimited`,
+see `QWEN_TIER_TOKEN_BUDGETS`, `local_registry/`) could otherwise
 consume the *entire* per-request token budget on reasoning alone (e.g.
 Qwen36-27B's `high` tier is 8192, the same number the flat cap used to be),
 leaving llama-server no room to ever print `REASONING_BUDGET_MESSAGE` or
@@ -113,6 +112,22 @@ the resolved tier's budget plus a fixed `_QWEN_MAX_TOKENS_HEADROOM` (8192
 tokens) reserved for the exhaustion message and the answer that follows it.
 Families with no numeric budget (GPT-OSS) or no thinking family at all keep
 the flat `_DEFAULT_MAX_TOKENS`.
+
+**`unlimited` has no cap of either kind** (`UNLIMITED_THINKING_TIER`,
+2026-10-01). It sends `thinking_budget_tokens: -1` and omits `max_tokens`
+entirely, so llama-server (launched with `--ctx-size 0` and no
+`--n-predict`) generates until the model ends its own turn or the slot's
+context is full. `REASONING_BUDGET_MESSAGE` never fires on this tier. It used
+to be a finite cap (1.5× `huge`, e.g. 9,216 tokens for Ornith 1.5 35B-A3B),
+because the original `-1` still rode with the flat 8,192 `max_tokens`, which
+cut thinking off mid-thought: the `max_tokens` value was the real cap. With
+neither limit, three things still bound a turn. The cyclic-thinking detector
+aborts a repetition loop mid-stream (doc/STUCK_DETECTION.md §2.7). A full
+context ends with `finish_reason: "length"`, which the stuck-watchdog's
+truncated-generation check nudges. The user can cancel at any time, and a
+benchmark's own timeout applies too. The cost is a slow turn when a model
+rambles without repeating itself, and more context, because earlier turns'
+thinking is replayed as `<think>` blocks.
 
 ## 3. Salvaging a tool call emitted as plain text
 
