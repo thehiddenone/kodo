@@ -60,12 +60,14 @@ async def test_generates_persists_and_pushes_greeting(
 
     greeting_events = [env for env in sink.sent if env.payload.get("type") == "session.greeting"]
     assert len(greeting_events) == 1
-    assert greeting_events[0].payload["text"] == "Hello! Ready to build something new today?"
+    assert greeting_events[0].payload["text"] == (
+        "<kodo>Hello! Ready to build something new today?</kodo>"
+    )
 
     lines = transient.read_session_lines()
     markers = [ln for ln in lines if ln.get("type") == "greeting"]
     assert len(markers) == 1
-    assert markers[0]["text"] == "Hello! Ready to build something new today?"
+    assert markers[0]["text"] == "<kodo>Hello! Ready to build something new today?</kodo>"
 
 
 async def test_falls_back_to_default_when_titler_unavailable(
@@ -82,7 +84,7 @@ async def test_falls_back_to_default_when_titler_unavailable(
 
     greeting_events = [env for env in sink.sent if env.payload.get("type") == "session.greeting"]
     assert len(greeting_events) == 1
-    assert greeting_events[0].payload["text"] == _DEFAULT_GREETING
+    assert greeting_events[0].payload["text"] == f"<kodo>{_DEFAULT_GREETING}</kodo>"
 
 
 async def test_falls_back_to_default_when_generation_raises(
@@ -99,7 +101,7 @@ async def test_falls_back_to_default_when_generation_raises(
 
     greeting_events = [env for env in sink.sent if env.payload.get("type") == "session.greeting"]
     assert len(greeting_events) == 1
-    assert greeting_events[0].payload["text"] == _DEFAULT_GREETING
+    assert greeting_events[0].payload["text"] == f"<kodo>{_DEFAULT_GREETING}</kodo>"
 
 
 async def test_strips_whitespace_and_wrapping_quotes(
@@ -115,7 +117,7 @@ async def test_strips_whitespace_and_wrapping_quotes(
     await _drain(greeter)
 
     greeting_events = [env for env in sink.sent if env.payload.get("type") == "session.greeting"]
-    assert greeting_events[0].payload["text"] == "Hello there, let's build something."
+    assert greeting_events[0].payload["text"] == "<kodo>Hello there, let's build something.</kodo>"
 
 
 async def test_second_start_call_while_in_flight_is_a_no_op(

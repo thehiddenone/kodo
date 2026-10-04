@@ -9,7 +9,9 @@ prompt. Fired once, fire-and-forget, from :meth:`WorkflowEngine.start`'s
 brand-new-session branch — never for a resumed session. If the titler isn't
 up (not installed, still starting, download in progress, ...) or the
 completion call fails, falls back to a fixed default line rather than
-leaving the session's feed empty.
+leaving the session's feed empty. Either way the emitted (and persisted) text
+is wrapped in ``<kodo>…</kodo>`` so the WebView renders it as Kodo's green
+callout (``agents/shared_callouts.md``).
 """
 
 from __future__ import annotations
@@ -83,7 +85,7 @@ class SessionGreeter:
                 "default greeting"
             )
         _log.info("SessionGreeter: emitting greeting (source=%s)", "titler" if text else "default")
-        await self._emitters.emit_greeting(text or _DEFAULT_GREETING)
+        await self._emitters.emit_greeting(f"<kodo>{text or _DEFAULT_GREETING}</kodo>")
 
     @staticmethod
     def _sanitize(raw: str) -> str | None:
