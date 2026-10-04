@@ -3,10 +3,10 @@
 Shared knobs are the ones whose meaning does not depend on which GGUF is
 loaded: KV-cache precision, the three sampling axes, and the offload
 controls. Anything that needs per-model knowledge (a YaRN recipe needs the
-model's architecture key and native context length) is a *private* knob built
-by the family module instead — see :mod:`._knobs_context`.
+model's architecture key and native context length) is a *private* knob in
+its family's own ``_knobs_<family>`` module instead — see :mod:`._knobs_context`.
 
-Every hardcoded entry lists :data:`SHARED_KNOBS` plus whatever private knobs
+Every catalog entry lists the shared knobs' ids plus whatever private knobs
 it has; a user-added (``custom_*``) entry gets :data:`SHARED_KNOBS` alone, on
 top of the launch args typed into its "Add local LLM" form (which become its
 ``base_llama_args``).
@@ -45,7 +45,6 @@ from ._knobs import KnobKind, KnobOption, LlamaKnob
 __all__ = [
     "CPU_MOE_KNOB",
     "GPU_LAYERS_KNOB",
-    "KV_CACHE_F16_DEFAULT",
     "KV_CACHE_KNOB",
     "NUCLEUS_SAMPLING_KNOB",
     "SHARED_KNOBS",
@@ -67,7 +66,9 @@ BASE_LLAMA_ARGS: dict[str, str] = {
 #: KV-cache precision. Replaces the old ``make_default_kv_q8`` /
 #: ``make_default_kv_fp16`` pair of predefined flavors: an entry that used to
 #: ship the fp16 variant now just declares
-#: ``knob_defaults=KV_CACHE_F16_DEFAULT`` (below).
+#: ``"knob_defaults": {"kv-cache": "f16"}`` in its catalog file. Every catalog
+#: entry whose ``quant_type`` is ``"F16"``/``"BF16"`` (unquantized weights)
+#: should do so — see this knob's ``f16`` option for why.
 KV_CACHE_KNOB = LlamaKnob(
     id="kv-cache",
     name="KV cache precision",
@@ -111,14 +112,6 @@ KV_CACHE_KNOB = LlamaKnob(
     ),
     default_option="q8_0",
 )
-
-#: Per-entry :attr:`~kodo.llms.local_registry.LocalLLMEntry.knob_defaults`
-#: override for an F16/BF16 (unquantized-weight) GGUF, where :data:`KV_CACHE_KNOB`
-#: should default to ``f16`` instead of its own global ``q8_0`` default — see
-#: that knob's ``f16`` option above for why. Every hardcoded entry whose
-#: ``quant_type`` is ``"F16"``/``"BF16"`` should set
-#: ``knob_defaults=KV_CACHE_F16_DEFAULT``.
-KV_CACHE_F16_DEFAULT: dict[str, str] = {"kv-cache": "f16"}
 
 #: How hard the probability tail is truncated via min-p (plus top-n-sigma in
 #: the strongest state). This knob only ever writes ``--min-p``/``--top-nsigma``
@@ -463,8 +456,8 @@ NUCLEUS_SAMPLING_KNOB = LlamaKnob(
 #: Every shared knob, in Configure-modal display order (non-advanced first —
 #: the UI groups by :attr:`~kodo.llms.local_registry.LlamaKnob.advanced`, but
 #: keeping the declaration order aligned makes the table read the way the
-#: modal looks). A family module builds an entry's knob tuple as
-#: ``SHARED_KNOBS + (private knobs...)``.
+#: modal looks). A catalog file lists these ids first, then its private
+#: knobs' ids, in its ``knobs`` array.
 SHARED_KNOBS: tuple[LlamaKnob, ...] = (
     KV_CACHE_KNOB,
     TAIL_CULLING_KNOB,

@@ -1,0 +1,29 @@
+{
+  "description": "Qwen 3.5 9B UD-Q6_K_XL by Unsloth",
+  "repo_id": "unsloth/Qwen3.5-9B-MTP-GGUF",
+  "filename": "Qwen3.5-9B-UD-Q6_K_XL.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q6_K_XL",
+  "size_hint": "8.76 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/LICENSE",
+  "gpu_tip": "~13GB total at 128K context. Any 8GB GPU (e.g. RTX 3060 Ti) plus a 16GB DDR5 kit covers it comfortably, with llama.cpp's layer offloading filling in the gap.",
+  "mac_tip": "Needs ~13GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 5092,
+  "min_memory": 16,
+  "memory": 16,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {}
+}

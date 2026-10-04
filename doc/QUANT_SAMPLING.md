@@ -39,7 +39,7 @@ moving, and they are worth moving separately:
 All five also set `top_k 0`, `top_p 1.0` and `repeat_penalty 1.0` — explicitly
 off, so `min_p` (plus `top_n_sigma` in the strongest preset) is the only
 truncation in play. These are exactly the knob options the shared sampling knobs
-ships (`kodo/llms/local_registry/_local_llm_laguna_s_21.py`, §7 below), with
+ships (`kodo/llms/local_registry/_knobs_shared.py`, §7 below), with
 **identical values on every quant**. The rest of this document is why.
 
 **`0.8` is llama.cpp's default temperature and it is a perfectly good

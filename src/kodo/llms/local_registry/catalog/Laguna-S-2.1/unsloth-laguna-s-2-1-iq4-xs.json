@@ -1,0 +1,28 @@
+{
+  "description": "Laguna-S-2.1 UD-IQ4_XS by Unsloth",
+  "repo_id": "unsloth/Laguna-S-2.1-GGUF",
+  "filename": "UD-IQ4_XS/Laguna-S-2.1-UD-IQ4_XS-00001-of-00003.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-IQ4_XS",
+  "size_hint": "57.6 GB",
+  "llm_author": "Poolside",
+  "license_name": "OpenMDW-1.1",
+  "license_url": "https://openmdw.ai/license/1-1/",
+  "gpu_tip": "~80GB total at 128K context. A 16GB GPU (e.g. RTX 5070 Ti) keeps the shared layers fast, and llama.cpp's MoE expert offloading covers the rest with a 96GB DDR5 kit.",
+  "mac_tip": "Needs ~80GB — fits a 96GB MacBook Pro configuration comfortably (M4 Max or M5 Max).",
+  "context_window": 262144,
+  "llamacpp_version": 10087,
+  "min_memory": 96,
+  "memory": 96,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-laguna"
+  ],
+  "knob_defaults": {}
+}

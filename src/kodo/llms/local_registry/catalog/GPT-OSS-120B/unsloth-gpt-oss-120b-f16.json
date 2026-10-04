@@ -1,0 +1,29 @@
+{
+  "description": "GPT OSS 120B F16 by Unsloth",
+  "repo_id": "unsloth/gpt-oss-120b-GGUF",
+  "filename": "gpt-oss-120b-F16.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "F16",
+  "size_hint": "65.4 GB",
+  "llm_author": "OpenAI",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://huggingface.co/openai/gpt-oss-120b/blob/main/LICENSE",
+  "gpu_tip": "~75GB total at 128K context — this is a big one, but it's GPT-OSS's sparse MoE architecture at its best. A 16GB GPU (e.g. RX 7800 XT) runs the shared layers at full speed while llama.cpp offloads the experts to ~96GB of DDR5 system RAM — no datacenter card required.",
+  "mac_tip": "Needs ~75GB — a 128GB MacBook Pro (M4 Max or M5 Max) is required, and it's right at the edge even there.",
+  "context_window": 131072,
+  "llamacpp_version": 6098,
+  "min_memory": 96,
+  "memory": 128,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {
+    "kv-cache": "f16"
+  }
+}

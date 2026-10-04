@@ -1,14 +1,17 @@
-"""Local LLM registry: hardcoded GGUFs plus a user-managed external collection.
+"""Local LLM registry: a JSON catalog of GGUFs plus a user-managed external collection.
 
 Every entry here runs on llama.cpp — there is no ``residence`` field any more
 (the old flat registry's cloud/local split lives in
 :mod:`kodo.llms._cloud_registry` now). Entries are discriminated by ``kind``:
 
-- ``hardcoded_hf`` — compiled-in HuggingFace GGUF, shipped with kodo. The
-  catalog is assembled in :mod:`._catalog` from one ``_local_llm_<family>.py``
-  module per model family (e.g. :mod:`._local_llm_qwen36_27b`), each
-  exporting a ``*_entries() -> list[LocalLLMEntry]`` function — add a new
-  hardcoded model by adding it to (or creating) the relevant family module.
+- ``hardcoded_hf`` — a **catalog** HuggingFace GGUF: one JSON file per entry,
+  ``<root>/<base_llm>/<name>.json`` (format: :mod:`._catalog_files`). Two
+  roots share that layout (:mod:`._catalog`): :data:`BUILTIN_CATALOG_DIR`,
+  shipped inside this package, and :func:`user_catalog_dir`
+  (``~/.kodo/local_llms/``), whose files add models or **replace** a shipped
+  entry of the same name. Add a shipped model by adding its file. The kind
+  keeps its historical name whichever root an entry came from, so the wire
+  shape does not depend on it.
 - ``custom_hf`` — user-added HuggingFace GGUF (same shape as ``hardcoded_hf``,
   added via the "Add local LLM from huggingface.com" flow). Has an
   installed/not-installed state, resolved the same way as ``hardcoded_hf``
@@ -31,7 +34,8 @@ An entry is launched under one of two things (doc/LLM_REGISTRY.md §4.6):
   ``base_llama_args`` plus whatever its **knobs** currently resolve to. A knob
   is a hardcoded checkbox/dropdown/number control that owns a fixed set of CLI
   flags (:mod:`._knobs`); shared knobs live in :mod:`._knobs_shared` and
-  per-model ones are built by the family module. This is what replaced the old
+  per-family ones in their own ``_knobs_<family>`` modules, and a catalog file
+  names the ones its entry offers by id. This is what replaced the old
   "one predefined flavor per combination" model.
 - A **user-defined profile** (:class:`LlmProfile`) — a raw arg set the user
   built in the "Manage profiles" editor, which fully replaces the Default
@@ -55,11 +59,16 @@ Submodules:
         base args every Default profile starts from.
     ``_knobs_context`` — factory for the private per-model YaRN long-context
         knob (needs the model's architecture key and native context length).
-    ``_local_llm_<family>`` — one module per hardcoded model family, each a
-        pure list of :class:`LocalLLMEntry` literals.
-    ``_catalog`` — assembles ``_HARDCODED_LOCAL_MODELS`` from every
-        ``_local_llm_<family>`` module, and validates every entry's knobs at
-        import time.
+    ``_knobs_qwen`` / ``_knobs_laguna`` / ``_knobs_mtp`` — the private
+        per-family knobs.
+    ``_knobs_table`` — ``KNOBS_BY_ID``, every knob a catalog file may name.
+    ``_catalog_files`` — the catalog-entry JSON format: parse, serialize,
+        scan a ``<base_llm>/<name>.json`` tree, per-entry validation, and
+        the display-order sort key.
+    ``_catalog`` — loads ``_HARDCODED_LOCAL_MODELS`` from the shipped
+        ``catalog/`` directory (validated at import time) and the user
+        catalog from ``~/.kodo/local_llms/`` (validated per call, invalid
+        files skipped).
     ``_io`` — ``local-llm-registry.json`` file I/O and JSON (de)serialization.
     ``_profiles`` — profile CRUD, knob state, and launch-config resolution.
         Depends on ``_entries``.
@@ -70,6 +79,7 @@ Submodules:
 
 from __future__ import annotations
 
+from ._catalog import BUILTIN_CATALOG_DIR, user_catalog_dir
 from ._entries import (
     add_local_entry,
     clear_llama_server_override_path,
@@ -121,6 +131,7 @@ from ._types import LlmProfile, LocalLLMEntry
 
 __all__ = [
     "BASE_LLAMA_ARGS",
+    "BUILTIN_CATALOG_DIR",
     "GPT_OSS_REASONING_EFFORT_FAMILY",
     "QWEN4EXP_REASONING_EFFORT_FAMILY",
     "QWEN_REASONING_BUDGET_FAMILY",
@@ -163,5 +174,6 @@ __all__ = [
     "set_llama_server_override_path",
     "strip_reserved_llama_args",
     "update_profile",
+    "user_catalog_dir",
     "validate_knobs",
 ]

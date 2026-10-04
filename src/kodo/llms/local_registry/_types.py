@@ -1,8 +1,9 @@
 """Core data shapes: :class:`LocalLLMEntry` and :class:`LlmProfile`.
 
-Every ``hardcoded_*`` catalog module (``_local_llm_*.py``) and every other
-module in this package imports from here — this module depends only on
-:mod:`._knobs` (for the knob types an entry declares).
+Every module in this package imports from here — this module depends only on
+:mod:`._knobs` (for the knob types an entry declares) and :mod:`._knobs_shared`
+(for the defaults). Catalog entries are stored as JSON files
+(:mod:`._catalog_files`) and become instances of :class:`LocalLLMEntry` on load.
 """
 
 from __future__ import annotations
@@ -97,11 +98,12 @@ class LlmProfile:
 
 @dataclass(frozen=True)
 class LocalLLMEntry:
-    """A single local (llama.cpp) model, hardcoded or user-added.
+    """A single local (llama.cpp) model: a catalog entry or a user-added one.
 
     Attributes:
         name: Registry key / display name (e.g. ``'llamacpp-qwen36-27b-q4-k-xl'``
-            for hardcoded entries, or whatever the user typed when adding a
+            for catalog entries — the catalog file's stem, see
+            :mod:`._catalog_files` — or whatever the user typed when adding a
             custom one). Must be unique across the merged registry.
         kind: ``'hardcoded_hf'``, ``'custom_hf'``, ``'custom_file'``, or
             ``'custom_server_url'``.
@@ -129,10 +131,11 @@ class LocalLLMEntry:
         knobs: The configurable controls this entry's Default profile offers
             (:class:`~kodo.llms.local_registry.LlamaKnob`), in display order.
             Defaults to
-            :data:`~kodo.llms.local_registry._knobs_shared.SHARED_KNOBS`; a
-            family that ships a private per-model knob (e.g. a YaRN context
-            knob) declares ``knobs=SHARED_KNOBS + (ITS_KNOB,)`` instead.
-            Validated at import time by
+            :data:`~kodo.llms.local_registry._knobs_shared.SHARED_KNOBS`. A
+            catalog file always lists its knobs explicitly, by id (resolved
+            through :data:`~._knobs_table.KNOBS_BY_ID`) — the shared six plus
+            any private per-family one, e.g. a YaRN context knob. Validated
+            at load time by
             :func:`~kodo.llms.local_registry._knobs.validate_knobs`: no two
             knobs on one entry may own the same CLI flag. Explicitly ``()``
             only for ``custom_server_url`` (not a process kodo launches, so it

@@ -421,13 +421,14 @@ def _thinking_families_payload(registry: dict[str, LocalLLMEntry]) -> dict[str, 
 def _knob_defs_payload(registry: dict[str, LocalLLMEntry]) -> dict[str, object]:
     """Every knob any entry offers, **deduplicated by id**.
 
-    Knobs are overwhelmingly shared — all 82 hardcoded entries offer the same
-    six, and the only per-family ones are the three YaRN context knobs — so
-    repeating each definition (five options, each with a paragraph of help
-    text) on every entry would dominate the payload. Entries carry a list of
-    knob ids instead and look them up here. ``_validate_catalog`` guarantees
-    two entries never disagree about what one id means, so this flattening is
-    lossless.
+    Knobs are overwhelmingly shared — every catalog entry offers the same
+    six, and the only per-family ones are the YaRN context knobs and the MTP
+    knob — so repeating each definition (five options, each with a paragraph
+    of help text) on every entry would dominate the payload. Entries carry a
+    list of knob ids instead and look them up here. Every catalog file (shipped
+    or under ``~/.kodo/local_llms/``) resolves its knob ids through one table,
+    ``KNOBS_BY_ID``, so two entries never disagree about what one id means and
+    this flattening is lossless.
     """
     defs: dict[str, object] = {}
     for entry in registry.values():

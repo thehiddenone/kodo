@@ -227,8 +227,10 @@ empty name and lets the server resolve its own default.
 The LLM registry itself (both `cloud_registry` and the catalogue behind
 `local_registry`) is documented in full in `doc/LLM_REGISTRY.md` — this
 section only covers the wire shape. `cloud_registry` is 100% hardcoded and
-static for the process lifetime; `local_registry` is hardcoded entries merged
-with the user's custom collection and can change mid-session (see §5.12a).
+static for the process lifetime; `local_registry` is the JSON catalog (shipped
+entries, plus `~/.kodo/local_llms/` files that add or replace them — re-read on
+every push, doc/LLM_REGISTRY.md §4.0) merged with the user's custom collection,
+and can change mid-session (see §5.12a).
 
 `openrouter_catalog` is a **third**, differently-shaped registry —
 OpenRouter's own fetched/cached model list (doc/LLM_REGISTRY.md §3a), not

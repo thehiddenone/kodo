@@ -1,0 +1,28 @@
+{
+  "description": "Ornith 1.0 35B A3B Q5_K_M by Ornith AI",
+  "repo_id": "ornith-ai/Ornith-1.0-35B-GGUF",
+  "filename": "ornith-1.0-35b-Q5_K_M.gguf",
+  "quant_author": "Ornith AI",
+  "quant_type": "Q5_K_M",
+  "size_hint": "24.7 GB",
+  "llm_author": "Ornith AI",
+  "license_name": "MIT License",
+  "license_url": "https://opensource.org/license/mit",
+  "gpu_tip": "~42GB total at 128K context. An 8GB GPU (e.g. RTX 5060) plus ~48GB of DDR5 system RAM is enough — llama.cpp's layer offloading fills in the gap without needing a big card.",
+  "mac_tip": "Needs ~42GB — fits a 64GB MacBook Pro comfortably; a 48GB config is tight.",
+  "context_window": 262144,
+  "llamacpp_version": 9831,
+  "min_memory": 48,
+  "memory": 64,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35moe"
+  ],
+  "knob_defaults": {}
+}

@@ -1,0 +1,27 @@
+{
+  "description": "Muse Glimmer 30B UD-Q2_K_XL by Unsloth",
+  "repo_id": "unsloth/Muse-Glimmer-30B-GGUF",
+  "filename": "Muse-Glimmer-30B-UD-Q2_K_XL.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q2_K_XL",
+  "size_hint": "12.4 GB",
+  "llm_author": "Meta",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~15GB total at the full 131K context. An 8GB GPU (e.g. RTX 5060) plus a 16GB DDR5 kit covers it comfortably.",
+  "mac_tip": "Needs ~15GB — fits a 24GB MacBook Pro comfortably.",
+  "context_window": 131072,
+  "llamacpp_version": 10549,
+  "min_memory": 16,
+  "memory": 24,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {}
+}

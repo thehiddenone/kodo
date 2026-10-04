@@ -1,0 +1,29 @@
+{
+  "description": "Nanbiege 4.2 3B Q4_K_L by bartowski",
+  "repo_id": "bartowski/Nanbeige_Nanbeige4.2-3B-GGUF",
+  "filename": "Nanbeige_Nanbeige4.2-3B-Q4_K_L.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q4_K_L",
+  "size_hint": "3.06 GB",
+  "llm_author": "Nanbiege LLM Lab",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~7GB total at 128K context — the smallest Nanbeige 4.2 3B build; fits comfortably on an 8GB GPU (e.g. RX 7600), with plenty of headroom.",
+  "mac_tip": "Needs ~7GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 10159,
+  "min_memory": 8,
+  "memory": 12,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {
+    "kv-cache": "f16"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "description": "Nvidia Nemotron 3.5 30B A3B Q8_0 by bartowski",
+  "repo_id": "bartowski/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+  "filename": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q8_0.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q8_0",
+  "size_hint": "35.0 GB",
+  "llm_author": "Nvidia Corporation",
+  "license_name": "OpenMDW-1.1",
+  "license_url": "https://openmdw.ai/license/1-1/",
+  "gpu_tip": "~36GB total, and that number barely moves with context length — Nemotron 3.5's hybrid Mamba/MoE design keeps KV cache tiny (only 6 attention layers, 2 KV heads) even at its full 262K window. An 8GB GPU (e.g. RTX 4060 Ti) plus ~32GB of DDR5 system RAM covers it via llama.cpp's MoE expert offloading.",
+  "mac_tip": "Needs ~36GB — fits a 48GB MacBook Pro comfortably; tight on 36GB.",
+  "context_window": 262144,
+  "llamacpp_version": 10362,
+  "min_memory": 36,
+  "memory": 48,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {}
+}

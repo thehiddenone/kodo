@@ -1,0 +1,27 @@
+{
+  "description": "Muse Glimmer 30B UD-Q8_K_XL by Unsloth",
+  "repo_id": "unsloth/Muse-Glimmer-30B-GGUF",
+  "filename": "Muse-Glimmer-30B-UD-Q8_K_XL.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q8_K_XL",
+  "size_hint": "32.3 GB",
+  "llm_author": "Meta",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~35GB total, and that number barely moves with context length — the sliding-window/GQA combo keeps the cache small even at the full 131K window. An 8GB GPU (e.g. RTX 4060 Ti) plus ~32GB of DDR5 system RAM covers it.",
+  "mac_tip": "Needs ~35GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
+  "context_window": 131072,
+  "llamacpp_version": 10549,
+  "min_memory": 48,
+  "memory": 48,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {}
+}

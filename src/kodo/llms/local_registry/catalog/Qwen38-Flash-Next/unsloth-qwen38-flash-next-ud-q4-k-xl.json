@@ -1,0 +1,28 @@
+{
+  "description": "Qwen 3.8 Flash Next UD-Q4_K_XL by Unsloth",
+  "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+  "filename": "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q4_K_XL",
+  "size_hint": "111 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Qwen Community License 1.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE",
+  "gpu_tip": "~117GB total at 128K context — the sweet spot of this family. A 16GB GPU (e.g. RTX 4070 Ti Super) plus a 128GB DDR5 kit is enough, and because only 12 of the 48 layers hold a real KV cache, pushing the context out costs very little on top.",
+  "mac_tip": "Needs ~117GB — fits a 128GB MacBook Pro (M4 Max or M5 Max), with modest headroom to spare.",
+  "context_window": 262144,
+  "llamacpp_version": 10829,
+  "min_memory": 128,
+  "memory": 128,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen4exp"
+  ],
+  "knob_defaults": {}
+}

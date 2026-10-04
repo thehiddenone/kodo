@@ -1,0 +1,28 @@
+{
+  "description": "Ornith 1.5 9B Q2_K by bartowski",
+  "repo_id": "bartowski/Ornith-1.5-9B-GGUF",
+  "filename": "Ornith-1.5-9B-Q2_K.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q2_K",
+  "size_hint": "4.06 GB",
+  "llm_author": "Ornith AI",
+  "license_name": "MIT License",
+  "license_url": "https://opensource.org/license/mit",
+  "gpu_tip": "~8GB total at 128K context — the smallest Ornith 1.5 9B build, sized to fit an 8GB GPU (e.g. RTX 3060 Ti) end to end. Quality drops noticeably at 2-bit on a model this small; prefer IQ3_M or Q3_K_L whenever the memory is there.",
+  "mac_tip": "Needs ~8GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 10472,
+  "min_memory": 8,
+  "memory": 12,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35"
+  ],
+  "knob_defaults": {}
+}

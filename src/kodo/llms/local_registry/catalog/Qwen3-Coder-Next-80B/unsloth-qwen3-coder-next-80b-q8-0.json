@@ -1,0 +1,27 @@
+{
+  "description": "Qwen 3 Coder 80B UD-Q8_0 by Unsloth",
+  "repo_id": "unsloth/Qwen3-Coder-Next-GGUF",
+  "filename": "Q8_0/Qwen3-Coder-Next-Q8_0-00001-of-00003.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q8_0",
+  "size_hint": "84.8 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~89GB total at 128K context. A 16GB GPU (e.g. RTX 5080) keeps the shared layers fast, with llama.cpp offloading the rest of the experts to a 96GB DDR5 kit.",
+  "mac_tip": "Needs ~89GB — comfortable on a 128GB MacBook Pro (M4 Max or M5 Max).",
+  "context_window": 262144,
+  "llamacpp_version": 5092,
+  "min_memory": 128,
+  "memory": 128,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {}
+}

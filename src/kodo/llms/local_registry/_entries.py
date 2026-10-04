@@ -1,6 +1,16 @@
 """Public registry API: the merged entry map, custom-entry CRUD, override path.
 
-References the hardcoded catalog via ``_catalog._HARDCODED_LOCAL_MODELS``
+The merged registry has three sources, in precedence order (see
+doc/LLM_REGISTRY.md §4):
+
+1. the user catalog, ``~/.kodo/local_llms/<base_llm>/<name>.json``
+   (:func:`~._catalog.load_user_catalog`) — replaces a shipped entry of the
+   same name outright;
+2. the shipped catalog (``_catalog._HARDCODED_LOCAL_MODELS``);
+3. the ``custom_*`` entries in ``local-llm-registry.json`` (:mod:`._io`) —
+   skipped when their name is already taken by either catalog.
+
+References the shipped catalog via ``_catalog._HARDCODED_LOCAL_MODELS``
 (qualified module attribute access rather than ``from ._catalog import
 _HARDCODED_LOCAL_MODELS``) specifically so tests can monkeypatch
 ``_catalog._HARDCODED_LOCAL_MODELS`` and have every function here observe
@@ -15,6 +25,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import _catalog
+from ._catalog_files import catalog_sort_key
 from ._io import (
     _CUSTOM_KINDS,
     _all_active_profiles,
@@ -74,19 +85,32 @@ def _with_custom_entry_knobs(entry: LocalLLMEntry) -> LocalLLMEntry:
 
 
 def get_local_registry(kodo_dir: Path) -> dict[str, LocalLLMEntry]:
-    """Return the merged local registry: hardcoded entries + the user's custom ones.
+    """Return the merged local registry: catalog entries + the user's custom ones.
+
+    Catalog entries — shipped ones, each possibly replaced by a same-named
+    file in the user catalog, plus any user-only ones — come first, in
+    :func:`~._catalog_files.catalog_sort_key` order (families A-Z, biggest
+    quant first). ``custom_*`` entries follow in the order they were added.
+    kodo-vsix renders the list in exactly this order.
 
     Args:
         kodo_dir: User-level ``~/.kodo`` directory.
 
     Returns:
-        dict[str, LocalLLMEntry]: Map of entry name to :class:`LocalLLMEntry`.
+        dict[str, LocalLLMEntry]: Map of entry name to :class:`LocalLLMEntry`,
+        in display order.
     """
-    merged: dict[str, LocalLLMEntry] = {e.name: e for e in _catalog._HARDCODED_LOCAL_MODELS}
+    catalog: dict[str, LocalLLMEntry] = {e.name: e for e in _catalog._HARDCODED_LOCAL_MODELS}
+    user_entries, _ = _catalog.load_user_catalog(kodo_dir)
+    for entry in user_entries:
+        if entry.name in catalog:
+            _log.debug("User catalog file replaces the shipped local LLM %r", entry.name)
+        catalog[entry.name] = entry
+    merged = {e.name: e for e in sorted(catalog.values(), key=catalog_sort_key)}
     external, _ = _load_external(kodo_dir)
     for entry in external:
         if entry.name in merged:
-            _log.warning("Custom local LLM %r shadows a hardcoded entry — skipping", entry.name)
+            _log.warning("Custom local LLM %r shadows a catalog entry — skipping", entry.name)
             continue
         merged[entry.name] = _with_custom_entry_knobs(entry)
     return merged
@@ -138,10 +162,17 @@ def remove_local_entry(kodo_dir: Path, name: str) -> None:
         name: Entry name to remove.
 
     Raises:
-        ValueError: If *name* is a hardcoded entry or does not exist.
+        ValueError: If *name* is a catalog entry (shipped, or a user catalog
+            file — delete that file instead) or does not exist.
     """
     if any(e.name == name for e in _catalog._HARDCODED_LOCAL_MODELS):
         raise ValueError(f"{name!r} is a built-in local LLM and cannot be removed")
+    user_entries, _ = _catalog.load_user_catalog(kodo_dir)
+    if any(e.name == name for e in user_entries):
+        raise ValueError(
+            f"{name!r} is defined by a file in {_catalog.user_catalog_dir(kodo_dir)} — "
+            "delete that file to remove it"
+        )
     external, override = _load_external(kodo_dir)
     remaining = [e for e in external if e.name != name]
     if len(remaining) == len(external):
@@ -187,7 +218,10 @@ def prune_unknown_model_state(
 
     Does nothing at all — and reports nothing to uninstall — when the registry
     file exists but does not parse: every ``custom_*`` entry would look
-    unknown, and the purge would take the user's own models with it.
+    unknown, and the purge would take the user's own models with it. The same
+    goes for a user catalog (``~/.kodo/local_llms/``) with any file that failed
+    to load: that file might be the only definition of a model the user has
+    downloaded, and a typo must not cost them the GGUF.
 
     Args:
         kodo_dir: User-level ``~/.kodo`` directory.
@@ -200,6 +234,13 @@ def prune_unknown_model_state(
     """
     if _registry_file_unreadable(kodo_dir):
         _log.warning("local-llm-registry.json does not parse — skipping the unknown-model purge")
+        return ()
+    _, user_catalog_errors = _catalog.load_user_catalog(kodo_dir)
+    if user_catalog_errors:
+        _log.warning(
+            "%d user local-LLM catalog file(s) failed to load — skipping the unknown-model purge",
+            len(user_catalog_errors),
+        )
         return ()
     known = set(get_local_registry(kodo_dir))
     data = _load_raw(kodo_dir)

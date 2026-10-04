@@ -1,0 +1,28 @@
+{
+  "description": "Laguna-S-2.1 UD-Q8_K_XL by Unsloth",
+  "repo_id": "unsloth/Laguna-S-2.1-GGUF",
+  "filename": "UD-Q8_K_XL/Laguna-S-2.1-UD-Q8_K_XL-00001-of-00004.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q8_K_XL",
+  "size_hint": "128 GB",
+  "llm_author": "Poolside",
+  "license_name": "OpenMDW-1.1",
+  "license_url": "https://openmdw.ai/license/1-1/",
+  "gpu_tip": "~165GB total at 128K context — the biggest Laguna-S-2.1 build. It's a sparse MoE model, so a 16GB GPU (e.g. RTX 4080) still handles the always-on shared layers at full speed while llama.cpp offloads the mostly-idle experts to a 192GB DDR5 workstation kit.",
+  "mac_tip": "Needs ~165GB — beyond even the largest 128GB MacBook Pro; a Mac Studio (M3 Ultra with 192GB+ unified memory) or a Linux/Windows workstation is the realistic option.",
+  "context_window": 262144,
+  "llamacpp_version": 10087,
+  "min_memory": 192,
+  "memory": 192,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-laguna"
+  ],
+  "knob_defaults": {}
+}

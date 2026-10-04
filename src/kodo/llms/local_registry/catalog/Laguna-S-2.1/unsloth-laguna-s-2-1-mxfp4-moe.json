@@ -1,0 +1,28 @@
+{
+  "description": "Laguna-S-2.1 MXFP4_MOE by Unsloth",
+  "repo_id": "unsloth/Laguna-S-2.1-GGUF",
+  "filename": "MXFP4_MOE/Laguna-S-2.1-MXFP4_MOE-00001-of-00003.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "MXFP4_MOE",
+  "size_hint": "71.1 GB",
+  "llm_author": "Poolside",
+  "license_name": "OpenMDW-1.1",
+  "license_url": "https://openmdw.ai/license/1-1/",
+  "gpu_tip": "~105GB total at 128K context. A 16GB GPU (e.g. RTX 5070 Ti) handles the always-on layers, and ~128GB of DDR5 system RAM covers the offloaded MXFP4 experts — llama.cpp's native MXFP4 support keeps this close to a full-VRAM fit.",
+  "mac_tip": "Needs ~105GB — fits a 128GB MacBook Pro (M4 Max or M5 Max) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 10087,
+  "min_memory": 96,
+  "memory": 128,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-laguna"
+  ],
+  "knob_defaults": {}
+}

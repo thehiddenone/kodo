@@ -1,0 +1,29 @@
+{
+  "description": "Qwen 3.6 27B UD-Q8_K_XL by Unsloth",
+  "repo_id": "unsloth/Qwen3.6-27B-MTP-GGUF",
+  "filename": "Qwen3.6-27B-UD-Q8_K_XL.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q8_K_XL",
+  "size_hint": "35.8 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.6-27B/blob/main/LICENSE",
+  "gpu_tip": "~50GB total at 128K context — the biggest of the Qwen 3.6 27B builds, but still no reason to chase a 64GB+ card. An 8GB GPU (e.g. RTX 3060 Ti) plus ~64GB of everyday DDR5 system RAM covers it via llama.cpp's layer offloading.",
+  "mac_tip": "Needs ~50GB — a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) is tight; a 128GB M4 Max or M5 Max gives more headroom.",
+  "context_window": 262144,
+  "llamacpp_version": 3100,
+  "min_memory": 48,
+  "memory": 64,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {}
+}

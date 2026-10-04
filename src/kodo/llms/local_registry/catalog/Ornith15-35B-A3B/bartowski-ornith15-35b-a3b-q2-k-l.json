@@ -1,0 +1,29 @@
+{
+  "description": "Ornith 1.5 35B A3B Q2_K_L by bartowski",
+  "repo_id": "bartowski/Ornith-1.5-35B-A3B-GGUF",
+  "filename": "Ornith-1.5-35B-A3B-Q2_K_L.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q2_K_L",
+  "size_hint": "13.6 GB",
+  "llm_author": "Ornith AI",
+  "license_name": "MIT License",
+  "license_url": "https://opensource.org/license/mit",
+  "gpu_tip": "~31GB total at 128K context — the smallest Ornith 1.5 35B build, and the one that makes a 32GB machine viable at all. Quality drops noticeably at 2-bit; keeping the embedding and output weights at Q8_0 softens that, but prefer Q3_K_XL or IQ3_M whenever the memory is there.",
+  "mac_tip": "Needs ~31GB — a 32GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) is right at the limit; a 36GB config is safer.",
+  "context_window": 262144,
+  "llamacpp_version": 10472,
+  "min_memory": 32,
+  "memory": 36,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35moe",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {}
+}

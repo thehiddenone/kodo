@@ -1,0 +1,28 @@
+{
+  "description": "Laguna-S-2.1 UD-Q4_K_XL by Unsloth",
+  "repo_id": "unsloth/Laguna-S-2.1-GGUF",
+  "filename": "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q4_K_XL",
+  "size_hint": "73.4 GB",
+  "llm_author": "Poolside",
+  "license_name": "OpenMDW-1.1",
+  "license_url": "https://openmdw.ai/license/1-1/",
+  "gpu_tip": "~105GB total at 128K context. A 16GB GPU (e.g. RTX 4060 Ti 16GB) keeps the shared layers fast while llama.cpp's MoE offloading absorbs the rest into a 128GB DDR5 kit.",
+  "mac_tip": "Needs ~105GB — fits a 128GB MacBook Pro (M4 Max or M5 Max) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 10087,
+  "min_memory": 128,
+  "memory": 128,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-laguna"
+  ],
+  "knob_defaults": {}
+}

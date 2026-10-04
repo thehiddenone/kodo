@@ -1,0 +1,27 @@
+{
+  "description": "Muse Glimmer 30B UD-Q4_K_XL by Unsloth",
+  "repo_id": "unsloth/Muse-Glimmer-30B-GGUF",
+  "filename": "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q4_K_XL",
+  "size_hint": "15.9 GB",
+  "llm_author": "Meta",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~19GB total at the full 131K context. An 8GB GPU (e.g. RTX 4060) plus a 24GB DDR5 kit covers it comfortably — a typical gaming rig once llama.cpp splits the layers.",
+  "mac_tip": "Needs ~19GB — fits a 32GB MacBook Pro (M4 or M5) comfortably.",
+  "context_window": 131072,
+  "llamacpp_version": 10549,
+  "min_memory": 24,
+  "memory": 32,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {}
+}

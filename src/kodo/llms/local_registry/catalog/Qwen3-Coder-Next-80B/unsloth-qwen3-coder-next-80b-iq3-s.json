@@ -1,0 +1,27 @@
+{
+  "description": "Qwen 3 Coder 80B UD-IQ3_S by Unsloth",
+  "repo_id": "unsloth/Qwen3-Coder-Next-GGUF",
+  "filename": "Qwen3-Coder-Next-UD-IQ3_S.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-IQ3_S",
+  "size_hint": "29.7 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~34GB total at 128K context. An 8GB GPU (e.g. RTX 3060 Ti) plus ~32GB of DDR5 system RAM is enough — llama.cpp's MoE expert offloading keeps this 80B model fast without a workstation card.",
+  "mac_tip": "Needs ~34GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 5092,
+  "min_memory": 32,
+  "memory": 48,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {}
+}

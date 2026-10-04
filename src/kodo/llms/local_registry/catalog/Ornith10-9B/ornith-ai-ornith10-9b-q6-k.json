@@ -1,0 +1,28 @@
+{
+  "description": "Ornith 1.0 9B Q6_K by Ornith AI",
+  "repo_id": "ornith-ai/Ornith-1.0-9B-GGUF",
+  "filename": "ornith-1.0-9b-Q6_K.gguf",
+  "quant_author": "Ornith AI",
+  "quant_type": "Q6_K",
+  "size_hint": "7.36 GB",
+  "llm_author": "Ornith AI",
+  "license_name": "MIT License",
+  "license_url": "https://opensource.org/license/mit",
+  "gpu_tip": "~11GB total at 128K context — comfortably fits a 16GB GPU (e.g. RTX 5070 Ti), with room to spare.",
+  "mac_tip": "Needs ~11GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 9831,
+  "min_memory": 12,
+  "memory": 16,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35"
+  ],
+  "knob_defaults": {}
+}

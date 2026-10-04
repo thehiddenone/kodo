@@ -1,0 +1,28 @@
+{
+  "description": "Qwen 3.8 Flash Next Q8_0 by Unsloth",
+  "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+  "filename": "Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "Q8_0",
+  "size_hint": "188 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Qwen Community License 1.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE",
+  "gpu_tip": "~194GB total at 128K context. With 512 experts and only 10 routed + 1 shared active per token, llama.cpp's MoE expert offloading works about as well here as it ever does — a 16GB GPU (e.g. RTX 4080) carries the always-on layers at full speed while a 256GB DDR5 workstation kit holds the mostly-idle experts.",
+  "mac_tip": "Needs ~194GB — past a 192GB Mac Studio once macOS takes its share; a 256GB or 512GB M3 Ultra is the realistic option.",
+  "context_window": 262144,
+  "llamacpp_version": 10829,
+  "min_memory": 192,
+  "memory": 256,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen4exp"
+  ],
+  "knob_defaults": {}
+}

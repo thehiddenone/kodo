@@ -1,0 +1,31 @@
+{
+  "description": "Qwen 3.8 27B BF16 by Unsloth",
+  "repo_id": "unsloth/Qwen3.8-27B-GGUF",
+  "filename": "BF16/Qwen3.8-27B-BF16-00001-of-00002.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "BF16",
+  "size_hint": "54.7 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+  "gpu_tip": "~64GB total at 128K context. Qwen3.8's hybrid Gated DeltaNet design keeps only 16 of its 64 layers on a real KV cache, so context adds relatively little on top of the weights. Still, at BF16 this is the biggest build here — an 8GB GPU (e.g. RTX 4060) plus ~64GB of DDR5 system RAM covers it via llama.cpp's per-layer offloading.",
+  "mac_tip": "Needs ~64GB — even a 64GB MacBook Pro (M4 Max or M5 Max) leaves almost no headroom; a 128GB config is the realistic choice.",
+  "context_window": 262144,
+  "llamacpp_version": 10433,
+  "min_memory": 64,
+  "memory": 96,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {
+    "kv-cache": "f16"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "description": "Qwen 3.6 35B-A3B UD-Q6_K_XL by Unsloth",
+  "repo_id": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+  "filename": "Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q6_K_XL",
+  "size_hint": "32.6 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/LICENSE",
+  "gpu_tip": "~39GB total at 128K context. Same MoE-offload trick as the Q8_K_XL build: an 8GB GPU (e.g. RTX 5060) handles the shared layers at full speed, and ~48GB of DDR5 system RAM comfortably holds the offloaded experts.",
+  "mac_tip": "Needs ~39GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 5092,
+  "min_memory": 48,
+  "memory": 48,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35moe",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {}
+}

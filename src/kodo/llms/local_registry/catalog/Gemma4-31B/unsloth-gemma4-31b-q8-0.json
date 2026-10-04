@@ -1,0 +1,27 @@
+{
+  "description": "Gemma 4 31B Q8_0 by Unsloth",
+  "repo_id": "unsloth/gemma-4-31B-it-GGUF",
+  "filename": "gemma-4-31B-it-Q8_0.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "Q8_0",
+  "size_hint": "32.6 GB",
+  "llm_author": "Google DeepMind",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://ai.google.dev/gemma/docs/gemma_4_license",
+  "gpu_tip": "~38GB total at 128K context. An 8GB GPU (e.g. RTX 3060 Ti) plus a 48GB DDR5 kit is enough, with llama.cpp's layer offloading filling in the gap.",
+  "mac_tip": "Needs ~38GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 8720,
+  "min_memory": 48,
+  "memory": 48,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {}
+}

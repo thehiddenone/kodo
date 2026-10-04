@@ -10,10 +10,12 @@ compose instead: N knobs with k options each cover k**N configurations from
 N declarations.
 
 Every knob is **hardcoded in this package** — there is no user-defined knob,
-and no way to add one over the wire. Shared knobs (offered on every entry)
-live in :mod:`._knobs_shared`; a per-family private knob (e.g. Laguna's
-YaRN-extended context sizes) is built by its family module, usually via
-:mod:`._knobs_context`. An entry lists the knobs it offers in
+and no way to add one over the wire or from a catalog file. Shared knobs
+(offered on every entry) live in :mod:`._knobs_shared`; a per-family private
+knob (e.g. Laguna's YaRN-extended context sizes) lives in its own
+``_knobs_<family>`` module, usually built via :mod:`._knobs_context`. Every
+knob is registered by id in :data:`~._knobs_table.KNOBS_BY_ID`, and a catalog
+entry's JSON file names the knobs it offers by id; they end up in
 :attr:`~kodo.llms.local_registry.LocalLLMEntry.knobs`.
 
 The load-bearing invariant

@@ -1,0 +1,27 @@
+{
+  "description": "Qwen 3 Coder 80B UD-IQ4_NL by Unsloth",
+  "repo_id": "unsloth/Qwen3-Coder-Next-GGUF",
+  "filename": "Qwen3-Coder-Next-UD-IQ4_NL.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-IQ4_NL",
+  "size_hint": "39.2 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~43GB total at 128K context. A 16GB GPU (e.g. RTX 4060 Ti 16GB) keeps the shared layers fast, and llama.cpp's MoE expert offloading covers the rest with a 32GB DDR5 kit.",
+  "mac_tip": "Needs ~43GB — fits a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably; a 48GB config is tight.",
+  "context_window": 262144,
+  "llamacpp_version": 5092,
+  "min_memory": 48,
+  "memory": 64,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {}
+}

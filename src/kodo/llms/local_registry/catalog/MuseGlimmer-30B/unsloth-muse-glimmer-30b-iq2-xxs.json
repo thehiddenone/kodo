@@ -1,0 +1,27 @@
+{
+  "description": "Muse Glimmer 30B UD-IQ2_XXS by Unsloth",
+  "repo_id": "unsloth/Muse-Glimmer-30B-GGUF",
+  "filename": "Muse-Glimmer-30B-UD-IQ2_XXS.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-IQ2_XXS",
+  "size_hint": "10.7 GB",
+  "llm_author": "Meta",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~14GB total at the full 131K context. Any 8GB GPU (e.g. RTX 4060) plus a 16GB DDR5 kit handles this, the smallest of the Muse Glimmer 30B builds.",
+  "mac_tip": "Needs ~14GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
+  "context_window": 131072,
+  "llamacpp_version": 10549,
+  "min_memory": 16,
+  "memory": 16,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {}
+}

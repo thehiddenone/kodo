@@ -1,0 +1,29 @@
+{
+  "description": "Qwen 3.8 27B UD-Q5_K_XL by Unsloth",
+  "repo_id": "unsloth/Qwen3.8-27B-GGUF",
+  "filename": "Qwen3.8-27B-UD-Q5_K_XL.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q5_K_XL",
+  "size_hint": "20.2 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+  "gpu_tip": "~29GB total at 128K context. Qwen3.8's hybrid design keeps a real KV cache on only 16 of its 64 layers, so context stays cheap — an 8GB GPU (e.g. RTX 5060) plus a 32GB DDR5 kit covers the whole model via llama.cpp's per-layer offloading.",
+  "mac_tip": "Needs ~29GB — fits a 36GB MacBook Pro (M4 Max or M5 Max) comfortably; a 32GB config is tight.",
+  "context_window": 262144,
+  "llamacpp_version": 10433,
+  "min_memory": 32,
+  "memory": 36,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {}
+}

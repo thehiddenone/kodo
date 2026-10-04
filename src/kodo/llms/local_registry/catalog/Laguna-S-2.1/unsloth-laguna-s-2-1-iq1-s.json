@@ -1,0 +1,28 @@
+{
+  "description": "Laguna-S-2.1 UD-IQ1_S by Unsloth",
+  "repo_id": "unsloth/Laguna-S-2.1-GGUF",
+  "filename": "Laguna-S-2.1-UD-IQ1_S.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-IQ1_MS",
+  "size_hint": "33.8 GB",
+  "llm_author": "Poolside",
+  "license_name": "OpenMDW-1.1",
+  "license_url": "https://openmdw.ai/license/1-1/",
+  "gpu_tip": "~42GB total at 128K context. An 8GB GPU (e.g. RTX 3060 Ti) plus a 48GB DDR5 kit is enough — the smallest of the Laguna-S-2.1 builds, and llama.cpp's MoE offloading keeps it fast even on modest hardware.",
+  "mac_tip": "Needs ~42GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 10087,
+  "min_memory": 48,
+  "memory": 48,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-laguna"
+  ],
+  "knob_defaults": {}
+}

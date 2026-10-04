@@ -1,0 +1,28 @@
+{
+  "description": "Qwen 3.8 Flash Next UD-IQ4_XS by Unsloth",
+  "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+  "filename": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-IQ4_XS",
+  "size_hint": "93.7 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Qwen Community License 1.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE",
+  "gpu_tip": "~99GB total at 128K context. A 16GB GPU (e.g. RTX 5070 Ti) plus a 128GB DDR5 kit covers it comfortably; a 96GB kit leaves nothing for the operating system.",
+  "mac_tip": "Needs ~99GB — a 96GB MacBook Pro is just short once macOS takes its share; a 128GB M4 Max or M5 Max fits it comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 10829,
+  "min_memory": 96,
+  "memory": 128,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen4exp"
+  ],
+  "knob_defaults": {}
+}

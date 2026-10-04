@@ -1,0 +1,29 @@
+{
+  "description": "Laguna-XS-2.1 BF16 by Poolside",
+  "repo_id": "poolside/Laguna-XS-2.1-GGUF",
+  "filename": "Laguna-XS-2.1-BF16.gguf",
+  "quant_author": "Poolside",
+  "quant_type": "BF16",
+  "size_hint": "66.9 GB",
+  "llm_author": "Poolside",
+  "license_name": "OpenMDW-1.1",
+  "license_url": "https://openmdw.ai/license/1-1/",
+  "gpu_tip": "~74GB total at 128K context — the BF16 build is the heaviest way to run Laguna XS 2.1, but it's still a sparse 3B-active MoE, so most of those weights sit idle on any given token. A 16GB GPU (e.g. RTX 4080) keeps the always-on attention/shared layers at full speed while llama.cpp offloads the inactive experts to a 96GB DDR5 kit.",
+  "mac_tip": "Needs ~74GB — fits a 96GB MacBook Pro (M4 Max/M5 Max) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 10087,
+  "min_memory": 96,
+  "memory": 96,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {
+    "kv-cache": "f16"
+  }
+}

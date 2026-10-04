@@ -23,8 +23,10 @@ now two independent registries:
 - **Cloud registry** (`kodo/llms/_cloud_registry.py`) — a hardcoded, two-tier
   `vendor → CloudLLMEntry` tree. 100% compiled-in; there is no user-editable
   part, since adding a model always implies a matching plugin/pricing update.
-- **Local registry** (`kodo/llms/local_registry/`) — hardcoded GGUFs
-  merged with a user-managed external collection persisted in
+- **Local registry** (`kodo/llms/local_registry/`) — a JSON catalog of
+  GGUFs, one file per entry (shipped inside the package, plus user-editable
+  files under `~/.kodo/local_llms/` that add entries or replace shipped ones,
+  §4.0), merged with a user-managed external collection persisted in
   `~/.kodo/etc/local-llm-registry.json`. Every entry here runs on llama.cpp;
   there is no `residence` field any more (it would always say `"local"`).
   `~/.kodo/etc/` itself is created eagerly by `WorkspaceLayout.init()` at every
@@ -908,8 +910,8 @@ fetched at runtime), a hand-written discrete-GPU-plus-system-RAM
 recommendation, a hand-written MacBook Pro (Apple Silicon unified-memory)
 recommendation, two hand-picked combined-memory thresholds (GB) used for
 the client-side hardware comparison below, and the minimum llama.cpp build
-number the model needs (also compared client-side, §4.4), for every compiled-in
-`hardcoded_hf` entry in `_HARDCODED_LOCAL_MODELS`. `gpu_tip` and `mac_tip`
+number the model needs (also compared client-side, §4.4), for every catalog
+(`hardcoded_hf`) entry, shipped or user (§4.0). `gpu_tip` and `mac_tip`
 are both rough estimates off the same underlying total-memory figure —
 weight size (`size_hint`) plus an approximated KV-cache footprint at 128K
 context (scaled from each model family's known/assumed architecture: layer
@@ -957,13 +959,13 @@ Four entry kinds:
 
 | kind | added via | installed-state rule | install/uninstall? |
 |---|---|---|---|
-| `hardcoded_hf` | compiled-in (`_HARDCODED_LOCAL_MODELS`) | installed per `LocalModelManager` state | yes |
+| `hardcoded_hf` | a catalog file — shipped, or in `~/.kodo/local_llms/` (§4.0) | installed per `LocalModelManager` state | yes |
 | `custom_hf` | "Add local LLM from huggingface.com" | same as `hardcoded_hf` | yes |
 | `custom_file` | "Add local LLM from file" | file exists at `entry.path` | no — see below |
 | `custom_server_url` | "Add a link to local llama-server" | always installed | no |
 
 `kodo/llms/local_registry/` owns `get_local_registry(kodo_dir)`, which
-merges the compiled-in tuple with the external collection persisted at
+merges the catalog (§4.0) with the external collection persisted at
 `~/.kodo/etc/local-llm-registry.json`:
 
 ```json
@@ -1050,6 +1052,98 @@ This is implemented in `LlamaPlugin.__ensure_running` (`kodo/llms/llamacpp/_llam
 and mirrored in `_app.py`'s `local_llm.start` handler for the explicit
 `llama.start` command path.
 
+### 4.0 The catalog — one JSON file per entry, shipped and user
+
+Every `hardcoded_hf` entry is a JSON file, laid out as
+`<root>/<base_llm>/<name>.json` under one of two roots:
+
+| root | where | loaded | an invalid file |
+|---|---|---|---|
+| shipped | `kodo/llms/local_registry/catalog/` (`BUILTIN_CATALOG_DIR`) | once, at import, into `_catalog._HARDCODED_LOCAL_MODELS` | fails the import — kodo does not start |
+| user | `~/.kodo/local_llms/` (`user_catalog_dir(kodo_dir)`) | on **every** `get_local_registry` call, so an edit shows up on the next `registry_state` push with no restart | skipped with a warning (logged once per distinct problem); suspends the startup purge (§4.1b) |
+
+```
+~/.kodo/local_llms/
+  Qwen38-27B/                              <- base_llm
+    unsloth-qwen38-27b-ud-q4-k-xl.json     <- name (the file stem)
+  My-Family/
+    my-model.json                          <- a model kodo does not ship
+```
+
+**The path is the identity.** The directory name is the entry's `base_llm`
+and the file stem is its `name`; neither may appear inside the file (a file
+that carries `name` or `base_llm` is rejected — two sources of truth would
+eventually disagree). `kind` is implied: every catalog file is a
+`hardcoded_hf` entry, whichever root it came from, so the wire shape and
+kodo-vsix's install/download handling do not depend on the root. The
+`custom_*` kinds stay in `local-llm-registry.json` and have nothing to do with
+this format.
+
+**A user file replaces the shipped entry of the same name — whole.** There is
+no field-level merge: copy the shipped file into the same relative path under
+`~/.kodo/local_llms/` and edit it. Deleting the user file brings the shipped
+entry back. A user file with a name kodo does not ship adds a model.
+
+The file body (format owned by `_catalog_files.py`):
+
+```json
+{
+  "description": "Qwen 3.8 27B UD-Q4_K_XL by Unsloth",
+  "repo_id": "unsloth/Qwen3.8-27B-GGUF",
+  "filename": "Qwen3.8-27B-UD-Q4_K_XL.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q4_K_XL",
+  "size_hint": "17.9 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+  "gpu_tip": "~27GB total at 128K context. ...",
+  "mac_tip": "Needs ~27GB — fits a 32GB MacBook Pro (M4 or M5) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 10433,
+  "min_memory": 32,
+  "memory": 32,
+  "mtp_supported": true,
+  "knobs": ["kv-cache", "tail-culling", "temperature", "gpu-layers", "cpu-moe",
+            "nucleus-sampling", "context-qwen35", "spec-decoding-mtp"],
+  "knob_defaults": {}
+}
+```
+
+- `repo_id`, `filename` and `knobs` are required; every other key is optional
+  and defaults to the `LocalLLMEntry` field's own default (§4). Unknown keys
+  are an error, so a typo (`"descripton"`) is reported instead of silently
+  leaving the field at its default. Integers must be non-negative.
+- `knobs` lists knob **ids**, resolved through `_knobs_table.KNOBS_BY_ID`.
+  Knobs stay code (§4.6): a file chooses which ones its entry offers but can
+  neither define a knob nor change what one does, which is also what keeps
+  the wire's id-deduplicated knob table (`knob_defs`) lossless.
+- `base_llama_args` (optional, usually absent) is layered **over**
+  `BASE_LLAMA_ARGS`, the same rule `custom_*` entries follow, so an entry
+  cannot lose `--jinja` by forgetting to repeat it.
+- Each file must pass the same per-entry checks the shipped catalog always
+  had (`validate_catalog_entry`): a legal knob set (§4.6), `mtp_supported`
+  agreeing with the `spec-decoding-mtp` knob, and every `knob_defaults` key
+  naming an offered knob with a real option (§4.6a).
+- Two files with the same stem in different directories define one name
+  twice; neither is loaded. A `.json` directly under the root (outside any
+  `<base_llm>/`) is reported, not loaded. Hidden files and non-`.json` files
+  are ignored, which is what lets a family keep a `README.md` beside its
+  entries — the shipped families use one for everything the JSON cannot say
+  (which GGUF header keys were verified, why a knob is or is not offered,
+  upstream PRs being waited on).
+
+**Display order is derived**, never stored: catalog entries are sorted by
+`base_llm` (case-insensitive A-Z), then by `size_hint` descending (an
+unparseable hint sorts last), then by name (`catalog_sort_key`); `custom_*`
+entries follow in the order they were added. kodo-vsix renders — and groups
+by `base_llm` — in exactly the order the server sends, so a user-only family
+slots in alphabetically among the shipped ones.
+
+**Adding a shipped model** is adding its file under `catalog/<base_llm>/` (and
+the family's `README.md` for a new family). A new private knob is defined in
+its own `_knobs_<family>.py` and registered in `_knobs_table._ALL_KNOBS`.
+
 ### 4.1 Install / pause / resume / uninstall
 
 All four are fire-and-forget: the handler replies immediately with
@@ -1123,9 +1217,11 @@ why uninstall+reinstall instead of an in-place overwrite) is in
 
 ### 4.1b Retiring a model — the startup purge
 
-A `hardcoded_hf` entry is compiled in, so a kodo release can rename or drop
+A shipped catalog entry ships with kodo, so a kodo release can rename or drop
 one (e.g. the Ornith 1.0 builds moved from `deepreinforce-ornith10-*` to
-`ornith-ai-ornith10-*` when the publisher changed). Nothing about that reaches
+`ornith-ai-ornith10-*` when the publisher changed). Renaming or deleting a
+user catalog file (§4.0) does the same thing by hand: the old name becomes
+unknown, and the next start purges its settings **and its downloaded GGUF**. Nothing about that reaches
 the user's disk on its own, and everything keyed by the old `entry.name`
 survives the upgrade with no UI left to reach it:
 
@@ -1145,7 +1241,7 @@ manager's model ids against `get_local_registry`, then uninstalls every id
 that came back. "Known" is the **merged** registry — a `custom_*` entry the
 user added is as safe as a shipped one.
 
-Two deliberate exemptions:
+Three deliberate exemptions:
 
 - **`keep`** — the model of an already-adopted, still-running llama-server.
   Its GGUF is open, and Windows refuses to delete an open file; the next
@@ -1156,6 +1252,12 @@ Two deliberate exemptions:
   entry would look unknown, taking the user's own models and downloads with
   it. `prune_unknown_model_state` checks this first and then does nothing at
   all, purging neither settings nor files.
+- **A user catalog file that failed to load** (§4.0) — that file may be the
+  only definition of a model the user has downloaded, so a typo would
+  otherwise cost them the GGUF. While `~/.kodo/local_llms/` holds any file
+  that does not load (invalid JSON or shape, a name defined twice, a `.json`
+  outside a model directory), `prune_unknown_model_state` likewise does
+  nothing at all.
 
 The mirror image of this — code-vs-code rather than code-vs-disk — is the
 import-time check in `_catalog._validate_catalog()`, which fails the process
@@ -1481,10 +1583,12 @@ working, just with the thinking control gone. Nothing at runtime can tell
 that apart from a model that legitimately has no family (`MuseGlimmer-30B`,
 `Qwen3-Coder-Next-80B`, every `custom_*` entry), so
 `_catalog._validate_catalog()` checks it at **import time** instead: every
-slug named in `_thinking.py` must belong to some entry in
-`_HARDCODED_LOCAL_MODELS`, or kodo fails to start with the stale slug named.
-Renaming a model family therefore means editing `_thinking.py` in the same
-commit. (The disk-side counterpart — the user's stored settings and downloads
+slug named in `_thinking.py` must belong to some **shipped** catalog entry
+(`_HARDCODED_LOCAL_MODELS`), or kodo fails to start with the stale slug named.
+Renaming a model family (its `catalog/<base_llm>/` directory) therefore means
+editing `_thinking.py` in the same commit. User catalog files are not held to
+this check; a user-only family whose `base_llm` no table names simply has no
+thinking tiers. (The disk-side counterpart — the user's stored settings and downloads
 for that old name — is the startup purge, §4.1b.)
 
 The **current selection** is **not** a settings.json key — unlike
@@ -1675,11 +1779,9 @@ The shared knobs — offered by every launchable entry, `_knobs_shared.py`:
 | `nucleus-sampling` | dropdown, advanced | `off` (default), `top-p 1.00` .. `top-p 0.80` in steps of `0.05` | `--top-k`, `--top-p` |
 
 `kv-cache` is what replaced the `make_default_kv_q8` / `make_default_kv_fp16`
-pair of predefined flavors: an F16/BF16 GGUF now just declares
-`knob_defaults=KV_CACHE_F16_DEFAULT` (§4.6a), a shared constant
-(`_knobs_shared.py`) rather than a hand-typed `{"kv-cache": "f16"}` literal,
-so every unquantized-weight entry stays in sync with the knob's own `f16`
-option id. `q4_0` is the more aggressive quantized option below `q8_0`, for
+pair of predefined flavors: an F16/BF16 GGUF's catalog file now just
+declares `"knob_defaults": {"kv-cache": "f16"}` (§4.6a); `validate_catalog_entry`
+rejects the file if that ever stops naming one of the knob's real options. `q4_0` is the more aggressive quantized option below `q8_0`, for
 when context length is the binding constraint and `q8_0` alone doesn't leave
 enough headroom.
 
@@ -1707,8 +1809,11 @@ what kodo *ships*, not what a user may do — a penalty is still reachable on a
 user-defined profile and as a per-session override, since hiding it in one of
 the two editors while offering it in the other would be arbitrary.
 
-**Private per-model knobs.** Anything needing model knowledge is built by the
-family module instead of being shared. The two Qwen ones are the YaRN
+**Private per-model knobs.** Anything needing model knowledge is a private
+knob, defined in its own `_knobs_<family>.py` module (`_knobs_qwen.py`,
+`_knobs_laguna.py`, `_knobs_mtp.py`) and registered by id in
+`_knobs_table.KNOBS_BY_ID`, which is the only way a catalog file can name it
+(§4.0). The two Qwen ones are the YaRN
 long-context knobs built by `_knobs_context.make_yarn_context_knob`, which
 need the model's architecture key and native context length:
 
@@ -1728,7 +1833,7 @@ Every Unsloth Laguna-S-2.1 GGUF ships with YaRN scaling already baked into its
 own metadata, defaulting to 256K (rope-scale 32 over the model's real 8K
 training context) with no launch args at all — unlike Qwen, this model never
 runs at its unscaled native length, so there is no "native" option to offer.
-`context-laguna` (hand-built in `_local_llm_laguna_s_21.py`) instead offers
+`context-laguna` (hand-built in `_knobs_laguna.py`) instead offers
 `256k` (default, no args — relies on the GGUF's own baked-in scaling) / `512k`
 / `1m`, where the latter two write the same explicit YaRN args as the Qwen
 knobs, computed off the real native context of 8192.
@@ -1953,26 +2058,25 @@ nothing and pressing Apply never interrupts a window mid-generation.
 
 ### 4.6a Per-entry knob defaults (`knob_defaults`)
 
-An entry may override a knob's own default state:
+An entry may override a knob's own default state, in its catalog file
+(`catalog/GPT-OSS-120B/unsloth-gpt-oss-120b-f16.json`):
 
-```python
-LocalLLMEntry(
-    name="unsloth-gpt-oss-120b-f16",
-    knob_defaults=KV_CACHE_F16_DEFAULT,
-    ...
-)
+```json
+{
+  "knob_defaults": {"kv-cache": "f16"},
+  ...
+}
 ```
 
 This is how one entry starts from a different position than the shared knob's
 own default, and it is what replaced the `make_default_kv_fp16` predefined
-flavor. `_validate_catalog` checks at import time that every `knob_defaults`
-key names a knob the entry actually offers and that its value is a real
-option.
+flavor. `validate_catalog_entry` checks — at import for a shipped file, on
+load for a user one — that every `knob_defaults` key names a knob the entry
+actually offers and that its value is a real option.
 
-`KV_CACHE_F16_DEFAULT` (`_knobs_shared.py`, `{"kv-cache": "f16"}`) is the one
-existing convention use of this mechanism: every hardcoded entry whose
-`quant_type` is `"F16"`/`"BF16"` (unquantized weights) sets
-`knob_defaults=KV_CACHE_F16_DEFAULT` so the KV cache defaults to full
+`{"kv-cache": "f16"}` is the one existing convention use of this mechanism:
+every catalog entry whose `quant_type` is `"F16"`/`"BF16"` (unquantized
+weights) sets it so the KV cache defaults to full
 precision there instead of the knob's own `q8_0` default — a quantized-only
 cache would otherwise be the least precise thing in an unquantized-weight
 pipeline. As of this writing that's the `gpt-oss-120b`/`gpt-oss-20b` F16

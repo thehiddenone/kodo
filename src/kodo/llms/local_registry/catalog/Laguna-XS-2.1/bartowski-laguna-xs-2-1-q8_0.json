@@ -1,0 +1,27 @@
+{
+  "description": "Laguna-XS-2.1 Q8_0 by bartowski",
+  "repo_id": "bartowski/Laguna-XS-2.1-GGUF",
+  "filename": "Laguna-XS-2.1-Q8_0.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q8_0",
+  "size_hint": "35.6 GB",
+  "llm_author": "Poolside",
+  "license_name": "OpenMDW-1.1",
+  "license_url": "https://openmdw.ai/license/1-1/",
+  "gpu_tip": "~43GB total at 128K context. A 16GB GPU (e.g. RTX 4060 Ti 16GB) plus a 48GB DDR5 kit covers it — llama.cpp's MoE offloading keeps this close to full-GPU speed without needing the BF16 build's memory footprint.",
+  "mac_tip": "Needs ~43GB — fits a 48GB MacBook Pro comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 10087,
+  "min_memory": 48,
+  "memory": 48,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {}
+}

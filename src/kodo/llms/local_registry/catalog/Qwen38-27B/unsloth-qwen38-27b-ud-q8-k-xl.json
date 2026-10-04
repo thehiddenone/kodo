@@ -1,0 +1,29 @@
+{
+  "description": "Qwen 3.8 27B UD-Q8_K_XL by Unsloth",
+  "repo_id": "unsloth/Qwen3.8-27B-GGUF",
+  "filename": "Qwen3.8-27B-UD-Q8_K_XL.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q8_K_XL",
+  "size_hint": "31.5 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
+  "gpu_tip": "~41GB total at 128K context. Qwen3.8's hybrid Gated DeltaNet architecture puts a real KV cache on just 16 of its 64 layers, so an 8GB GPU (e.g. RTX 4060 Ti) plus ~48GB of ordinary DDR5 system RAM covers the rest via llama.cpp's per-layer offloading.",
+  "mac_tip": "Needs ~41GB — fits a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 10433,
+  "min_memory": 48,
+  "memory": 48,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {}
+}

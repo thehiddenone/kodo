@@ -1,0 +1,29 @@
+{
+  "description": "Muse Glimmer 30B BF16 by Unsloth",
+  "repo_id": "unsloth/Muse-Glimmer-30B-GGUF",
+  "filename": "BF16/Muse-Glimmer-30B-BF16-00001-of-00002.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "BF16",
+  "size_hint": "55.7 GB",
+  "llm_author": "Meta",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~59GB total, even at the full 131K context — Muse Glimmer only runs full attention on 1 in 4 layers (the rest use a 2048-token sliding window) and has just 2 KV heads, so the cache barely grows with context; the total is close to the BF16 file size plus a small margin. A 16GB GPU (e.g. RTX 4080) plus a 48GB DDR5 kit covers it, with llama.cpp offloading the remaining layers to system RAM.",
+  "mac_tip": "Needs ~59GB — comfortable on a 96GB M4 Max/M5 Max; a 64GB config is tight.",
+  "context_window": 131072,
+  "llamacpp_version": 10549,
+  "min_memory": 64,
+  "memory": 96,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {
+    "kv-cache": "f16"
+  }
+}

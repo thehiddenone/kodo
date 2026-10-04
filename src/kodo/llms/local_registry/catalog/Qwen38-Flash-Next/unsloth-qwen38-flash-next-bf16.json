@@ -1,0 +1,30 @@
+{
+  "description": "Qwen 3.8 Flash Next BF16 by Unsloth",
+  "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+  "filename": "BF16/Qwen3.8-Flash-Next-BF16-00001-of-00008.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "BF16",
+  "size_hint": "354 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Qwen Community License 1.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE",
+  "gpu_tip": "~360GB total at 128K context — the unquantized build, and far beyond any single machine most people own. The hybrid design means context adds barely 6GB on top of the weights; the weights are the entire problem. Realistically this is a multi-GPU server or a 384GB+ workstation, not a desktop with an offload strategy.",
+  "mac_tip": "Needs ~360GB — beyond every MacBook Pro and beyond a 192GB Mac Studio; only a 512GB M3 Ultra Mac Studio can hold it.",
+  "context_window": 262144,
+  "llamacpp_version": 10829,
+  "min_memory": 384,
+  "memory": 384,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen4exp"
+  ],
+  "knob_defaults": {
+    "kv-cache": "f16"
+  }
+}

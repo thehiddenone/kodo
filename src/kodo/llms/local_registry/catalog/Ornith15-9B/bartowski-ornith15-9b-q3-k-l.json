@@ -1,0 +1,28 @@
+{
+  "description": "Ornith 1.5 9B Q3_K_L by bartowski",
+  "repo_id": "bartowski/Ornith-1.5-9B-GGUF",
+  "filename": "Ornith-1.5-9B-Q3_K_L.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q3_K_L",
+  "size_hint": "5.11 GB",
+  "llm_author": "Ornith AI",
+  "license_name": "MIT License",
+  "license_url": "https://opensource.org/license/mit",
+  "gpu_tip": "~9GB total at 128K context. Lower quality than the Q4 rung but usable, and it fits an 8GB GPU (e.g. RTX 4060) with only a little spilling to system RAM.",
+  "mac_tip": "Needs ~9GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 10472,
+  "min_memory": 12,
+  "memory": 12,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35"
+  ],
+  "knob_defaults": {}
+}

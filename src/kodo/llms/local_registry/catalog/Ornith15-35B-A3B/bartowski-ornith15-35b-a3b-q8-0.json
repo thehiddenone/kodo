@@ -1,0 +1,29 @@
+{
+  "description": "Ornith 1.5 35B A3B Q8_0 by bartowski",
+  "repo_id": "bartowski/Ornith-1.5-35B-A3B-GGUF",
+  "filename": "Ornith-1.5-35B-A3B-Q8_0.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q8_0",
+  "size_hint": "37.8 GB",
+  "llm_author": "Ornith AI",
+  "license_name": "MIT License",
+  "license_url": "https://opensource.org/license/mit",
+  "gpu_tip": "~55GB total at 128K context, and the only rung whose MTP draft layers are not themselves quantized to Q4_0. A 16GB GPU (e.g. RTX 4060 Ti 16GB) plus ~48GB of DDR5 system RAM covers it via llama.cpp's MoE offloading — no need for the BF16 build's 128GB ask.",
+  "mac_tip": "Needs ~55GB — tight on a 64GB MacBook Pro; a 128GB M4 Max or M5 Max is the safe choice.",
+  "context_window": 262144,
+  "llamacpp_version": 10472,
+  "min_memory": 64,
+  "memory": 96,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35moe",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {}
+}

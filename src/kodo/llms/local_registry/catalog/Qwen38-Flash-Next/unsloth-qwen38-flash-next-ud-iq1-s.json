@@ -1,0 +1,28 @@
+{
+  "description": "Qwen 3.8 Flash Next UD-IQ1_S by Unsloth",
+  "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+  "filename": "UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-IQ1_S",
+  "size_hint": "72.5 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Qwen Community License 1.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE",
+  "gpu_tip": "~78GB total at 128K context — the smallest Qwen3.8-Flash-Next build, and still a 125B model. An 8GB GPU (e.g. RTX 3060 Ti) plus a 96GB DDR5 kit runs it via llama.cpp's MoE expert offloading.",
+  "mac_tip": "Needs ~78GB — fits a 96GB MacBook Pro (M4 Max or M5 Max) comfortably; a 64GB configuration is not enough.",
+  "context_window": 262144,
+  "llamacpp_version": 10829,
+  "min_memory": 96,
+  "memory": 96,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen4exp"
+  ],
+  "knob_defaults": {}
+}

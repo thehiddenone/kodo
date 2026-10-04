@@ -1,0 +1,27 @@
+{
+  "description": "Nvidia Nemotron 3.5 30B A3B IQ4_NL by bartowski",
+  "repo_id": "bartowski/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+  "filename": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-IQ4_NL.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "IQ4_NL",
+  "size_hint": "18.9 GB",
+  "llm_author": "Nvidia Corporation",
+  "license_name": "OpenMDW-1.1",
+  "license_url": "https://openmdw.ai/license/1-1/",
+  "gpu_tip": "~20GB total. An 8GB GPU (e.g. RX 7600) plus a 24GB DDR5 kit covers it comfortably.",
+  "mac_tip": "Needs ~20GB — fits a 24GB MacBook Pro; a 32GB config is safer.",
+  "context_window": 262144,
+  "llamacpp_version": 10362,
+  "min_memory": 24,
+  "memory": 24,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {}
+}

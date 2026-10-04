@@ -1,0 +1,29 @@
+{
+  "description": "Nvidia Nemotron 3.5 30B A3B BF16 by bartowski",
+  "repo_id": "bartowski/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+  "filename": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-bf16/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-bf16-00001-of-00002.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "BF16",
+  "size_hint": "65.9 GB",
+  "llm_author": "Nvidia Corporation",
+  "license_name": "OpenMDW-1.1",
+  "license_url": "https://openmdw.ai/license/1-1/",
+  "gpu_tip": "~68GB total, even at the full 262K context — Nemotron 3.5 is a hybrid Mamba/MoE architecture (only 6 of 52 layers are full attention, with just 2 KV heads), so unlike a dense model this size KV cache barely grows with context; the total is essentially the BF16 file size plus a small state-space margin. A 16GB GPU (e.g. RTX 4080) plus a 64GB DDR5 kit covers it, with llama.cpp offloading the inactive routed experts to system RAM.",
+  "mac_tip": "Needs ~68GB — comfortable on a 96GB M4 Max/M5 Max.",
+  "context_window": 262144,
+  "llamacpp_version": 10362,
+  "min_memory": 96,
+  "memory": 96,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {
+    "kv-cache": "f16"
+  }
+}

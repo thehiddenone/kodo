@@ -1,0 +1,28 @@
+{
+  "description": "Qwen 3.8 Flash Next UD-Q5_K_XL by Unsloth",
+  "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+  "filename": "UD-Q5_K_XL/Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q5_K_XL",
+  "size_hint": "158 GB",
+  "llm_author": "Alibaba Cloud",
+  "license_name": "Qwen Community License 1.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE",
+  "gpu_tip": "~164GB total at 128K context. A 16GB GPU (e.g. RTX 4080) keeps the always-on layers fast, with llama.cpp's MoE offloading spreading the experts across a 192GB DDR5 kit.",
+  "mac_tip": "Needs ~164GB — exceeds every MacBook Pro; a Mac Studio (M3 Ultra with 192GB+ unified memory) is required.",
+  "context_window": 262144,
+  "llamacpp_version": 10829,
+  "min_memory": 192,
+  "memory": 192,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen4exp"
+  ],
+  "knob_defaults": {}
+}

@@ -1,0 +1,27 @@
+{
+  "description": "GPT OSS 20B UD-Q8_K_XL by Unsloth",
+  "repo_id": "unsloth/gpt-oss-20b-GGUF",
+  "filename": "gpt-oss-20b-UD-Q8_K_XL.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-Q8_K_XL",
+  "size_hint": "13.2 GB",
+  "llm_author": "OpenAI",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://huggingface.co/openai/gpt-oss-20b/blob/main/LICENSE",
+  "gpu_tip": "~16GB total at 128K context. An 8GB GPU (e.g. RTX 4060) plus a 16GB DDR5 kit is all this needs — MoE offloading makes the 8GB card feel roomier than the raw total suggests.",
+  "mac_tip": "Needs ~16GB — fits a 24GB MacBook Pro comfortably; a 16GB M5 is tight.",
+  "context_window": 131072,
+  "llamacpp_version": 6098,
+  "min_memory": 16,
+  "memory": 24,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {}
+}
