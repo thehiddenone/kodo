@@ -1816,6 +1816,17 @@ manager calls rather than a new atomic code path — and so replies with
 reflecting the now-uninstalled entry, once more when the fresh download
 settles.
 
+A family that ships standalone MTP heads (doc/LLM_REGISTRY.md §4.0a) adds
+**one more** background download after a successful `local_llm.install`,
+`.resume` or `.update`: every head the family lists that is not downloaded yet,
+started once the quant itself is installed and settled with its own
+`local_llm.registry_state` push (and, on failure, its own `error` with code
+`local_llm_error`, message `Download of 'MTP heads for <base_llm>' failed: …`
+— the quant stays installed). `local_llm.set_knobs` picking a head that is not
+on disk, for an installed entry, starts the same download. `local_llm.uninstall`
+and `.remove` delete the family's heads when no other quant of the family has a
+download record; nothing on the wire names a head.
+
 ```json
 { "type": "llamacpp.install" }       // install the llama.cpp binary (always latest)
 { "type": "llamacpp.update" }        // uninstall + install the latest build
@@ -1877,6 +1888,8 @@ the *local registry entry* name in all five, never a profile's own name/id.
   "knobs": { "kv-cache": "q8_0", "tail-culling": "medium", "temperature": "default",
              "gpu-layers": "-1", "cpu-moe": "", "nucleus-sampling": "off",
              "context-qwen35": "512k" } }
+{ "type": "local_llm.set_knobs", "name": "unsloth-qwen38-flash-next-ud-q4-k-xl",
+  "knobs": { "spec-decoding-mtp-head:Qwen38-Flash-Next": "q8_0" } }  // MTP head picker (LLM_REGISTRY.md §4.0a); a real client sends every knob
 ```
 
 `add_profile`/`update_profile`'s `llama_args_text` is the **raw multi-line

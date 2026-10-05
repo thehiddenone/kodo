@@ -983,6 +983,104 @@ async def test_local_llm_update_uninstalls_then_reinstalls(
     assert Path(completed_entry["installed_path"]) == Path("/fake/model.gguf")
 
 
+class _FakeDownloads:
+    """Stands in for LocalModelManager's download state: a set of finished model ids.
+
+    Every manager method the local_llm.* handlers and the MTP head helpers go
+    through is patched to read or write this set, so a handler's whole effect
+    on downloads is observable as which ids end up in it.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, downloaded: set[str]) -> None:
+        from kodo.llms.local import LocalModelManager, ModelRecord
+
+        self.downloaded = downloaded
+
+        async def _download(_self: object, model_id: str, *a: object, **k: object) -> None:
+            downloaded.add(model_id)
+
+        def _record(model_id: str) -> ModelRecord:
+            return ModelRecord(model_id=model_id, repo_id="r", revision="main", commit_hash=None)
+
+        monkeypatch.setattr(LocalModelManager, "download_model", _download)
+        monkeypatch.setattr(
+            LocalModelManager,
+            "get_model_path",
+            lambda _self, name: Path(f"/fake/{name}.gguf") if name in downloaded else None,
+        )
+        monkeypatch.setattr(
+            LocalModelManager, "uninstall", lambda _self, name: downloaded.discard(name)
+        )
+        monkeypatch.setattr(
+            LocalModelManager, "list_models", lambda _self: [_record(i) for i in downloaded]
+        )
+
+
+def _entry_with_mtp_heads() -> tuple[str, list[str], str, str]:
+    """A shipped entry whose family ships MTP heads: its name, the heads' download
+    ids, the head picker's knob id and one head's option id — read off the live
+    catalog."""
+    from kodo.llms import get_local_registry, get_mtp_sidecars, mtp_sidecar_model_id
+    from kodo.project import kodo_user_dir
+
+    kodo_dir = kodo_user_dir()
+    entry = next(
+        e for e in get_local_registry(kodo_dir).values() if get_mtp_sidecars(kodo_dir, e.base_llm)
+    )
+    heads = [
+        mtp_sidecar_model_id(entry.base_llm, h.id)
+        for h in get_mtp_sidecars(kodo_dir, entry.base_llm)
+    ]
+    picker = next(k.id for k in entry.knobs if k.id.startswith("spec-decoding-mtp-head:"))
+    return entry.name, heads, picker, get_mtp_sidecars(kodo_dir, entry.base_llm)[0].id
+
+
+async def test_local_llm_install_also_downloads_the_familys_mtp_heads(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name, heads, _, _ = _entry_with_mtp_heads()
+    fake = _FakeDownloads(monkeypatch, set())
+
+    req = _make_request("local_llm.install", name=name)
+    await ws.send_str(req.to_json())
+    await _recv_with_drain(ws)  # kickoff
+    await _recv_with_drain(ws)  # the quant finished
+    heads_done = await _recv_with_drain(ws)  # the heads finished
+
+    assert heads_done.payload["type"] == "local_llm.registry_state"
+    assert fake.downloaded == {name, *heads}
+
+
+async def test_local_llm_uninstall_of_the_last_quant_also_deletes_its_mtp_heads(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name, heads, _, _ = _entry_with_mtp_heads()
+    fake = _FakeDownloads(monkeypatch, {name, *heads})
+
+    req = _make_request("local_llm.uninstall", name=name)
+    await ws.send_str(req.to_json())
+    state = await _recv_with_drain(ws)
+
+    assert state.payload["type"] == "local_llm.registry_state"
+    assert fake.downloaded == set()
+
+
+async def test_picking_a_missing_mtp_head_downloads_the_familys_heads(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model installed before its family had heads gets them once one is picked."""
+    name, heads, picker, head_id = _entry_with_mtp_heads()
+    fake = _FakeDownloads(monkeypatch, {name})
+
+    req = _make_request("local_llm.set_knobs", name=name, knobs={picker: head_id})
+    await ws.send_str(req.to_json())
+    await _recv_with_drain(ws)  # the knob change itself
+    heads_done = await _recv_with_drain(ws)
+
+    assert heads_done.payload["type"] == "local_llm.registry_state"
+    assert fake.downloaded == {name, *heads}
+
+
 async def test_local_llm_update_rejects_unknown_model(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:

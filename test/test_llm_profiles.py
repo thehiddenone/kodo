@@ -96,7 +96,8 @@ def _fake_hardcoded_registry(monkeypatch: pytest.MonkeyPatch) -> None:
 
     One entry with two toy knobs, plus one that overrides a knob's default via
     ``knob_defaults`` — enough to exercise every code path without depending
-    on which real models happen to ship which knobs today.
+    on which real models happen to ship which knobs today. The shipped MTP
+    head lists go too: they belong to families the toy catalog doesn't have.
     """
     with_default = LocalLLMEntry(
         name="fake-model-preset",
@@ -109,6 +110,7 @@ def _fake_hardcoded_registry(monkeypatch: pytest.MonkeyPatch) -> None:
         knob_defaults={"test-mode": "fast"},
     )
     monkeypatch.setattr(_catalog, "_HARDCODED_LOCAL_MODELS", (_BASE_ENTRY, with_default))
+    monkeypatch.setattr(_catalog, "_BUILTIN_MTP_SIDECARS", {})
 
 
 def _entry(kodo_dir: Path, name: str = "fake-model") -> LocalLLMEntry:

@@ -25,6 +25,7 @@ import pytest
 from kodo.llms.local_registry import (
     BASE_LLAMA_ARGS,
     BUILTIN_CATALOG_DIR,
+    MTP_SIDECARS_FILENAME,
     SHARED_KNOBS,
     LocalLLMEntry,
     add_local_entry,
@@ -36,8 +37,13 @@ from kodo.llms.local_registry import (
     user_catalog_dir,
 )
 
-#: Every shipped catalog file, one test parameter each.
-_SHIPPED_FILES: tuple[Path, ...] = tuple(sorted(BUILTIN_CATALOG_DIR.glob("*/*.json")))
+#: Every shipped catalog entry file, one test parameter each. A family's
+#: ``mtp_sidecars.json`` sits beside them but is not an entry.
+_SHIPPED_FILES: tuple[Path, ...] = tuple(
+    sorted(
+        path for path in BUILTIN_CATALOG_DIR.glob("*/*.json") if path.name != MTP_SIDECARS_FILENAME
+    )
+)
 
 #: One shipped file to use wherever any valid entry will do.
 _SAMPLE_FILE = _SHIPPED_FILES[0]

@@ -11,6 +11,7 @@ shard deduction, mmproj linkage, uninstall — runs for real through
 from __future__ import annotations
 
 import http.server
+import json
 import re
 import threading
 import time
@@ -19,12 +20,20 @@ from pathlib import Path
 
 import pytest
 
-from kodo.llms.llamacpp import get_local_model_manager, purge_unknown_local_models
+from kodo.llms.llamacpp import (
+    download_mtp_sidecars,
+    get_local_model_manager,
+    missing_mtp_sidecars,
+    prune_mtp_sidecars,
+    purge_unknown_local_models,
+    resolve_llama_launch,
+)
 from kodo.llms.local import (
     DownloadError,
     DownloadProgress,
     FileRole,
     FileStatus,
+    LocalModelError,
     LocalModelManager,
     ModelFile,
     ModelNotFoundError,
@@ -33,7 +42,18 @@ from kodo.llms.local import (
     ShardResolutionError,
 )
 from kodo.llms.local._state import save_state
-from kodo.llms.local_registry import LocalLLMEntry, _catalog, add_local_entry
+from kodo.llms.local_registry import (
+    MTP_DRAFT_MODEL_FLAG,
+    MTP_SIDECARS_FILENAME,
+    LocalLLMEntry,
+    _catalog,
+    add_local_entry,
+    get_local_registry,
+    mtp_sidecar_model_id,
+    set_knobs,
+    set_llama_server_override_path,
+    user_catalog_dir,
+)
 
 # ---------------------------------------------------------------------------
 # A minimal HTTP server with real Range/206 support, standing in for HF's CDN.
@@ -677,3 +697,198 @@ async def test_purge_leaves_a_custom_entrys_download_alone(
 
 async def test_purge_is_a_no_op_when_nothing_was_ever_downloaded(kodo_dir: Path) -> None:
     assert purge_unknown_local_models(kodo_dir) == ()
+
+
+# ---------------------------------------------------------------------------
+# MTP sidecar heads: downloaded beside a family's quants, kept while any quant
+# of the family is, handed to llama-server at launch. Here (not in
+# test_mtp_sidecars.py) for the real HTTP download fixture.
+# ---------------------------------------------------------------------------
+
+_FAMILY = "Fam-1B"
+_QUANTS = {"fam-1b-q4": "q4.gguf", "fam-1b-q8": "q8.gguf"}
+#: Two heads; the Q8_0 one needs a newer llama.cpp than the fake install below.
+_HEADS = {
+    "bf16": {"repo_id": "org/repo", "filename": "MTP/head-bf16.gguf", "quant_type": "BF16"},
+    "q8_0": {
+        "repo_id": "org/repo",
+        "filename": "MTP/head-q8.gguf",
+        "quant_type": "Q8_0",
+        "llamacpp_version": 200,
+    },
+}
+_INSTALLED_BUILD = 100
+
+
+@pytest.fixture
+def head_family(
+    kodo_dir: Path, http_server: str, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, LocalLLMEntry]:
+    """A user-catalog family with two quants and two heads, all served over HTTP."""
+    family_dir = user_catalog_dir(kodo_dir) / _FAMILY
+    family_dir.mkdir(parents=True)
+    for name, filename in _QUANTS.items():
+        body = {"repo_id": "org/repo", "filename": filename, "knobs": []}
+        (family_dir / f"{name}.json").write_text(json.dumps(body), encoding="utf-8")
+    (family_dir / MTP_SIDECARS_FILENAME).write_text(json.dumps(_HEADS), encoding="utf-8")
+    files = [*_QUANTS.values(), *(head["filename"] for head in _HEADS.values())]
+    _patch_hf(monkeypatch, http_server, {str(f): _payload(64) for f in files})
+    registry = get_local_registry(kodo_dir)
+    return {name: registry[name] for name in _QUANTS}
+
+
+def _head_ids() -> list[str]:
+    return [mtp_sidecar_model_id(_FAMILY, head_id) for head_id in _HEADS]
+
+
+async def _install_quant_with_heads(kodo_dir: Path, entry: LocalLLMEntry) -> None:
+    await get_local_model_manager(kodo_dir).download_model(
+        entry.name, entry.repo_id, entry.filename
+    )
+    await download_mtp_sidecars(entry, kodo_dir)
+
+
+def _installed_heads(kodo_dir: Path) -> list[str]:
+    manager = get_local_model_manager(kodo_dir)
+    return [h for h in _head_ids() if manager.get_model_path(h) is not None]
+
+
+async def test_downloading_heads_fetches_every_head_of_the_family(
+    kodo_dir: Path, head_family: dict[str, LocalLLMEntry]
+) -> None:
+    entry = head_family["fam-1b-q4"]
+    assert missing_mtp_sidecars(entry, kodo_dir) == ("bf16", "q8_0")
+
+    await _install_quant_with_heads(kodo_dir, entry)
+
+    assert _installed_heads(kodo_dir) == _head_ids()
+    assert missing_mtp_sidecars(entry, kodo_dir) == ()
+    # Shared, not per quant: the other quant of the family needs nothing more.
+    assert missing_mtp_sidecars(head_family["fam-1b-q8"], kodo_dir) == ()
+
+
+async def test_a_failed_head_download_names_the_head_and_spares_the_rest(
+    kodo_dir: Path, head_family: dict[str, LocalLLMEntry]
+) -> None:
+    # HF metadata still lists the head; the CDN no longer serves it.
+    _RangeHandler.payloads = {
+        name: body for name, body in _RangeHandler.payloads.items() if name != "MTP/head-bf16.gguf"
+    }
+    entry = head_family["fam-1b-q4"]
+
+    with pytest.raises(LocalModelError, match="BF16 MTP head"):
+        await _install_quant_with_heads(kodo_dir, entry)
+
+    assert missing_mtp_sidecars(entry, kodo_dir) == ("bf16",)
+
+
+async def test_heads_stay_until_the_last_quant_of_the_family_is_uninstalled(
+    kodo_dir: Path, head_family: dict[str, LocalLLMEntry]
+) -> None:
+    manager = get_local_model_manager(kodo_dir)
+    for entry in head_family.values():
+        await _install_quant_with_heads(kodo_dir, entry)
+
+    manager.uninstall("fam-1b-q4")
+    assert prune_mtp_sidecars(kodo_dir) == ()
+    assert _installed_heads(kodo_dir) == _head_ids()
+
+    manager.uninstall("fam-1b-q8")
+    assert prune_mtp_sidecars(kodo_dir) == tuple(sorted(_head_ids()))
+    assert _installed_heads(kodo_dir) == []
+    assert all(manager.get_record(h) is None for h in _head_ids())
+
+
+async def test_purge_takes_the_heads_of_a_family_whose_last_quant_it_purged(
+    kodo_dir: Path, head_family: dict[str, LocalLLMEntry]
+) -> None:
+    await _install_quant_with_heads(kodo_dir, head_family["fam-1b-q4"])
+    (user_catalog_dir(kodo_dir) / _FAMILY / "fam-1b-q4.json").unlink()
+
+    assert purge_unknown_local_models(kodo_dir) == ("fam-1b-q4", *sorted(_head_ids()))
+
+    assert _installed_heads(kodo_dir) == []
+
+
+async def test_purge_never_mistakes_a_needed_head_for_an_unknown_model(
+    kodo_dir: Path, head_family: dict[str, LocalLLMEntry]
+) -> None:
+    await _install_quant_with_heads(kodo_dir, head_family["fam-1b-q4"])
+
+    assert purge_unknown_local_models(kodo_dir) == ()
+
+    assert _installed_heads(kodo_dir) == _head_ids()
+
+
+def _fake_llama_install(kodo_dir: Path, build: int) -> None:
+    executable = kodo_dir / "llama.cpp" / f"b{build}" / "llama-server"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    meta = {"build": build, "executable": str(executable), "urls": {"binary": "https://x"}}
+    (kodo_dir / "llama.cpp" / "llama-meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+def _pick_head(kodo_dir: Path, entry: LocalLLMEntry, head_id: str) -> None:
+    picker = next(k for k in entry.knobs if k.id.startswith("spec-decoding-mtp-head:"))
+    set_knobs(kodo_dir, entry.name, {picker.id: head_id})
+
+
+async def test_launch_points_the_draft_model_at_the_downloaded_head(
+    kodo_dir: Path, head_family: dict[str, LocalLLMEntry]
+) -> None:
+    entry = head_family["fam-1b-q8"]
+    await _install_quant_with_heads(kodo_dir, entry)
+    _fake_llama_install(kodo_dir, _INSTALLED_BUILD)
+    _pick_head(kodo_dir, entry, "bf16")
+
+    args = resolve_llama_launch(entry, kodo_dir).llama_args
+
+    head_path = get_local_model_manager(kodo_dir).get_model_path(_head_ids()[0])
+    assert head_path is not None and head_path.is_file()
+    assert args[MTP_DRAFT_MODEL_FLAG] == str(head_path)
+    assert args["--spec-type"] == "draft-mtp"
+
+
+async def test_launch_drops_mtp_when_the_head_is_not_downloaded(
+    kodo_dir: Path, head_family: dict[str, LocalLLMEntry]
+) -> None:
+    entry = head_family["fam-1b-q8"]
+    _fake_llama_install(kodo_dir, _INSTALLED_BUILD)
+    _pick_head(kodo_dir, entry, "bf16")
+
+    args = resolve_llama_launch(entry, kodo_dir).llama_args
+
+    assert MTP_DRAFT_MODEL_FLAG not in args
+    assert "--spec-type" not in args
+
+
+async def test_launch_drops_mtp_when_llama_cpp_is_older_than_the_head_needs(
+    kodo_dir: Path, head_family: dict[str, LocalLLMEntry]
+) -> None:
+    entry = head_family["fam-1b-q8"]
+    await _install_quant_with_heads(kodo_dir, entry)
+    _fake_llama_install(kodo_dir, _INSTALLED_BUILD)
+    assert int(_HEADS["q8_0"]["llamacpp_version"]) > _INSTALLED_BUILD  # type: ignore[call-overload]
+    _pick_head(kodo_dir, entry, "q8_0")
+
+    args = resolve_llama_launch(entry, kodo_dir).llama_args
+
+    assert MTP_DRAFT_MODEL_FLAG not in args
+    assert "--spec-type" not in args
+
+
+async def test_launch_trusts_a_binary_override_whose_build_is_unknown(
+    kodo_dir: Path, head_family: dict[str, LocalLLMEntry]
+) -> None:
+    entry = head_family["fam-1b-q8"]
+    await _install_quant_with_heads(kodo_dir, entry)
+    _fake_llama_install(kodo_dir, _INSTALLED_BUILD)
+    override = kodo_dir / "my-llama-server"
+    override.write_text("#!/bin/sh\n", encoding="utf-8")
+    set_llama_server_override_path(kodo_dir, str(override))
+    _pick_head(kodo_dir, entry, "q8_0")
+
+    args = resolve_llama_launch(entry, kodo_dir).llama_args
+
+    head_path = get_local_model_manager(kodo_dir).get_model_path(_head_ids()[1])
+    assert args[MTP_DRAFT_MODEL_FLAG] == str(head_path)

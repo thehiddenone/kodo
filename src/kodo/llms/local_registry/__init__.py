@@ -59,12 +59,17 @@ Submodules:
         base args every Default profile starts from.
     ``_knobs_context`` — factory for the private per-model YaRN long-context
         knob (needs the model's architecture key and native context length).
-    ``_knobs_qwen`` / ``_knobs_laguna`` / ``_knobs_mtp`` — the private
-        per-family knobs.
+    ``_knobs_qwen`` / ``_knobs_laguna`` — the private per-family knobs.
+    ``_knobs_mtp`` — the built-in MTP checkbox, and the per-family MTP head
+        picker built from a family's ``mtp_sidecars.json``.
+    ``_mtp_sidecars`` — the ``mtp_sidecars.json`` format: a family's
+        standalone MTP draft heads, shared by all of its quants, and the
+        download-record ids they are stored under.
     ``_knobs_table`` — ``KNOBS_BY_ID``, every knob a catalog file may name.
     ``_catalog_files`` — the catalog-entry JSON format: parse, serialize,
-        scan a ``<base_llm>/<name>.json`` tree, per-entry validation, and
-        the display-order sort key.
+        scan a ``<base_llm>/<name>.json`` tree (and its ``mtp_sidecars.json``
+        files), per-entry validation, attaching the MTP head picker, and the
+        display-order sort key.
     ``_catalog`` — loads ``_HARDCODED_LOCAL_MODELS`` from the shipped
         ``catalog/`` directory (validated at import time) and the user
         catalog from ``~/.kodo/local_llms/`` (validated per call, invalid
@@ -85,9 +90,11 @@ from ._entries import (
     clear_llama_server_override_path,
     get_llama_server_override_path,
     get_local_registry,
+    get_mtp_sidecars,
     prune_unknown_model_state,
     remove_local_entry,
     set_llama_server_override_path,
+    stale_mtp_sidecar_model_ids,
 )
 from ._io import parse_llama_args, parse_llama_args_text
 from ._knobs import (
@@ -100,12 +107,15 @@ from ._knobs import (
     validate_knobs,
 )
 from ._knobs_context import make_yarn_context_knob
+from ._knobs_mtp import MTP_DRAFT_MODEL_FLAG
 from ._knobs_shared import BASE_LLAMA_ARGS, SHARED_KNOBS
+from ._mtp_sidecars import MTP_SIDECARS_FILENAME, MtpSidecar, mtp_sidecar_model_id
 from ._profiles import (
     add_profile,
     get_active_profile,
     get_knob_selections,
     get_profiles,
+    get_selected_mtp_sidecar,
     remove_profile,
     resolve_context_window,
     resolve_default_profile_args,
@@ -133,6 +143,8 @@ __all__ = [
     "BASE_LLAMA_ARGS",
     "BUILTIN_CATALOG_DIR",
     "GPT_OSS_REASONING_EFFORT_FAMILY",
+    "MTP_DRAFT_MODEL_FLAG",
+    "MTP_SIDECARS_FILENAME",
     "QWEN4EXP_REASONING_EFFORT_FAMILY",
     "QWEN_REASONING_BUDGET_FAMILY",
     "QWEN_TIER_TOKEN_BUDGETS",
@@ -146,6 +158,7 @@ __all__ = [
     "LlamaKnob",
     "LlmProfile",
     "LocalLLMEntry",
+    "MtpSidecar",
     "add_local_entry",
     "add_profile",
     "clear_llama_server_override_path",
@@ -153,13 +166,16 @@ __all__ = [
     "get_knob_selections",
     "get_llama_server_override_path",
     "get_local_registry",
+    "get_mtp_sidecars",
     "get_profiles",
+    "get_selected_mtp_sidecar",
     "knob_owned_flags",
     "knob_selection_args",
     "local_thinking_default_tier",
     "local_thinking_family",
     "local_thinking_tiers",
     "make_yarn_context_knob",
+    "mtp_sidecar_model_id",
     "parse_llama_args",
     "parse_llama_args_text",
     "prune_unknown_model_state",
@@ -172,6 +188,7 @@ __all__ = [
     "set_active_profile",
     "set_knobs",
     "set_llama_server_override_path",
+    "stale_mtp_sidecar_model_ids",
     "strip_reserved_llama_args",
     "update_profile",
     "user_catalog_dir",

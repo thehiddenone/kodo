@@ -892,7 +892,7 @@ class LocalLLMEntry:
     min_memory: int = 0     # hardcoded_hf only — absolute minimum combined VRAM+RAM (GB); 0 = unknown
     memory: int = 0         # hardcoded_hf only — recommended combined VRAM+RAM (GB); 0 = unknown
     llamacpp_version: int = 0  # hardcoded_hf only in practice — minimum llama.cpp build number; 0 = any version works
-    mtp_supported: bool = False  # hardcoded_hf only — this GGUF is verified to carry Multi-Token Prediction layers, see §4.6
+    mtp_supported: bool = False  # hardcoded_hf only — this GGUF is verified to carry Multi-Token Prediction layers, see §4.6 (standalone heads: §4.0a)
 ```
 
 `base_llm`/`llm_author`/`license_name`/`license_url`/`quant_author`/`quant_type`/`size_hint`/`gpu_tip`/`mac_tip`/
@@ -1123,8 +1123,11 @@ The file body (format owned by `_catalog_files.py`):
   cannot lose `--jinja` by forgetting to repeat it.
 - Each file must pass the same per-entry checks the shipped catalog always
   had (`validate_catalog_entry`): a legal knob set (§4.6), `mtp_supported`
-  agreeing with the `spec-decoding-mtp` knob, and every `knob_defaults` key
-  naming an offered knob with a real option (§4.6a).
+  agreeing with the knobs that offer the built-in MTP layers (§4.6), and every
+  `knob_defaults` key naming an offered knob with a real option (§4.6a).
+- The stem `mtp_sidecars` is reserved: `<base_llm>/mtp_sidecars.json` is the
+  family's list of standalone MTP heads, never an entry (§4.0a). An entry
+  name may also not start with `mtp-head:` (the head downloads' id prefix).
 - Two files with the same stem in different directories define one name
   twice; neither is loaded. A `.json` directly under the root (outside any
   `<base_llm>/`) is reported, not loaded. Hidden files and non-`.json` files
@@ -1143,6 +1146,134 @@ slots in alphabetically among the shipped ones.
 **Adding a shipped model** is adding its file under `catalog/<base_llm>/` (and
 the family's `README.md` for a new family). A new private knob is defined in
 its own `_knobs_<family>.py` and registered in `_knobs_table._ALL_KNOBS`.
+
+### 4.0a MTP sidecar heads — `mtp_sidecars.json`
+
+Some quant repos ship a model's Multi-Token Prediction head as its **own
+small GGUF** — unsloth puts them in an `MTP/` subfolder — instead of, or as
+well as, baking the layers into every quant. llama.cpp drafts with one via
+`--model-draft <head> --spec-type draft-mtp`. A head is quantized
+independently of the model it drafts for, so **any quant of a model works
+with any of that model's heads** (llama.cpp rejects a head built for another
+model outright), and a head's precision need not match the running quant's.
+
+A family offers its heads in one optional file beside its entries,
+`<root>/<base_llm>/mtp_sidecars.json` (format owned by `_mtp_sidecars.py`),
+mapping a stable head id to its download coordinates:
+
+```json
+{
+  "q8_0": {
+    "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+    "filename": "MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf",
+    "quant_type": "Q8_0",
+    "size_hint": "4.14 GB",
+    "llamacpp_version": 11330
+  }
+}
+```
+
+- `repo_id`, `filename`, `quant_type` are required; `size_hint` and
+  `llamacpp_version` (the oldest build that loads this head, `0` = any) are
+  optional; unknown keys are an error. The head id is a lowercase slug, never
+  `off`/`builtin` (the knob's own option ids). It is persisted twice — as the
+  user's knob selection and inside the head's download-record id — so treat
+  it as an identifier: renaming one orphans both.
+- `quant_type` must name a readable bit width (`BF16`, `F32`, `Q8_0`,
+  `UD-Q4_K_XL`, `IQ2_XXS`, `MXFP4`, …): heads are listed **most precise
+  first** by it, ties by quant type then id.
+- Only **self-contained** heads belong here — ones carrying their own
+  `token_embd`/`output` tensors. unsloth's `shared-*` heads
+  (`<arch>.nextn_shared_target_tensors`) borrow those from the running model,
+  which mainline llama.cpp cannot do; they only load on unsloth's fork.
+- Same two roots and the same rules as entry files (§4.0): shipped files load
+  at import into `_catalog._BUILTIN_MTP_SIDECARS` (invalid = kodo does not
+  start; a shipped list in a directory with no shipped entry also fails the
+  import); a user file **replaces** the shipped list for its family, is read
+  on every registry call, and if invalid is skipped with a warning — leaving
+  the shipped heads in effect — and suspends the startup purge (§4.1b). An
+  **empty object** in the user catalog switches a family's shipped heads off.
+  A user directory may hold *only* this file, to give a shipped family heads.
+
+**The head picker.** Every entry of a family with heads gets one dropdown in
+place of the built-in checkbox (§4.6 *Knobs*; `attach_mtp_sidecars`, applied
+in `get_local_registry`, so no entry file names it):
+
+| option | when offered | flags |
+|---|---|---|
+| `off` (default) | always | — |
+| `builtin` | the entry's own GGUF has MTP layers (`mtp_supported`) | `--spec-type draft-mtp` |
+| one per head, most precise first | always | `--spec-type draft-mtp --model-draft <head file name>` |
+
+Its id is `spec-decoding-mtp-head:<base_llm>`, plus `:builtin` when it offers
+that option: the options depend on the family's data, and the wire
+deduplicates knob definitions by id, so one id must always mean one
+definition. It takes the checkbox's position in `knobs` (appended when the
+entry has none). A stored `spec-decoding-mtp: on` is read as `builtin` until
+the next `local_llm.set_knobs` rewrites the selection, so a family gaining
+heads does not silently switch off MTP a user had turned on.
+`--model-draft` (not the newer `--spec-draft-model` spelling) because every
+llama.cpp build accepts it.
+
+**Launch** (`kodo.llms.llamacpp.resolve_llama_launch`). The option carries the
+head's bare file name; `get_selected_mtp_sidecar` names the head the Default
+profile selects (never under a user-defined profile, whose args are used
+verbatim), and the launch swaps in the downloaded head's absolute path, read
+with `LocalModelManager.peek_model_path` (so `kodo-llama-server` resolves it
+too). When the head is **not downloaded**, or the installed llama.cpp build is
+**older than its `llamacpp_version`**, the model launches **without**
+`--spec-type`/`--model-draft` and a warning is logged — the entry's own
+`llamacpp_version` is untouched, so nobody is told to upgrade llama.cpp for a
+feature they have not switched on. A binary override (§4.2) has an unknown
+build and is not version-checked.
+
+**Downloads and their lifetime.** Each head is downloaded through the same
+`LocalModelManager` as quants, as a record of its own keyed
+`mtp-head:<base_llm>:<head id>` (`mtp_sidecar_model_id`) — once per family,
+shared by every quant, never copied into a quant's directory:
+
+- `local_llm.install`/`.resume`/`.update` — once the quant itself is
+  installed, the server starts a **separate** background download of every
+  head the family lists that is not downloaded yet
+  (`download_mtp_sidecars`). The quant never waits for its heads, and a head
+  that fails is reported as its own `local_llm_error`
+  (`Download of 'MTP heads for <base_llm>' failed: …`) while the quant stays
+  installed. A per-family in-flight guard keeps two quants finishing together
+  from writing one head's `.part` file twice.
+- `local_llm.set_knobs` — picking a head that is not on disk (a quant
+  installed before its family had heads, or a failed head download) starts
+  the same download for an installed entry.
+- `local_llm.uninstall`/`.remove` — then `prune_mtp_sidecars`: heads are kept
+  while **any** quant of their family has a download record, finished or not,
+  and deleted with the last one. A head its family no longer lists is deleted
+  too. `local_llm.update` deliberately does not prune between its uninstall
+  and reinstall.
+- The startup purge (§4.1b) never counts a head record as an unknown model;
+  after purging unknown models it runs the same head pruning, so a family
+  whose last quant was just purged loses its heads in the same pass.
+
+The keep/delete judgment is `stale_mtp_sidecar_model_ids`
+(`local_registry/_entries.py`); it stands down under the same two conditions
+as the model purge (unparseable registry file, any broken user catalog file).
+No state beyond the records themselves is stored: "a quant of this family
+has a record" is derived on each call.
+
+As of 2026-10-04 two shipped families have heads (verified by reading each
+file's GGUF header, not the model card):
+
+| family | heads | built-in layers too | needs |
+|---|---|---|---|
+| `Qwen38-27B` | `q4_0` (1.37 GB) | yes — picker offers `builtin` | b11330 |
+| `Qwen38-Flash-Next` | `bf16` (7.77 GB), `q8_0` (4.14 GB), `q4_k_m` (2.79 GB) | no (48 blocks, no `nextn_predict_layers`) | b11330 |
+
+b11330 is the first llama.cpp release containing ggml-org/llama.cpp#29761
+(merged 2026-10-01), which added `qwen4exp`'s MTP graph **and** fixed the
+draft loader opening the *target* model's path instead of the `-md` file —
+so it is the floor for both families' heads. unsloth measured the BF16
+Flash-Next head as bigger *and slower* than Q8_0 with near-identical
+acceptance (66.5% vs 66.1%); it is still listed first because the list is
+ordered by precision, not by speed. The other MTP families (Ornith15-35B-A3B,
+Qwen35-9B, Qwen36-*) publish no standalone heads and keep the checkbox.
 
 ### 4.1 Install / pause / resume / uninstall
 
@@ -1163,7 +1294,9 @@ background transfer actually finishes (success or failure), so the
   entry.repo_id, entry.filename)` on a worker thread, keyed by `entry.name`.
   Full design, including *why* this no longer goes through
   `huggingface_hub.hf_hub_download` for the byte transfer, in
-  [LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md).
+  [LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md). Once the quant is
+  installed, its family's MTP heads follow as a separate background download
+  (§4.0a); so do resume and update.
 - **Resume** (`local_llm.resume {name}`) — fires `resume_download(name)` for
   a model that already has a download record (paused, failed, or left
   `DOWNLOADING` by a server restart — see the reconciliation note below).
@@ -1174,7 +1307,9 @@ background transfer actually finishes (success or failure), so the
   simply deletes the model's own subdirectory — downloads no longer go
   through HF's shared dedup blob cache at all, so there's no cache-eviction
   step any more. A no-op if not installed. Also the "cancel a download"
-  action — pauses first, then deletes the partial files.
+  action — pauses first, then deletes the partial files. Then deletes the
+  family's MTP heads if no other quant of the family has a download record
+  (§4.0a).
 - **Remove** (`local_llm.remove {name}`) — deregisters a custom entry from
   `local-llm-registry.json`; if it has *any* download record (finished or
   partial — checked via `get_record`, not just "fully installed"), uninstalls
@@ -1213,7 +1348,8 @@ the same `download_model` path `install` uses — i.e. exactly "click
 Uninstall, wait, click Install," reusing those two existing manager calls
 rather than a new atomic re-fetch. Full design (why ETag, why fire-and-forget,
 why uninstall+reinstall instead of an in-place overwrite) is in
-[LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md) §12.
+[LOCAL_MODEL_MANAGER.md](LOCAL_MODEL_MANAGER.md) §12. The family's MTP heads
+are not pruned between the two steps (§4.0a) and are not ETag-checked.
 
 ### 4.1b Retiring a model — the startup purge
 
@@ -1239,7 +1375,10 @@ the one layer that sees both sides: it asks
 (`kodo/llms/local_registry/`) to drop the stored settings and to judge the
 manager's model ids against `get_local_registry`, then uninstalls every id
 that came back. "Known" is the **merged** registry — a `custom_*` entry the
-user added is as safe as a shipped one.
+user added is as safe as a shipped one. MTP head records (`mtp-head:…`) are
+never judged as models; after the model purge, `prune_mtp_sidecars` drops
+every head no quant of its family needs any more (§4.0a), and those ids are
+appended to the purge's return value.
 
 Three deliberate exemptions:
 
@@ -1256,7 +1395,8 @@ Three deliberate exemptions:
   only definition of a model the user has downloaded, so a typo would
   otherwise cost them the GGUF. While `~/.kodo/local_llms/` holds any file
   that does not load (invalid JSON or shape, a name defined twice, a `.json`
-  outside a model directory), `prune_unknown_model_state` likewise does
+  outside a model directory, an invalid `mtp_sidecars.json`),
+  `prune_unknown_model_state` — and the MTP head pruning — likewise do
   nothing at all.
 
 The mirror image of this — code-vs-code rather than code-vs-disk — is the
@@ -1843,7 +1983,11 @@ across every family that has it, `spec-decoding-mtp`
 (`MTP_SPEC_DECODE_KNOB`, defined once in `_knobs_mtp.py`) — unlike the YaRN
 context knobs it needs no per-architecture `--override-kv` target, since
 `--spec-type draft-mtp` is the same flag regardless of GGUF architecture, so
-a single knob object is reused rather than one per family.
+a single knob object is reused rather than one per family. A family that
+ships **standalone MTP heads** (`mtp_sidecars.json`) gets a per-family head
+picker dropdown *instead* on every entry — `off`, `builtin` (only where this
+checkbox would have been offered) and one option per head; both write
+`--spec-type`, so they can never sit on one entry together. See §4.0a.
 
 | knob id | kind | options | flags |
 |---------|------|---------|-------|
@@ -1860,7 +2004,9 @@ Whether an entry offers this knob is controlled by its own
 `mtp_supported: bool` field (`LocalLLMEntry`, §4), which `_validate_catalog()`
 enforces can never disagree with whether the knob is actually in that
 entry's `knobs` tuple — one drifting from the other fails at import, not at
-launch. `mtp_supported` is set **per verified GGUF, never inferred from a
+launch. (With a head picker attached, the same check reads "offers the
+`builtin` option" — `offers_builtin_mtp` — and runs on every shipped entry
+both as its file declares it and as served.) `mtp_supported` is set **per verified GGUF, never inferred from a
 repo's `-MTP-GGUF` name or the model family**: a repo can be branded MTP and
 still have had the layers stripped by its own quantization pipeline (true of
 `AlexAtomic/qwen36-27b-GGUF`, whose GGUF header has no
@@ -1877,10 +2023,10 @@ and the four `unsloth/Qwen3.6-27B-MTP-GGUF`-backed Qwen36-27B entries (not
 its `atomicchat-qwen36-27b-q8` sibling). Everything else in the catalog
 stays at the field's default `False`, including entries that look like
 plausible candidates: Ornith15-9B and Ornith10-9B/-35B-A3B (no MTP tensors
-in the underlying weights, or unverifiable), and Qwen38-Flash-Next (the
-GGUF does carry an `MTP/` NextN head, but llama.cpp's draft-head support for
-its `qwen4exp` architecture is an open upstream PR, so kodo launches no
-`--spec-type` regardless of data availability).
+in the underlying weights, or unverifiable), and Qwen38-Flash-Next (its quant
+GGUFs have no `nextn_predict_layers` — the head ships only as the repo's
+`MTP/` standalone files, which since 2026-10-04 reach it through the head
+picker, §4.0a).
 
 **Which context knob an Ornith entry takes is decided by the GGUF's
 architecture key, not by the family name** — the 35B-A3B and 9B builds of
@@ -2016,9 +2162,9 @@ Every `hello.ack`/`local_llm.registry_state` payload carries, per entry:
 plus, once per payload rather than per entry:
 
 - `knob_defs: {knob_id: {...}}` — every knob definition any entry offers,
-  **deduplicated by id** (`_knob_defs_payload`). All 82 built-ins share the
-  same six knobs and only the context knobs plus Ornith 1.5 35B-A3B's MTP
-  knob are per-family, so repeating
+  **deduplicated by id** (`_knob_defs_payload`). All built-ins share the
+  same six knobs and only the context knobs, the MTP checkbox and the
+  per-family MTP head pickers (§4.0a) vary, so repeating
   each definition (five options, each with a paragraph of help text) on every
   entry would dominate the payload. `_validate_catalog` guarantees two entries
   never disagree about what one id means, so the flattening is lossless.

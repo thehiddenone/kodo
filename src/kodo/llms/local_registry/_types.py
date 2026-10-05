@@ -236,7 +236,11 @@ class LocalLLMEntry:
             time by
             :func:`~kodo.llms.local_registry._catalog._validate_catalog`, so
             the flag can never silently drift from what's actually wired.
-            ``hardcoded_hf`` only — always ``False`` for every other kind.
+            As served, a family with standalone MTP heads
+            (:mod:`._mtp_sidecars`) has that checkbox replaced by a head
+            picker, which offers a *Built-in* option exactly when this is
+            ``True``. ``hardcoded_hf`` only — always ``False`` for every
+            other kind.
     """
 
     name: str

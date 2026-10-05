@@ -33,26 +33,47 @@ plain copies of the dataclass field:
 
 Unknown keys are an error rather than ignored, so a typo (``"descripton"``)
 fails loudly instead of silently leaving the field at its default.
+
+One file name is reserved: ``<root>/<base_llm>/mtp_sidecars.json`` is not an
+entry but the family's list of standalone MTP heads (format:
+:mod:`._mtp_sidecars`), read by :func:`scan_mtp_sidecars`. A family with heads
+gets the head-picker knob on every entry (:func:`attach_mtp_sidecars`)
+without any entry file naming it.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 
-from ._knobs import validate_knobs
-from ._knobs_mtp import MTP_SPEC_DECODE_KNOB
+from ._knobs import LlamaKnob, validate_knobs
+from ._knobs_mtp import (
+    MTP_BUILTIN_OPTION_ID,
+    MTP_SPEC_DECODE_KNOB,
+    is_mtp_head_knob,
+    make_mtp_head_knob,
+)
 from ._knobs_shared import BASE_LLAMA_ARGS
 from ._knobs_table import KNOBS_BY_ID
+from ._mtp_sidecars import (
+    MTP_SIDECAR_MODEL_ID_PREFIX,
+    MTP_SIDECARS_FILENAME,
+    MtpSidecar,
+    load_mtp_sidecars_file,
+)
 from ._types import LocalLLMEntry
 
 __all__ = [
     "CATALOG_ENTRY_KIND",
+    "attach_mtp_sidecars",
     "catalog_sort_key",
     "entry_to_catalog_json",
     "load_catalog_file",
+    "offers_builtin_mtp",
     "scan_catalog_dir",
+    "scan_mtp_sidecars",
     "validate_catalog_entry",
 ]
 
@@ -116,6 +137,11 @@ def _entry_from_catalog_json(raw: object, *, base_llm: str, name: str) -> LocalL
     """
     if not isinstance(raw, dict):
         raise ValueError("the file must contain a JSON object")
+    if name.startswith(MTP_SIDECAR_MODEL_ID_PREFIX):
+        raise ValueError(
+            f"an entry name may not start with {MTP_SIDECAR_MODEL_ID_PREFIX!r} — "
+            "that prefix is reserved for MTP head downloads"
+        )
     derived = sorted(_PATH_DERIVED_KEYS & raw.keys())
     if derived:
         raise ValueError(
@@ -211,14 +237,29 @@ def entry_to_catalog_json(entry: LocalLLMEntry) -> dict[str, object]:
     return body
 
 
+def offers_builtin_mtp(knobs: tuple[LlamaKnob, ...]) -> bool:
+    """Whether *knobs* let the user draft with the GGUF's own MTP layers.
+
+    Either the built-in checkbox (:data:`~._knobs_mtp.MTP_SPEC_DECODE_KNOB`)
+    or a head picker with a *Built-in* option
+    (:func:`~._knobs_mtp.make_mtp_head_knob`).
+    """
+    return any(
+        knob.id == MTP_SPEC_DECODE_KNOB.id
+        or (is_mtp_head_knob(knob) and knob.option(MTP_BUILTIN_OPTION_ID) is not None)
+        for knob in knobs
+    )
+
+
 def validate_catalog_entry(entry: LocalLLMEntry) -> None:
     """Per-entry knob checks every catalog entry must pass, shipped or user.
 
     1. Its knob set is legal (:func:`~._knobs.validate_knobs`): no two knobs
        own the same llama-server flag, and each knob is coherent.
-    2. ``mtp_supported`` agrees with whether it lists
-       :data:`~._knobs_mtp.MTP_SPEC_DECODE_KNOB` — without this the boolean
-       could drift from what is actually wired.
+    2. ``mtp_supported`` agrees with whether its knobs offer the built-in MTP
+       layers (:func:`offers_builtin_mtp`) — without this the boolean could
+       drift from what is actually wired. Holds both for an entry as its file
+       declares it and after :func:`attach_mtp_sidecars`.
     3. Every ``knob_defaults`` key names a knob the entry offers, and every
        value is one of that knob's options.
 
@@ -226,7 +267,7 @@ def validate_catalog_entry(entry: LocalLLMEntry) -> None:
         ValueError: On the first failed check.
     """
     validate_knobs(entry.knobs, context=entry.name)
-    has_mtp_knob = any(knob.id == MTP_SPEC_DECODE_KNOB.id for knob in entry.knobs)
+    has_mtp_knob = offers_builtin_mtp(entry.knobs)
     if entry.mtp_supported != has_mtp_knob:
         raise ValueError(
             f"{entry.name}: mtp_supported={entry.mtp_supported!r} but "
@@ -245,6 +286,39 @@ def validate_catalog_entry(entry: LocalLLMEntry) -> None:
                 f"{entry.name}: knob_defaults sets {knob_id!r} to {selection!r}, "
                 "which is not one of its options"
             )
+
+
+def attach_mtp_sidecars(entry: LocalLLMEntry, sidecars: tuple[MtpSidecar, ...]) -> LocalLLMEntry:
+    """*entry* with its family's head picker in place of the built-in MTP checkbox.
+
+    The picker (:func:`~._knobs_mtp.make_mtp_head_knob`) takes the checkbox's
+    position in ``knobs`` when the entry lists it, and is appended otherwise —
+    an entry whose own GGUF has no MTP layers still drafts with a head. A
+    ``knob_defaults`` value for the checkbox carries over (``"on"`` becomes
+    the *Built-in* option).
+
+    Args:
+        entry: A catalog entry as its file declares it.
+        sidecars: Its family's heads, in display order. Empty leaves *entry*
+            unchanged.
+
+    Returns:
+        LocalLLMEntry: The entry to serve.
+    """
+    if not sidecars:
+        return entry
+    picker = make_mtp_head_knob(entry.base_llm, sidecars, builtin=entry.mtp_supported)
+    knobs = list(entry.knobs)
+    position = next((i for i, knob in enumerate(knobs) if knob.id == MTP_SPEC_DECODE_KNOB.id), None)
+    if position is None:
+        knobs.append(picker)
+    else:
+        knobs[position] = picker
+    defaults = dict(entry.knob_defaults)
+    checkbox_default = defaults.pop(MTP_SPEC_DECODE_KNOB.id, None)
+    if checkbox_default == "on" and entry.mtp_supported:
+        defaults[picker.id] = MTP_BUILTIN_OPTION_ID
+    return replace(entry, knobs=tuple(knobs), knob_defaults=defaults)
 
 
 def load_catalog_file(path: Path) -> LocalLLMEntry:
@@ -275,7 +349,8 @@ def scan_catalog_dir(root: Path) -> tuple[list[LocalLLMEntry], list[str]]:
     """Load every ``<root>/<base_llm>/<name>.json`` file under *root*.
 
     Hidden files and directories (a leading ``.``) and non-``.json`` files are
-    skipped, so a family's ``README.md`` can sit beside its entries. A
+    skipped, so a family's ``README.md`` can sit beside its entries — and so
+    is ``mtp_sidecars.json``, which :func:`scan_mtp_sidecars` reads. A
     ``.json`` directly under *root*, outside any ``<base_llm>/`` directory,
     is reported as an error rather than skipped silently — it was almost
     certainly meant to be an entry.
@@ -316,7 +391,12 @@ def scan_catalog_dir(root: Path) -> tuple[list[LocalLLMEntry], list[str]]:
             errors.append(f"{model_dir}: cannot list: {exc}")
             continue
         for path in files:
-            if path.name.startswith(".") or path.suffix != ".json" or not path.is_file():
+            if (
+                path.name.startswith(".")
+                or path.suffix != ".json"
+                or path.name == MTP_SIDECARS_FILENAME
+                or not path.is_file()
+            ):
                 continue
             try:
                 entry = load_catalog_file(path)
@@ -332,6 +412,37 @@ def scan_catalog_dir(root: Path) -> tuple[list[LocalLLMEntry], list[str]]:
             continue
         entries.append(sources[0][1])
     return entries, errors
+
+
+def scan_mtp_sidecars(root: Path) -> tuple[dict[str, tuple[MtpSidecar, ...]], list[str]]:
+    """Load every ``<root>/<base_llm>/mtp_sidecars.json`` under *root*.
+
+    Args:
+        root: The catalog root. A missing directory has no heads.
+
+    Returns:
+        tuple[dict[str, tuple[MtpSidecar, ...]], list[str]]: ``{base_llm:
+        heads}`` for every file that loaded — including an empty tuple for an
+        empty file, which is how a user file switches a shipped family's heads
+        off — and one human-readable message per file that did not.
+    """
+    if not root.is_dir():
+        return {}, []
+    try:
+        model_dirs = sorted(root.iterdir())
+    except OSError as exc:
+        return {}, [f"{root}: cannot list: {exc}"]
+    found: dict[str, tuple[MtpSidecar, ...]] = {}
+    errors: list[str] = []
+    for model_dir in model_dirs:
+        path = model_dir / MTP_SIDECARS_FILENAME
+        if model_dir.name.startswith(".") or not path.is_file():
+            continue
+        try:
+            found[model_dir.name] = load_mtp_sidecars_file(path)
+        except ValueError as exc:
+            errors.append(f"{path}: {exc}")
+    return found, errors
 
 
 def _size_gb(size_hint: str) -> float:

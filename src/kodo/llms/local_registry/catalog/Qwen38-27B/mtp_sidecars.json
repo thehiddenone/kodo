@@ -1,0 +1,9 @@
+{
+  "q4_0": {
+    "repo_id": "unsloth/Qwen3.8-27B-GGUF",
+    "filename": "MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
+    "quant_type": "Q4_0",
+    "size_hint": "1.37 GB",
+    "llamacpp_version": 11330
+  }
+}

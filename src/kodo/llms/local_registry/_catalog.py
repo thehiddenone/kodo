@@ -21,6 +21,12 @@ under one of two roots:
 
 Each family's private knobs stay in code (:mod:`._knobs_table`); files name
 them by id.
+
+A family directory may also hold ``mtp_sidecars.json`` — its standalone MTP
+heads (:mod:`._mtp_sidecars`). Shipped ones load at import into
+:data:`_BUILTIN_MTP_SIDECARS`, with the same hard failure; a user file
+replaces the shipped one for its family (:func:`mtp_sidecars_by_family`), and
+a user directory may hold *only* that file, to give a shipped family heads.
 """
 
 from __future__ import annotations
@@ -28,7 +34,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ._catalog_files import catalog_sort_key, scan_catalog_dir, validate_catalog_entry
+from ._catalog_files import (
+    attach_mtp_sidecars,
+    catalog_sort_key,
+    scan_catalog_dir,
+    scan_mtp_sidecars,
+    validate_catalog_entry,
+)
+from ._mtp_sidecars import MTP_SIDECARS_FILENAME, MtpSidecar
 from ._thinking import (
     GPT_OSS_REASONING_EFFORT_FAMILY,
     QWEN4EXP_REASONING_EFFORT_FAMILY,
@@ -40,6 +53,8 @@ from ._types import LocalLLMEntry
 __all__ = [
     "BUILTIN_CATALOG_DIR",
     "load_user_catalog",
+    "load_user_mtp_sidecars",
+    "mtp_sidecars_by_family",
     "user_catalog_dir",
 ]
 
@@ -79,6 +94,23 @@ def _load_builtin_catalog() -> tuple[LocalLLMEntry, ...]:
 
 _HARDCODED_LOCAL_MODELS: tuple[LocalLLMEntry, ...] = _load_builtin_catalog()
 
+
+def _load_builtin_mtp_sidecars() -> dict[str, tuple[MtpSidecar, ...]]:
+    """Every shipped family's heads, ``{base_llm: heads}``.
+
+    Raises:
+        ValueError: If any shipped ``mtp_sidecars.json`` fails to load.
+    """
+    found, errors = scan_mtp_sidecars(BUILTIN_CATALOG_DIR)
+    if errors:
+        raise ValueError("The shipped MTP sidecar lists are invalid:\n" + "\n".join(errors))
+    return found
+
+
+#: Shipped heads per family. Like :data:`_HARDCODED_LOCAL_MODELS`, a module
+#: attribute tests may monkeypatch.
+_BUILTIN_MTP_SIDECARS: dict[str, tuple[MtpSidecar, ...]] = _load_builtin_mtp_sidecars()
+
 #: User-catalog problems already logged, so a broken file is reported once per
 #: process rather than on every registry push.
 _reported_user_catalog_errors: set[str] = set()
@@ -97,11 +129,46 @@ def load_user_catalog(kodo_dir: Path) -> tuple[list[LocalLLMEntry], list[str]]:
         down — see there.
     """
     entries, errors = scan_catalog_dir(user_catalog_dir(kodo_dir))
+    _report_user_catalog_errors(errors)
+    return entries, errors
+
+
+def _report_user_catalog_errors(errors: list[str]) -> None:
     for message in errors:
         if message not in _reported_user_catalog_errors:
             _reported_user_catalog_errors.add(message)
             _log.warning("Skipping user local-LLM catalog file: %s", message)
-    return entries, errors
+
+
+def load_user_mtp_sidecars(kodo_dir: Path) -> tuple[dict[str, tuple[MtpSidecar, ...]], list[str]]:
+    """Every valid ``mtp_sidecars.json`` under :func:`user_catalog_dir`, plus what failed.
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+
+    Returns:
+        tuple[dict[str, tuple[MtpSidecar, ...]], list[str]]: ``{base_llm:
+        heads}`` and one message per file that was skipped. A skipped file
+        leaves the shipped heads of its family in effect, and — like a broken
+        entry file — makes the startup purge stand down.
+    """
+    found, errors = scan_mtp_sidecars(user_catalog_dir(kodo_dir))
+    _report_user_catalog_errors(errors)
+    return found, errors
+
+
+def mtp_sidecars_by_family(kodo_dir: Path) -> dict[str, tuple[MtpSidecar, ...]]:
+    """The heads each family offers: the shipped lists, each replaced by a user file.
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+
+    Returns:
+        dict[str, tuple[MtpSidecar, ...]]: ``{base_llm: heads}``, heads most
+        precise first. A family a user file emptied maps to ``()``.
+    """
+    user, _ = load_user_mtp_sidecars(kodo_dir)
+    return {**_BUILTIN_MTP_SIDECARS, **user}
 
 
 def _validate_catalog() -> None:
@@ -132,12 +199,18 @@ def _validate_catalog() -> None:
        unavailable.
     4. **``mtp_supported`` against the knob** — part of check 1: an entry's
        :attr:`~kodo.llms.local_registry.LocalLLMEntry.mtp_supported` must
-       agree with whether it lists
-       :data:`~kodo.llms.local_registry._knobs_mtp.MTP_SPEC_DECODE_KNOB` in
-       its ``knobs``. Without this, the boolean could drift from what's
-       actually wired — set without the knob (a claim the UI never backs
-       up) or the knob added without the flag (silently missing from
-       whatever, in the future, reads the flag instead of the knob list).
+       agree with whether its knobs offer the built-in MTP layers
+       (:func:`~._catalog_files.offers_builtin_mtp`). Without this, the
+       boolean could drift from what's actually wired — set without the knob
+       (a claim the UI never backs up) or the knob added without the flag
+       (silently missing from whatever, in the future, reads the flag instead
+       of the knob list). Checks 1, 2 and 4 run on every entry both as its
+       file declares it and with its family's MTP head picker attached
+       (:func:`~._catalog_files.attach_mtp_sidecars`).
+    5. **MTP sidecar lists have a family** — every shipped
+       ``mtp_sidecars.json`` sits in a directory with at least one shipped
+       entry, so a misspelled directory name cannot leave its heads silently
+       unreachable.
 
     Note that this validates *code against code*; the mirror-image cleanup of
     a user's stored per-model state after a rename or removal is
@@ -145,7 +218,11 @@ def _validate_catalog() -> None:
     once per server start rather than at import.
     """
     known: dict[str, object] = {}
-    for entry in _HARDCODED_LOCAL_MODELS:
+    attached = tuple(
+        attach_mtp_sidecars(entry, _BUILTIN_MTP_SIDECARS.get(entry.base_llm, ()))
+        for entry in _HARDCODED_LOCAL_MODELS
+    )
+    for entry in _HARDCODED_LOCAL_MODELS + attached:
         validate_catalog_entry(entry)
         for knob in entry.knobs:
             previous = known.setdefault(knob.id, knob)
@@ -155,6 +232,11 @@ def _validate_catalog() -> None:
                     "entry uses under the same id"
                 )
     base_llms = {entry.base_llm for entry in _HARDCODED_LOCAL_MODELS}
+    orphaned = sorted(set(_BUILTIN_MTP_SIDECARS) - base_llms)
+    if orphaned:
+        raise ValueError(
+            f"{MTP_SIDECARS_FILENAME} in catalog directories with no entries: {', '.join(orphaned)}"
+        )
     tiered = (
         QWEN_REASONING_BUDGET_FAMILY
         | GPT_OSS_REASONING_EFFORT_FAMILY

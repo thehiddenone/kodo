@@ -1,0 +1,23 @@
+{
+  "bf16": {
+    "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+    "filename": "MTP/mtp-Qwen3.8-Flash-Next-BF16.gguf",
+    "quant_type": "BF16",
+    "size_hint": "7.77 GB",
+    "llamacpp_version": 11330
+  },
+  "q8_0": {
+    "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+    "filename": "MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf",
+    "quant_type": "Q8_0",
+    "size_hint": "4.14 GB",
+    "llamacpp_version": 11330
+  },
+  "q4_k_m": {
+    "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+    "filename": "MTP/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf",
+    "quant_type": "Q4_K_M",
+    "size_hint": "2.79 GB",
+    "llamacpp_version": 11330
+  }
+}

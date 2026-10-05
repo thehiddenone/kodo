@@ -55,6 +55,7 @@ from kodo.llms import (
     get_local_registry,
     get_openrouter_catalog,
     get_profiles,
+    get_selected_mtp_sidecar,
     llama_arg_catalog_to_json,
     local_thinking_default_tier,
     local_thinking_family,
@@ -79,12 +80,15 @@ from kodo.llms.llamacpp import (
     LlamaServerConfig,
     RemoteLlamaEndpoint,
     build_exists,
+    download_mtp_sidecars,
     ensure_llama_running,
     fetch_latest_build_number,
     find_installed,
     find_running_server,
     get_local_model_manager,
     install_llamacpp,
+    missing_mtp_sidecars,
+    prune_mtp_sidecars,
     purge_unknown_local_models,
     uninstall_llamacpp,
     update_llamacpp,
@@ -2095,6 +2099,46 @@ def _run_background_download(
     asyncio.create_task(run())
 
 
+#: Families whose MTP heads are downloading right now. Two quants of one family
+#: finishing close together must not start two transfers into the same head's
+#: ``.part`` file — LocalModelManager keys its pause signal by model id and does
+#: not guard against a second concurrent download of one id.
+_mtp_head_downloads_in_flight: set[str] = set()
+
+
+def _start_mtp_head_download(req: Request, entry: LocalLLMEntry, hf_token: str | None) -> None:
+    """Fetch *entry*'s family MTP heads in the background, unless done or underway.
+
+    A family's standalone heads (``mtp_sidecars.json``) are shared by every
+    quant, so they are fetched once a quant is downloaded — never before, so
+    the model itself is usable as early as possible — as a separate background
+    download with its own failure report: a head that fails leaves the quant
+    installed and the MTP knob falling back to no speculative decoding at
+    launch. Every head the family lists is fetched, not just a selected one.
+
+    Args:
+        req: The request that started it; its connection gets the outcome.
+        entry: The entry whose family's heads to fetch.
+        hf_token: The token the quant was downloaded with, or ``None`` to
+            request one (inside the background task — see
+            :func:`_handle_local_llm_install`).
+    """
+    kodo_dir = kodo_user_dir()
+    base_llm = entry.base_llm
+    if base_llm in _mtp_head_downloads_in_flight or not missing_mtp_sidecars(entry, kodo_dir):
+        return
+    _mtp_head_downloads_in_flight.add(base_llm)
+
+    async def _download() -> None:
+        try:
+            token = hf_token if hf_token is not None else await _request_hf_token(req)
+            await download_mtp_sidecars(entry, kodo_dir, token=token or None)
+        finally:
+            _mtp_head_downloads_in_flight.discard(base_llm)
+
+    _run_background_download(f"MTP heads for {base_llm}", _download, req.connection)
+
+
 async def _handle_local_llm_install(req: Request) -> None:
     name = str(req.env.payload.get("name", "")).strip()
     if not name:
@@ -2127,6 +2171,8 @@ async def _handle_local_llm_install(req: Request) -> None:
         await manager.download_model(
             entry.name, entry.repo_id, entry.filename, token=hf_token or None
         )
+        if _local_entry_installed(entry, kodo_dir):
+            _start_mtp_head_download(req, entry, hf_token)
 
     _run_background_download(name, _download, req.connection)
 
@@ -2146,6 +2192,10 @@ async def _handle_local_llm_resume(req: Request) -> None:
         # See _handle_local_llm_install for why the token is requested here.
         hf_token = await _request_hf_token(req)
         await manager.resume_download(name, token=hf_token or None)
+        kodo_dir = kodo_user_dir()
+        entry = get_local_registry(kodo_dir).get(name)
+        if entry is not None and _local_entry_installed(entry, kodo_dir):
+            _start_mtp_head_download(req, entry, hf_token)
 
     _run_background_download(name, _download, req.connection)
 
@@ -2161,8 +2211,11 @@ async def _handle_local_llm_pause(req: Request) -> None:
 async def _handle_local_llm_uninstall(req: Request) -> None:
     name = str(req.env.payload.get("name", "")).strip()
     if name:
-        await asyncio.to_thread(get_local_model_manager(kodo_user_dir()).uninstall, name)
+        kodo_dir = kodo_user_dir()
+        await asyncio.to_thread(get_local_model_manager(kodo_dir).uninstall, name)
         _log.info("Uninstalled model %r", name)
+        # The family's MTP heads go with its last quant, and not before.
+        await asyncio.to_thread(prune_mtp_sidecars, kodo_dir)
     await _send_registry_state(req)
 
 
@@ -2176,7 +2229,9 @@ async def _handle_local_llm_update(req: Request) -> None:
     path, so an update goes through the same manager-state transitions
     (uninstalled -> kickoff -> downloading -> installed/failed) a user
     manually clicking Uninstall then Install would produce. See
-    doc/LOCAL_MODEL_MANAGER.md §12.
+    doc/LOCAL_MODEL_MANAGER.md §12. The one difference: the family's MTP
+    heads are not pruned in between — the model is coming straight back, and
+    re-fetching up to ~15 GB of heads for that would be pure waste.
     """
     name = str(req.env.payload.get("name", "")).strip()
     if not name:
@@ -2203,6 +2258,8 @@ async def _handle_local_llm_update(req: Request) -> None:
         await manager.download_model(
             entry.name, entry.repo_id, entry.filename, token=hf_token or None
         )
+        if _local_entry_installed(entry, kodo_dir):
+            _start_mtp_head_download(req, entry, hf_token)
 
     _run_background_download(name, _download, req.connection)
 
@@ -2408,6 +2465,7 @@ async def _handle_local_llm_remove(req: Request) -> None:
         if is_downloadable and manager.get_record(name) is not None:
             await asyncio.to_thread(manager.uninstall, name)
             _log.info("Uninstalled model %r", name)
+            await asyncio.to_thread(prune_mtp_sidecars, kodo_dir)
         remove_local_entry(kodo_dir, name)
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
@@ -2562,6 +2620,13 @@ async def _handle_local_llm_set_knobs(req: Request) -> None:
         return
     after = resolve_default_profile_args(kodo_dir, entry) if entry is not None else {}
     _log.info("Set knobs on %r: %s", entry_name, selections)
+    # Picking an MTP head that is not on disk — the model predates its family's
+    # heads, or their download failed — fetches the family's heads now; until
+    # they land, the model launches without speculative decoding.
+    if entry is not None and _local_entry_installed(entry, kodo_dir):
+        head = get_selected_mtp_sidecar(kodo_dir, entry)
+        if head is not None and head.id in missing_mtp_sidecars(entry, kodo_dir):
+            _start_mtp_head_download(req, entry, None)
     # A user-defined profile being active means the knobs aren't what launches.
     on_default = get_active_profile(kodo_dir, entry_name) == ""
     if on_default and before != after and entry_name == _current_local_model_name():

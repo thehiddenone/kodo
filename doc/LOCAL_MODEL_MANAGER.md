@@ -365,6 +365,19 @@ The two call sites:
   `uninstall()`s each one. The model of a running llama-server is passed in
   `keep` and spared — its file is open, which on Windows makes the delete
   fail outright. Full rationale: LLM_REGISTRY.md §4.1b.
+- **MTP sidecar heads** (LLM_REGISTRY.md §4.0a) are ordinary records in this
+  same manager, one per head, keyed `mtp-head:<base_llm>:<head id>`
+  (`kodo.llms.mtp_sidecar_model_id`) — so a head gets pause-safe resumable
+  transfers, `.part` files and `manager-state.json` progress for free, lives
+  in its own `<sanitized id>/` directory, and is shared by every quant of the
+  family rather than copied into each quant's. The manager itself still knows
+  nothing about this: `download_mtp_sidecars` fetches a family's heads after
+  one of its quants is installed, and `prune_mtp_sidecars` `uninstall()`s
+  every head record no quant of its family has a record for any more
+  (both in `kodo/llms/llamacpp/_manager.py`). The purge above never counts a
+  head record as an unknown model, then runs the same pruning. kodo-vsix
+  polls these records like any other but only ever looks up entry names, so
+  they never show up as a download in the UI.
 - `server/_app.py`'s `local_llm.*` WS handlers
   (`_handle_local_llm_install`/`_handle_local_llm_resume`/
   `_handle_local_llm_pause`/`_handle_local_llm_uninstall`/

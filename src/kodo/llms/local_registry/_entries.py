@@ -10,6 +10,11 @@ doc/LLM_REGISTRY.md §4):
 3. the ``custom_*`` entries in ``local-llm-registry.json`` (:mod:`._io`) —
    skipped when their name is already taken by either catalog.
 
+Every catalog entry of a family that ships standalone MTP heads is served
+with that family's head picker attached
+(:func:`~._catalog_files.attach_mtp_sidecars`); the heads themselves are
+:func:`get_mtp_sidecars`.
+
 References the shipped catalog via ``_catalog._HARDCODED_LOCAL_MODELS``
 (qualified module attribute access rather than ``from ._catalog import
 _HARDCODED_LOCAL_MODELS``) specifically so tests can monkeypatch
@@ -25,7 +30,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import _catalog
-from ._catalog_files import catalog_sort_key
+from ._catalog_files import attach_mtp_sidecars, catalog_sort_key
 from ._io import (
     _CUSTOM_KINDS,
     _all_active_profiles,
@@ -40,6 +45,7 @@ from ._io import (
     _write_profiles,
 )
 from ._knobs_shared import BASE_LLAMA_ARGS, SHARED_KNOBS
+from ._mtp_sidecars import MTP_SIDECAR_MODEL_ID_PREFIX, MtpSidecar, parse_mtp_sidecar_model_id
 from ._types import LocalLLMEntry
 
 _log = logging.getLogger(__name__)
@@ -49,9 +55,11 @@ __all__ = [
     "clear_llama_server_override_path",
     "get_llama_server_override_path",
     "get_local_registry",
+    "get_mtp_sidecars",
     "prune_unknown_model_state",
     "remove_local_entry",
     "set_llama_server_override_path",
+    "stale_mtp_sidecar_model_ids",
 ]
 
 
@@ -106,7 +114,11 @@ def get_local_registry(kodo_dir: Path) -> dict[str, LocalLLMEntry]:
         if entry.name in catalog:
             _log.debug("User catalog file replaces the shipped local LLM %r", entry.name)
         catalog[entry.name] = entry
-    merged = {e.name: e for e in sorted(catalog.values(), key=catalog_sort_key)}
+    sidecars = _catalog.mtp_sidecars_by_family(kodo_dir)
+    merged = {
+        e.name: attach_mtp_sidecars(e, sidecars.get(e.base_llm, ()))
+        for e in sorted(catalog.values(), key=catalog_sort_key)
+    }
     external, _ = _load_external(kodo_dir)
     for entry in external:
         if entry.name in merged:
@@ -132,11 +144,17 @@ def add_local_entry(kodo_dir: Path, entry: LocalLLMEntry) -> None:
         entry: The entry to add; ``entry.kind`` must be one of the custom kinds.
 
     Raises:
-        ValueError: If ``entry.kind`` is not a custom kind, or ``entry.name``
-            already exists (hardcoded or custom).
+        ValueError: If ``entry.kind`` is not a custom kind, ``entry.name``
+            already exists (hardcoded or custom), or it starts with the prefix
+            reserved for MTP head downloads.
     """
     if entry.kind not in _CUSTOM_KINDS:
         raise ValueError(f"Cannot add a local LLM entry of kind {entry.kind!r}")
+    if entry.name.startswith(MTP_SIDECAR_MODEL_ID_PREFIX):
+        raise ValueError(
+            f"A local LLM name may not start with {MTP_SIDECAR_MODEL_ID_PREFIX!r} — "
+            "it is reserved for MTP head downloads"
+        )
     if entry.name in get_local_registry(kodo_dir):
         raise ValueError(f"A local LLM named {entry.name!r} already exists")
     if entry.knobs:
@@ -197,6 +215,86 @@ def remove_local_entry(kodo_dir: Path, name: str) -> None:
         _save_raw(kodo_dir, data)
 
 
+def get_mtp_sidecars(kodo_dir: Path, base_llm: str) -> tuple[MtpSidecar, ...]:
+    """The standalone MTP heads *base_llm*'s family offers, most precise first.
+
+    The user catalog's ``mtp_sidecars.json`` for the family replaces the
+    shipped one (see :mod:`._mtp_sidecars`).
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        base_llm: The family. ``""`` (every ``custom_*`` entry) has none.
+
+    Returns:
+        tuple[MtpSidecar, ...]: The heads; ``()`` when the family has none.
+    """
+    if not base_llm:
+        return ()
+    return _catalog.mtp_sidecars_by_family(kodo_dir).get(base_llm, ())
+
+
+def _user_catalog_unreliable(kodo_dir: Path, what: str) -> bool:
+    """True when stored state cannot be judged against the registry right now.
+
+    Either the registry file does not parse (every ``custom_*`` entry would
+    look unknown) or a user catalog file — an entry or an MTP head list —
+    failed to load (it might be the only definition of something the user
+    has downloaded). Logs which, naming *what* is being skipped.
+    """
+    if _registry_file_unreadable(kodo_dir):
+        _log.warning("local-llm-registry.json does not parse — skipping %s", what)
+        return True
+    _, entry_errors = _catalog.load_user_catalog(kodo_dir)
+    _, sidecar_errors = _catalog.load_user_mtp_sidecars(kodo_dir)
+    failed = len(entry_errors) + len(sidecar_errors)
+    if failed:
+        _log.warning("%d user local-LLM catalog file(s) failed to load — skipping %s", failed, what)
+        return True
+    return False
+
+
+def stale_mtp_sidecar_model_ids(kodo_dir: Path, model_ids: Iterable[str]) -> tuple[str, ...]:
+    """The MTP head downloads among *model_ids* that nothing needs any more.
+
+    A head (download-record id
+    :func:`~._mtp_sidecars.mtp_sidecar_model_id`) is kept for as long as at
+    least one quant of its family has a download record — finished or not —
+    since every quant can draft with it. It is stale once no id in
+    *model_ids* is a registry entry of its family, or once its family no
+    longer lists it (a head dropped or renamed in ``mtp_sidecars.json``).
+
+    Like :func:`prune_unknown_model_state`, judges nothing — returns ``()`` —
+    while a user catalog file is broken or the registry file does not parse.
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        model_ids: Every download-record id the caller has, quants and heads.
+
+    Returns:
+        tuple[str, ...]: The head ids to delete, sorted.
+    """
+    ids = set(model_ids)
+    heads = {model_id: parse_mtp_sidecar_model_id(model_id) for model_id in ids}
+    if not any(heads.values()) or _user_catalog_unreliable(kodo_dir, "the MTP head cleanup"):
+        return ()
+    registry = get_local_registry(kodo_dir)
+    families_in_use = {
+        registry[model_id].base_llm
+        for model_id in ids
+        if model_id in registry and registry[model_id].base_llm
+    }
+    offered = _catalog.mtp_sidecars_by_family(kodo_dir)
+    stale: list[str] = []
+    for model_id, parsed in heads.items():
+        if parsed is None:
+            continue
+        base_llm, sidecar_id = parsed
+        listed = any(sidecar.id == sidecar_id for sidecar in offered.get(base_llm, ()))
+        if base_llm not in families_in_use or not listed:
+            stale.append(model_id)
+    return tuple(sorted(stale))
+
+
 def prune_unknown_model_state(
     kodo_dir: Path, installed_model_ids: Iterable[str] = ()
 ) -> tuple[str, ...]:
@@ -209,7 +307,9 @@ def prune_unknown_model_state(
     user-defined profiles in ``local-llm-registry.json`` forever, and a later
     release that reuses the name would silently inherit them.
 
-    Names in *installed_model_ids* that the registry does not know are
+    MTP head downloads among *installed_model_ids* are not models and are
+    never judged here — :func:`stale_mtp_sidecar_model_ids` decides about
+    those. Names in *installed_model_ids* that the registry does not know are
     reported in the return value even when they carry no stored settings —
     that is how the caller that owns the downloaded files
     (:func:`kodo.llms.llamacpp.purge_unknown_local_models`) learns which GGUFs
@@ -232,24 +332,17 @@ def prune_unknown_model_state(
         tuple[str, ...]: Every unknown name seen, sorted — those whose stored
         settings were just dropped plus those from *installed_model_ids*.
     """
-    if _registry_file_unreadable(kodo_dir):
-        _log.warning("local-llm-registry.json does not parse — skipping the unknown-model purge")
+    if _user_catalog_unreliable(kodo_dir, "the unknown-model purge"):
         return ()
-    _, user_catalog_errors = _catalog.load_user_catalog(kodo_dir)
-    if user_catalog_errors:
-        _log.warning(
-            "%d user local-LLM catalog file(s) failed to load — skipping the unknown-model purge",
-            len(user_catalog_errors),
-        )
-        return ()
+    installed_models = {
+        model_id for model_id in installed_model_ids if parse_mtp_sidecar_model_id(model_id) is None
+    }
     known = set(get_local_registry(kodo_dir))
     data = _load_raw(kodo_dir)
     all_profiles = _all_profiles(data)
     active = _all_active_profiles(data)
     selections = _all_knob_selections(data)
-    unknown = sorted(
-        (set(all_profiles) | set(active) | set(selections) | set(installed_model_ids)) - known
-    )
+    unknown = sorted((set(all_profiles) | set(active) | set(selections) | installed_models) - known)
     changed = False
     for name in unknown:
         if all_profiles.pop(name, None) is not None:

@@ -1,4 +1,12 @@
-"""On-demand llama-server lifecycle manager, plus the shared LocalModelManager accessor."""
+"""On-demand llama-server lifecycle manager, plus the shared LocalModelManager accessor.
+
+Also the one layer that sees both the model registry and the registry-free
+:class:`~kodo.llms.local.LocalModelManager`, so it owns everything that needs
+both: the startup purge of models kodo no longer knows, and a family's
+standalone MTP heads — downloaded beside a quant (:func:`download_mtp_sidecars`),
+deleted once no quant of the family is left (:func:`prune_mtp_sidecars`), and
+handed to llama-server at launch (:func:`resolve_llama_launch`).
+"""
 
 from __future__ import annotations
 
@@ -10,24 +18,32 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kodo.llms import (
+    MTP_DRAFT_MODEL_FLAG,
     REASONING_BUDGET_MESSAGE,
     LocalLLMEntry,
     get_active_profile,
     get_llama_server_override_path,
+    get_mtp_sidecars,
+    get_selected_mtp_sidecar,
     local_thinking_family,
+    mtp_sidecar_model_id,
     prune_unknown_model_state,
     resolve_effective_llama_config,
+    stale_mtp_sidecar_model_ids,
 )
-from kodo.llms.local import LocalModelManager
+from kodo.llms.local import LocalModelError, LocalModelManager
 
-from ._installer import find_installed
+from ._installer import LlamaInstall, find_installed
 from ._llama_server import LlamaServer, LlamaServerConfig
 
 __all__ = [
     "LlamaLaunch",
+    "download_mtp_sidecars",
     "ensure_llama_running",
     "find_installed_model_path",
     "get_local_model_manager",
+    "missing_mtp_sidecars",
+    "prune_mtp_sidecars",
     "purge_unknown_local_models",
     "resolve_llama_launch",
 ]
@@ -102,6 +118,10 @@ def purge_unknown_local_models(kodo_dir: Path, *, keep: Iterable[str] = ()) -> t
     filesystem takes. Blocks nothing else — everything it deletes is by
     definition unreachable from the current catalog.
 
+    Then drops every MTP head download nothing needs any more
+    (:func:`prune_mtp_sidecars`) — including the heads of a family whose last
+    quant this purge just deleted. Head ids are part of the return value.
+
     Args:
         kodo_dir (Path): User-level ``~/.kodo`` directory.
         keep (Iterable[str]): Model ids to leave alone even when unknown —
@@ -110,8 +130,8 @@ def purge_unknown_local_models(kodo_dir: Path, *, keep: Iterable[str] = ()) -> t
             is simply purged by the next start that finds it idle.
 
     Returns:
-        tuple[str, ...]: The model ids purged, sorted. Empty when there was
-        nothing stale to remove.
+        tuple[str, ...]: The model ids purged, then the MTP head ids, each
+        sorted. Empty when there was nothing stale to remove.
     """
     manager = get_local_model_manager(kodo_dir)
     installed = {record.model_id for record in manager.list_models()}
@@ -124,7 +144,88 @@ def purge_unknown_local_models(kodo_dir: Path, *, keep: Iterable[str] = ()) -> t
             manager.uninstall(name)
     if unknown:
         _log.info("Purged local models kodo no longer knows: %s", ", ".join(unknown))
-    return tuple(unknown)
+    return tuple(unknown) + prune_mtp_sidecars(kodo_dir)
+
+
+def prune_mtp_sidecars(kodo_dir: Path) -> tuple[str, ...]:
+    """Delete every downloaded MTP head that no quant of its family needs any more.
+
+    A family's heads are shared by all of its quants, so uninstalling one quant
+    keeps them as long as another quant of the family still has a download
+    record (finished or not); uninstalling the last one deletes them. A head
+    the family's ``mtp_sidecars.json`` no longer lists goes too. The judgment
+    is :func:`kodo.llms.stale_mtp_sidecar_model_ids` — which stands down while
+    a user catalog file is broken, like the startup purge.
+
+    Blocking (``rmtree``); call it off the event loop.
+
+    Args:
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+
+    Returns:
+        tuple[str, ...]: The head download-record ids deleted, sorted.
+    """
+    manager = get_local_model_manager(kodo_dir)
+    stale = stale_mtp_sidecar_model_ids(kodo_dir, [r.model_id for r in manager.list_models()])
+    for model_id in stale:
+        manager.uninstall(model_id)
+    if stale:
+        _log.info("Deleted MTP heads no installed model needs: %s", ", ".join(stale))
+    return stale
+
+
+def missing_mtp_sidecars(entry: LocalLLMEntry, kodo_dir: Path) -> tuple[str, ...]:
+    """The ids of *entry*'s family heads that are not fully downloaded yet.
+
+    Args:
+        entry (LocalLLMEntry): Any entry of the family.
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+
+    Returns:
+        tuple[str, ...]: Head ids (``mtp_sidecars.json`` keys), most precise
+        first. Empty when the family has no heads or all are downloaded.
+    """
+    manager = get_local_model_manager(kodo_dir)
+    return tuple(
+        sidecar.id
+        for sidecar in get_mtp_sidecars(kodo_dir, entry.base_llm)
+        if manager.get_model_path(mtp_sidecar_model_id(entry.base_llm, sidecar.id)) is None
+    )
+
+
+async def download_mtp_sidecars(
+    entry: LocalLLMEntry, kodo_dir: Path, *, token: str | None = None
+) -> None:
+    """Download every MTP head *entry*'s family offers that is not already downloaded.
+
+    Called after a quant of the family finishes downloading: the heads are
+    shared by every quant, so they are fetched once, into records of their
+    own (:func:`kodo.llms.mtp_sidecar_model_id`), and a quant's own download
+    never waits for them. Continues an interrupted head download where it
+    stopped. Every head is attempted even when an earlier one fails.
+
+    Args:
+        entry (LocalLLMEntry): A downloaded entry. A family without heads is
+            a no-op.
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+        token (str | None): HF access token, for gated/private repos.
+
+    Raises:
+        LocalModelError: Naming every head that failed, after all were tried.
+    """
+    manager = get_local_model_manager(kodo_dir)
+    failures: list[str] = []
+    for sidecar in get_mtp_sidecars(kodo_dir, entry.base_llm):
+        model_id = mtp_sidecar_model_id(entry.base_llm, sidecar.id)
+        if manager.get_model_path(model_id) is not None:
+            continue
+        try:
+            await manager.download_model(model_id, sidecar.repo_id, sidecar.filename, token=token)
+        except LocalModelError as exc:
+            _log.warning("Download of MTP head %r failed: %s", model_id, exc)
+            failures.append(f"{entry.base_llm} {sidecar.quant_type} MTP head: {exc}")
+    if failures:
+        raise LocalModelError("; ".join(failures))
 
 
 async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaServer:
@@ -263,6 +364,7 @@ def resolve_llama_launch(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaLaunch:
     # supplies the complete llama_args; see resolve_effective_llama_config.
     llama_args, _ = resolve_effective_llama_config(kodo_dir, entry)
     profile_id = get_active_profile(kodo_dir, entry.name)
+    _resolve_mtp_head(entry, kodo_dir, llama_args, install=None if override else install)
     if local_thinking_family(entry.base_llm) == "qwen_reasoning_budget":
         # Forced (plain assignment), not defaulted: -1 is mandatory here, not
         # just the default — it's what makes the per-request
@@ -276,6 +378,52 @@ def resolve_llama_launch(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaLaunch:
         llama_args["--reasoning-budget"] = "-1"
         llama_args["--reasoning-budget-message"] = REASONING_BUDGET_MESSAGE
     return LlamaLaunch(executable=executable, llama_args=llama_args, profile_id=profile_id)
+
+
+def _resolve_mtp_head(
+    entry: LocalLLMEntry,
+    kodo_dir: Path,
+    llama_args: dict[str, str],
+    *,
+    install: LlamaInstall | None,
+) -> None:
+    """Point *llama_args*' MTP head flag at the downloaded head, or drop MTP.
+
+    The head picker's options carry the head's bare file name (where it was
+    downloaded is not the catalog's business); this swaps in the absolute
+    path. When the selected head is not downloaded, or the llama.cpp build is
+    older than the head needs, the model launches without speculative
+    decoding instead of failing to start — loudly in the log. Read-only (the
+    path comes from :meth:`~kodo.llms.local.LocalModelManager.peek_model_path`),
+    so it is safe from ``kodo-llama-server`` next to a running kodo server.
+
+    Args:
+        entry: The entry being launched.
+        kodo_dir: User-level ``~/.kodo`` directory.
+        llama_args: The resolved launch args, edited in place.
+        install: The llama.cpp build about to run, or ``None`` when that is
+            unknown (a user's binary override) — then no version check.
+    """
+    sidecar = get_selected_mtp_sidecar(kodo_dir, entry)
+    if sidecar is None:
+        return
+    model_id = mtp_sidecar_model_id(entry.base_llm, sidecar.id)
+    path = LocalModelManager.peek_model_path(_models_dir(kodo_dir), model_id)
+    if path is None:
+        problem = "is not downloaded (yet)"
+    elif install is not None and install.build < sidecar.llamacpp_version:
+        problem = f"needs llama.cpp b{sidecar.llamacpp_version}, but b{install.build} is installed"
+    else:
+        llama_args[MTP_DRAFT_MODEL_FLAG] = str(path)
+        return
+    _log.warning(
+        "MTP head %r for %r %s — launching without speculative decoding",
+        sidecar.id,
+        entry.name,
+        problem,
+    )
+    llama_args.pop(MTP_DRAFT_MODEL_FLAG, None)
+    llama_args.pop("--spec-type", None)
 
 
 def find_installed_model_path(entry: LocalLLMEntry, kodo_dir: Path) -> Path | None:

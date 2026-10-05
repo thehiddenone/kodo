@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ._entries import get_local_registry
+from ._entries import get_local_registry, get_mtp_sidecars
 from ._io import (
     _all_active_profiles,
     _all_knob_selections,
@@ -41,6 +41,8 @@ from ._io import (
     _write_profiles,
 )
 from ._knobs import KnobKind, knob_selection_args, resolve_knob_selections
+from ._knobs_mtp import MTP_BUILTIN_OPTION_ID, MTP_SPEC_DECODE_KNOB, is_mtp_head_knob
+from ._mtp_sidecars import MtpSidecar
 from ._reserved import strip_reserved_llama_args
 from ._types import LlmProfile, LocalLLMEntry
 
@@ -51,6 +53,7 @@ __all__ = [
     "get_active_profile",
     "get_knob_selections",
     "get_profiles",
+    "get_selected_mtp_sidecar",
     "remove_profile",
     "resolve_context_window",
     "resolve_default_profile_args",
@@ -310,6 +313,30 @@ def set_active_profile(kodo_dir: Path, entry_name: str, profile_id: str) -> None
 # ---------------------------------------------------------------------------
 
 
+def _stored_selections(data: dict[str, object], entry: LocalLLMEntry) -> dict[str, str]:
+    """*entry*'s persisted knob selection, with the built-in MTP checkbox carried over.
+
+    When a family gains standalone MTP heads, its entries' built-in checkbox
+    (:data:`~._knobs_mtp.MTP_SPEC_DECODE_KNOB`) is replaced by a head picker
+    under a new id. A stored ``"on"`` for the checkbox then means the
+    picker's *Built-in* option, unless the picker already has a selection of
+    its own — so turning MTP on is not silently undone by the family getting
+    heads. The old key is dropped by the next :func:`set_knobs`, which
+    rewrites the whole selection.
+    """
+    stored = dict(_all_knob_selections(data).get(entry.name, {}))
+    if stored.get(MTP_SPEC_DECODE_KNOB.id) != "on":
+        return stored
+    picker = next((knob for knob in entry.knobs if is_mtp_head_knob(knob)), None)
+    if (
+        picker is not None
+        and not stored.get(picker.id)
+        and picker.option(MTP_BUILTIN_OPTION_ID) is not None
+    ):
+        stored[picker.id] = MTP_BUILTIN_OPTION_ID
+    return stored
+
+
 def get_knob_selections(kodo_dir: Path, entry: LocalLLMEntry) -> dict[str, str]:
     """*entry*'s **resolved** knob state — one entry per knob, defaults filled in.
 
@@ -328,7 +355,7 @@ def get_knob_selections(kodo_dir: Path, entry: LocalLLMEntry) -> dict[str, str]:
         dict[str, str]: ``{knob_id: selection}`` covering every knob in
         ``entry.knobs``, in that order. ``{}`` for an entry with no knobs.
     """
-    stored = _all_knob_selections(_load_raw(kodo_dir)).get(entry.name, {})
+    stored = _stored_selections(_load_raw(kodo_dir), entry)
     return resolve_knob_selections(entry.knobs, stored, entry.knob_defaults)
 
 
@@ -418,7 +445,7 @@ def resolve_default_profile_args(kodo_dir: Path, entry: LocalLLMEntry) -> dict[s
     Returns:
         dict[str, str]: A fresh dict, safe for the caller to mutate.
     """
-    stored = _all_knob_selections(_load_raw(kodo_dir)).get(entry.name, {})
+    stored = _stored_selections(_load_raw(kodo_dir), entry)
     args = dict(entry.base_llama_args)
     args.update(knob_selection_args(entry.knobs, stored, entry.knob_defaults))
     return args
@@ -478,3 +505,28 @@ def resolve_effective_llama_config(
             return args, resolve_context_window(entry, args)
     args = resolve_default_profile_args(kodo_dir, entry)
     return args, resolve_context_window(entry, args)
+
+
+def get_selected_mtp_sidecar(kodo_dir: Path, entry: LocalLLMEntry) -> MtpSidecar | None:
+    """The standalone MTP head *entry* is about to launch with, if any.
+
+    Only the Default profile drafts with a head: a user-defined profile's args
+    are used verbatim (one that wants a head names its file itself).
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        entry: The entry about to be launched.
+
+    Returns:
+        MtpSidecar | None: The head the entry's MTP head picker currently
+        selects; ``None`` when a user-defined profile is active, the entry has
+        no picker, or the picker is on *Off* or *Built-in*.
+    """
+    if entry.kind == "custom_server_url" or get_active_profile(kodo_dir, entry.name):
+        return None
+    picker = next((knob for knob in entry.knobs if is_mtp_head_knob(knob)), None)
+    if picker is None:
+        return None
+    selected = get_knob_selections(kodo_dir, entry).get(picker.id, "")
+    sidecars = get_mtp_sidecars(kodo_dir, entry.base_llm)
+    return next((sidecar for sidecar in sidecars if sidecar.id == selected), None)

@@ -23,6 +23,8 @@ lifecycle utilities formerly in the top-level ``kodo.llm_utils`` package:
   reconciliation between that manager and the registry: it deletes the
   downloads and the stored settings of every model this kodo release no
   longer has an entry for (a renamed or retired ``hardcoded_hf`` model).
+  :func:`download_mtp_sidecars`/:func:`prune_mtp_sidecars` keep a family's
+  standalone MTP heads downloaded exactly while some quant of it is.
 * **Server** — async ``llama-server`` process manager (:class:`LlamaServer`,
   :class:`LlamaServerConfig`, :class:`RunningServer`, :func:`find_running_server`,
   :func:`ensure_llama_running`).
@@ -55,9 +57,12 @@ from ._llama_server import (
 )
 from ._manager import (
     LlamaLaunch,
+    download_mtp_sidecars,
     ensure_llama_running,
     find_installed_model_path,
     get_local_model_manager,
+    missing_mtp_sidecars,
+    prune_mtp_sidecars,
     purge_unknown_local_models,
     resolve_llama_launch,
 )
@@ -76,6 +81,7 @@ __all__ = [
     "build_exists",
     "build_openai_tools",
     "check_llamacpp_update",
+    "download_mtp_sidecars",
     "ensure_llama_running",
     "fetch_latest_build_number",
     "find_installed",
@@ -85,6 +91,8 @@ __all__ = [
     "install_llamacpp",
     "is_pid_alive",
     "kill_pid",
+    "missing_mtp_sidecars",
+    "prune_mtp_sidecars",
     "purge_unknown_local_models",
     "resolve_llama_launch",
     "server_executable",
