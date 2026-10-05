@@ -13,14 +13,19 @@ already uses between ``_scrape.py``/``_readpage.py``. One real difference
 from the live-DOM walker: there is no CSS engine here, so elements hidden via
 ``display:none``/``visibility:hidden`` are not detected (only structurally
 removed/``aria-hidden`` elements are) — an accepted gap for this best-effort,
-static-parse path.
+static-parse path. A second accepted gap, from selectolax's lexbor backend:
+``<template>`` contents (including declarative shadow DOM) live in a separate
+document fragment that ``css()``/``decompose()`` cannot reach, so
+``extract_html`` leaves any ``script``/``style``/``noscript`` inside a
+template in place. ``extract_text`` is unaffected — it drops ``template``
+wholesale.
 """
 
 from __future__ import annotations
 
 from urllib.parse import urljoin
 
-from selectolax.parser import HTMLParser, Node
+from selectolax.lexbor import LexborHTMLParser, LexborNode
 
 __all__ = ["extract_html", "extract_off", "extract_text", "is_blocked"]
 
@@ -81,7 +86,7 @@ _WALL_PATTERNS = (
 
 def is_blocked(html: str) -> bool:
     """``True`` when *html* looks like an anti-bot/captcha wall."""
-    tree = HTMLParser(html)
+    tree = LexborHTMLParser(html)
     if tree.css_first(_WALL_SELECTOR) is not None:
         return True
     title_node = tree.css_first("title")
@@ -99,7 +104,7 @@ def extract_off(html: str) -> str:
 
 def extract_html(html: str) -> str:
     """``content_filter: "html"`` — full-page HTML, script/style/noscript removed."""
-    tree = HTMLParser(html)
+    tree = LexborHTMLParser(html)
     for node in tree.css("script, style, noscript"):
         node.decompose()
     return tree.html or ""
@@ -116,7 +121,7 @@ def extract_text(html: str, base_url: str) -> tuple[str, str]:
     Returns:
         tuple[str, str]: ``(title, markdown)``.
     """
-    tree = HTMLParser(html)
+    tree = LexborHTMLParser(html)
     title_node = tree.css_first("title")
     title = title_node.text(strip=True) if title_node else ""
     for node in tree.css(_REMOVE_SELECTORS):
@@ -135,13 +140,13 @@ def _norm_ws(text: str) -> str:
     return " ".join(text.split())
 
 
-def _direct_children(node: Node) -> list[Node]:
+def _direct_children(node: LexborNode) -> list[LexborNode]:
     return list(node.iter(include_text=False))
 
 
-def _table_rows(table: Node) -> list[Node]:
+def _table_rows(table: LexborNode) -> list[LexborNode]:
     """Direct ``<tr>`` rows, recursing one level into thead/tbody/tfoot."""
-    rows: list[Node] = []
+    rows: list[LexborNode] = []
     for child in _direct_children(table):
         if child.tag == "tr":
             rows.append(child)
@@ -150,7 +155,7 @@ def _table_rows(table: Node) -> list[Node]:
     return rows
 
 
-def _row_cells(row: Node) -> list[Node]:
+def _row_cells(row: LexborNode) -> list[LexborNode]:
     return [c for c in _direct_children(row) if c.tag in ("th", "td")]
 
 
@@ -167,7 +172,7 @@ class _MarkdownWalker:
     def __init__(self, base_url: str) -> None:
         self.__base_url = base_url
 
-    def walk(self, node: Node) -> str:
+    def walk(self, node: LexborNode) -> str:
         """Render *node*'s block-level children as Markdown, joined by blank lines.
 
         Args:
@@ -201,7 +206,7 @@ class _MarkdownWalker:
         flush()
         return "\n\n".join(parts)
 
-    def __inline_node(self, node: Node) -> str:
+    def __inline_node(self, node: LexborNode) -> str:
         """Render one non-block *node* (and its subtree) as inline text/markdown.
 
         Handles ``node`` itself being ``<a>``/``<br>`` — not just an ``<a>``
@@ -219,7 +224,7 @@ class _MarkdownWalker:
             return text
         return self.__inline(node)
 
-    def __inline(self, node: Node) -> str:
+    def __inline(self, node: LexborNode) -> str:
         """Render *node*'s children as inline text/markdown (node is a container)."""
         parts: list[str] = []
         for child in node.iter(include_text=True):
@@ -229,10 +234,10 @@ class _MarkdownWalker:
                 parts.append(self.__inline_node(child))
         return "".join(parts)
 
-    def __cell_text(self, cell: Node) -> str:
+    def __cell_text(self, cell: LexborNode) -> str:
         return _norm_ws(self.__inline(cell)).replace("|", "\\|")
 
-    def __table_to_markdown(self, table: Node) -> str:
+    def __table_to_markdown(self, table: LexborNode) -> str:
         rows = _table_rows(table)
         if not rows:
             return ""
@@ -248,7 +253,7 @@ class _MarkdownWalker:
         lines.extend("| " + " | ".join(pad(row)) + " |" for row in grid[1:])
         return "\n".join(lines)
 
-    def __list_to_markdown(self, list_node: Node, depth: int) -> str:
+    def __list_to_markdown(self, list_node: LexborNode, depth: int) -> str:
         indent = "  " * depth
         entries: list[str] = []
         has_blocks = False
@@ -286,7 +291,7 @@ class _MarkdownWalker:
             entries.append(entry)
         return ("\n\n" if has_blocks else "\n").join(entries)
 
-    def __block_to_markdown(self, el: Node) -> str:
+    def __block_to_markdown(self, el: LexborNode) -> str:
         tag = el.tag
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             level = int(tag[1])

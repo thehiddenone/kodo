@@ -19,7 +19,7 @@ import base64
 import re
 from urllib.parse import parse_qs, unquote, urljoin, urlsplit
 
-from selectolax.parser import HTMLParser, Node
+from selectolax.lexbor import LexborHTMLParser, LexborNode
 
 from ._engines import SEARCH_ENGINES, is_engine_internal
 
@@ -38,13 +38,13 @@ def search_url(engine: str, query: str) -> str:
 
 def is_blocked(engine: str, html: str) -> bool:
     """``True`` when *html* is an anti-bot/captcha wall for *engine*."""
-    tree = HTMLParser(html)
+    tree = LexborHTMLParser(html)
     return _BLOCKED_CHECKS[engine](tree)
 
 
 def extract_hits(engine: str, html: str, base_url: str) -> list[dict[str, str]]:
     """Organic hits ``[{url, title, snippet}]`` for *engine*, ads/internal links skipped."""
-    tree = HTMLParser(html)
+    tree = LexborHTMLParser(html)
     hits: list[dict[str, str]] = []
     seen: set[str] = set()
     for url, title, snippet in _EXTRACTORS[engine](tree, base_url):
@@ -55,15 +55,24 @@ def extract_hits(engine: str, html: str, base_url: str) -> list[dict[str, str]]:
     return hits
 
 
-def _text(node: Node | None) -> str:
+def _text(node: LexborNode | None) -> str:
     return node.text(separator=" ", strip=True) if node is not None else ""
 
 
-def _closest(node: Node | None, selector: str) -> Node | None:
-    """Nearest ancestor-or-self matching *selector* (mirrors JS ``Element.closest``)."""
-    cur = node
+def _closest(node: LexborNode | None, selector: str) -> LexborNode | None:
+    """Nearest ancestor-or-self matching *selector* (mirrors JS ``Element.closest``).
+
+    Not ``css_matches`` per ancestor: that is true when the node *or any
+    descendant* matches, so it would stop at the first ancestor whose subtree
+    contains a match (e.g. the document root on any page with an ad block).
+    Instead, collect the document's matches once and walk up until one is hit.
+    """
+    if node is None:
+        return None
+    matches = set(node.parser.css(selector))
+    cur: LexborNode | None = node
     while cur is not None:
-        if cur.tag != "-text" and cur.css_matches(selector):
+        if cur in matches:
             return cur
         cur = cur.parent
     return None
@@ -82,7 +91,7 @@ def _abs_http_url(href: str | None, base_url: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _google_blocked(tree: HTMLParser) -> bool:
+def _google_blocked(tree: LexborHTMLParser) -> bool:
     return (
         tree.css_first(
             "#captcha-form, form[action*='/sorry/'], iframe[src*='recaptcha'], #recaptcha"
@@ -91,7 +100,7 @@ def _google_blocked(tree: HTMLParser) -> bool:
     )
 
 
-def _google_extract(tree: HTMLParser, base_url: str) -> list[tuple[str, str, str]]:
+def _google_extract(tree: LexborHTMLParser, base_url: str) -> list[tuple[str, str, str]]:
     out: list[tuple[str, str, str]] = []
     for h3 in tree.css("#search h3, #rso h3"):
         a = _closest(h3, "a")
@@ -123,7 +132,7 @@ def _google_extract(tree: HTMLParser, base_url: str) -> list[tuple[str, str, str
 # ---------------------------------------------------------------------------
 
 
-def _bing_blocked(tree: HTMLParser) -> bool:
+def _bing_blocked(tree: LexborHTMLParser) -> bool:
     if tree.css_first("#b_captcha, .b_captcha, iframe[src*='challenge']") is not None:
         return True
     haystack = f"{_text(tree.css_first('title'))} {_text(tree.body)[:500]}"
@@ -148,7 +157,7 @@ def _unwrap_bing(url: str) -> str:
         return url
 
 
-def _bing_extract(tree: HTMLParser, base_url: str) -> list[tuple[str, str, str]]:
+def _bing_extract(tree: LexborHTMLParser, base_url: str) -> list[tuple[str, str, str]]:
     out: list[tuple[str, str, str]] = []
     for li in tree.css("#b_results > li.b_algo"):
         a = li.css_first("h2 a")
@@ -171,7 +180,7 @@ def _bing_extract(tree: HTMLParser, base_url: str) -> list[tuple[str, str, str]]
 # ---------------------------------------------------------------------------
 
 
-def _duckduckgo_blocked(tree: HTMLParser) -> bool:
+def _duckduckgo_blocked(tree: LexborHTMLParser) -> bool:
     if tree.css_first(".anomaly-modal, form[action*='challenge']") is not None:
         return True
     return bool(
@@ -179,7 +188,7 @@ def _duckduckgo_blocked(tree: HTMLParser) -> bool:
     )
 
 
-def _duckduckgo_extract(tree: HTMLParser, base_url: str) -> list[tuple[str, str, str]]:
+def _duckduckgo_extract(tree: LexborHTMLParser, base_url: str) -> list[tuple[str, str, str]]:
     out: list[tuple[str, str, str]] = []
     for div in tree.css("div.result"):
         classes = div.attributes.get("class") or ""
@@ -207,11 +216,11 @@ def _duckduckgo_extract(tree: HTMLParser, base_url: str) -> list[tuple[str, str,
 # ---------------------------------------------------------------------------
 
 
-def _wikipedia_blocked(tree: HTMLParser) -> bool:  # noqa: ARG001 — no reader-facing captcha
+def _wikipedia_blocked(tree: LexborHTMLParser) -> bool:  # noqa: ARG001 — no reader-facing captcha
     return False
 
 
-def _wikipedia_extract(tree: HTMLParser, base_url: str) -> list[tuple[str, str, str]]:
+def _wikipedia_extract(tree: LexborHTMLParser, base_url: str) -> list[tuple[str, str, str]]:
     out: list[tuple[str, str, str]] = []
     for li in tree.css("li.mw-search-result"):
         a = li.css_first(".mw-search-result-heading a")

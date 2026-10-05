@@ -234,6 +234,33 @@ def test_engines_static_extract_hits_unwraps_redirect_and_skips_ads() -> None:
     assert hits[0]["title"] == "Result A"
 
 
+_GOOGLE_RESULTS_HTML = """
+<html><body>
+<div id="search"><div id="rso">
+  <div id="tads">
+    <div data-hveid="AD1"><a href="https://ads.example.com/"><h3>Sponsored</h3></a></div>
+  </div>
+  <div class="MjjYud"><div data-hveid="R1">
+    <a href="/url?q=https://example.com/a&amp;sa=U"><h3>Result A</h3></a>
+    <div class="VwiC3b">Snippet A</div>
+  </div></div>
+  <div class="g" data-hveid="R2">
+    <a href="https://example.org/b"><h3>Result B</h3></a>
+    <span data-sncf="1">Snippet B</span>
+  </div>
+</div></div>
+</body></html>
+"""
+
+
+def test_engines_static_google_keeps_organic_hits_when_page_has_ads() -> None:
+    hits = engines_static.extract_hits("google", _GOOGLE_RESULTS_HTML, "https://www.google.com/")
+    assert hits == [
+        {"url": "https://example.com/a", "title": "Result A", "snippet": "Snippet A"},
+        {"url": "https://example.org/b", "title": "Result B", "snippet": "Snippet B"},
+    ]
+
+
 def test_engines_static_is_blocked_detects_anomaly_page() -> None:
     html = "<html><body>Unfortunately, bots use DuckDuckGo too.</body></html>"
     assert engines_static.is_blocked("duckduckgo", html)
