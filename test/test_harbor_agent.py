@@ -23,6 +23,7 @@ from harbor.agents.factory import AgentFactory
 from harbor.agents.installed.base import AgentAuthenticationError, NonZeroAgentExitCodeError
 from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.models.agent.context import AgentContext
+from harbor.models.task.config import MCPServerConfig
 from harbor.models.trajectories import Trajectory
 
 from kodo.harbor.agent import KodoAgent, KodoAgentOptions, KodoRunRecord, session_to_trajectory
@@ -491,3 +492,249 @@ def _write_fixture(fixture: Path) -> None:
     }
     (fixture / "result.json").write_text(json.dumps(result), encoding="utf-8")
     _jsonl(fixture / "stdout.jsonl", [{"type": "run.start"}])
+
+
+# ---------------------------------------------------------------------------
+# More of the adapter's contract
+# ---------------------------------------------------------------------------
+
+
+def test_an_agent_without_kodo_options_is_refused(tmp_path: Path) -> None:
+    class _Bare(KodoAgent):
+        options_model = None
+
+    with pytest.raises(ValueError, match="requires KodoAgentOptions"):
+        _Bare(logs_dir=tmp_path, model_name="anthropic/x")
+
+
+def test_version_falls_back_to_this_kodo_or_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.metadata
+
+    unversioned = KodoAgent(
+        logs_dir=tmp_path, model_name="anthropic/x", kodo_wheel=str(tmp_path / "custom.whl")
+    )
+    assert unversioned.version() == importlib.metadata.version("py-kodo")
+
+    def not_installed(name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", not_installed)
+    assert KodoAgent(logs_dir=tmp_path, model_name="anthropic/x").version() is None
+
+
+class _RecordingEnvironment:
+    """A container that accepts every command and upload, and remembers them."""
+
+    default_user: str | None = None
+
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+        self.uploads: list[tuple[Path, str]] = []
+
+    async def exec(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+    ) -> ExecResult:
+        self.commands.append(command)
+        return ExecResult(stdout="", stderr="", return_code=0)
+
+    async def upload_file(self, source_path: Path | str, target_path: str) -> None:
+        self.uploads.append((Path(source_path), target_path))
+
+    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
+        self.uploads.append((Path(source_dir), target_dir))
+
+
+async def test_install_uploads_the_wheel_and_the_user_agents(tmp_path: Path) -> None:
+    wheel = tmp_path / "py_kodo-9.8.7-py3-none-any.whl"
+    agents = tmp_path / "agents"
+    agent = KodoAgent(
+        logs_dir=tmp_path,
+        model_name="anthropic/x",
+        kodo_wheel=str(wheel),
+        agents_dir=str(agents),
+        python_version="3.13",
+    )
+    environment = _RecordingEnvironment()
+
+    await agent.install(cast(BaseEnvironment, environment))
+
+    staged_wheel = f"/installed-agent/{wheel.name}"
+    assert environment.uploads == [
+        (wheel, staged_wheel),
+        (agents, "/installed-agent/kodo-agents"),
+    ]
+    script = "\n".join(environment.commands)
+    assert f"uv tool install --force --python 3.13 {staged_wheel}" in script
+    assert 'cp -R /installed-agent/kodo-agents "$HOME/.kodo/agents"' in script
+
+
+@pytest.mark.parametrize(
+    ("version", "requirement"), [("1.2.3", "py-kodo==1.2.3"), (None, "py-kodo")]
+)
+async def test_install_without_a_wheel_uses_the_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: str | None, requirement: str
+) -> None:
+    import importlib.metadata
+
+    def not_installed(name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", not_installed)
+    agent = KodoAgent(logs_dir=tmp_path, model_name="anthropic/x", version=version)
+    environment = _RecordingEnvironment()
+
+    await agent.install(cast(BaseEnvironment, environment))
+
+    assert environment.uploads == []
+    install = next(c for c in environment.commands if "uv tool install" in c)
+    assert f"uv tool install --force --python 3.12 {requirement};" in install
+
+
+async def test_run_warns_about_mcp_servers_and_installs_task_skills(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    skills = tmp_path / "task-skills"
+    (skills / "lint").mkdir(parents=True)
+    (skills / "lint" / "SKILL.md").write_text("# lint\n", encoding="utf-8")
+    trial = _Trial(
+        tmp_path,
+        "ok",
+        mcp_servers=[MCPServerConfig(name="docs", url="http://mcp.invalid/sse")],
+        skills_dir=str(skills),
+    )
+    _write_fixture(trial.fixture)
+
+    with caplog.at_level("WARNING"):
+        await trial.run()
+
+    assert "Kodo has no MCP client" in caplog.text
+    copied = tmp_path / "home" / ".kodo" / "skills" / "lint" / "SKILL.md"
+    assert copied.read_text(encoding="utf-8") == "# lint\n"
+
+
+async def test_the_instruction_file_is_handed_to_the_default_user(tmp_path: Path) -> None:
+    trial = _Trial(tmp_path, "ok")
+    _write_fixture(trial.fixture)
+    owner = str(os.getuid())
+    trial.shell.default_user = owner
+
+    await trial.run()
+
+    instruction = trial.logs / "instruction.md"
+    assert instruction.stat().st_uid == os.getuid()
+    assert any(c.startswith(f"set -o pipefail; chown {owner} ") for c in trial.shell.commands)
+
+
+def test_an_unconvertible_session_log_still_fills_the_context(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _jsonl(
+        tmp_path / "kodo-session" / "session.jsonl",
+        [
+            {"role": "user", "content": "fix it", "ts": "not-a-timestamp"},
+            {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+        ],
+    )
+    _jsonl(tmp_path / "kodo.jsonl", [{"type": "run.result", "outcome": "completed"}])
+    agent = KodoAgent(logs_dir=tmp_path, model_name="anthropic/x")
+    context = AgentContext()
+
+    with caplog.at_level("WARNING"):
+        agent.populate_context_post_run(context)
+
+    assert "Could not convert kodo's session log to ATIF" in caplog.text
+    assert not (tmp_path / "trajectory.json").exists()
+    assert context.metadata is not None
+    assert cast(dict[str, object], context.metadata["kodo"])["outcome"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# KodoRunRecord
+# ---------------------------------------------------------------------------
+
+
+def test_the_final_event_stands_in_for_a_missing_result_file(tmp_path: Path) -> None:
+    (tmp_path / "kodo-result.json").write_text('["not", "a", "result"]', encoding="utf-8")
+    _jsonl(
+        tmp_path / "kodo.jsonl",
+        [
+            {"type": "run.result", "outcome": "runtime_error"},
+            {"type": "run.result", "outcome": "completed", "per_model": {"m": {"calls": 1}}},
+        ],
+    )
+
+    record = KodoRunRecord.load(tmp_path)
+
+    assert record is not None
+    assert (record.outcome, record.source) == ("completed", "result")
+
+
+def test_a_killed_run_is_rebuilt_from_its_usage_events(tmp_path: Path) -> None:
+    lines = [
+        json.dumps({"type": "run.start"}),
+        json.dumps({"type": "usage", "model": "a", "input_tokens": 10, "usd": 0.25}),
+        json.dumps({"type": "usage", "input_tokens": True, "output_tokens": "many"}),
+        json.dumps(["not", "an", "event"]),
+        '{"type": "usage", "model": "a", "input_tok',
+        json.dumps({"type": "usage", "model": "a", "cache_read_tokens": 4, "output_tokens": 3}),
+        "KODO-RESULT outcome=killed error=",
+    ]
+    (tmp_path / "kodo.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    record = KodoRunRecord.load(tmp_path)
+
+    assert record is not None
+    assert (record.outcome, record.source) == ("killed", "partial_log")
+    context = AgentContext()
+    record.fill(context, kodo_version="1.0")
+    assert (context.n_input_tokens, context.n_cache_tokens, context.n_output_tokens) == (10, 4, 3)
+    assert context.cost_usd == 0.25
+    assert context.model_usage is not None
+    assert set(context.model_usage) == {"a", "unknown"}
+    assert context.model_usage["unknown"].n_input_tokens == 0
+
+
+@pytest.mark.parametrize("per_model", [None, "not a mapping", {"m": "not a row"}])
+def test_a_result_without_per_model_rows_uses_the_cumulative_totals(
+    tmp_path: Path, per_model: object
+) -> None:
+    result: dict[str, object] = {
+        "schema_version": 7,
+        "outcome": "completed",
+        "cumulative_input_tokens": 1000,
+        "cumulative_input_tokens_uncached": 250,
+        "cumulative_output_tokens": 80,
+        "cumulative_usd": 0.5,
+        "unrelated": "dropped",
+    }
+    if per_model is not None:
+        result["per_model"] = per_model
+    (tmp_path / "kodo-result.json").write_text(json.dumps(result), encoding="utf-8")
+
+    record = KodoRunRecord.load(tmp_path)
+    assert record is not None
+    context = AgentContext()
+    record.fill(context, kodo_version="2.0")
+
+    assert (context.n_input_tokens, context.n_cache_tokens, context.n_output_tokens) == (
+        1000,
+        750,
+        80,
+    )
+    assert context.cost_usd == 0.5
+    assert context.model_usage == {}
+    assert context.metadata == {
+        "kodo": {
+            "outcome": "completed",
+            "kodo_version": "2.0",
+            "result_source": "result",
+            "result_schema_version": 7,
+        }
+    }

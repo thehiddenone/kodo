@@ -13,6 +13,7 @@ one-time ``example.com`` sanity check is cached **per kind**.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -273,3 +274,159 @@ async def test_sanity_check_failure_is_fatal_and_closes_the_browser(
     assert not state_path.exists() or "chrome" not in json.loads(state_path.read_text()).get(
         "sanity_passed", {}
     )
+
+
+# ---------------------------------------------------------------------------
+# Persisted state robustness
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "contents",
+    ["{not json", "[1, 2, 3]", '{"sanity_passed": ["chrome"]}'],
+    ids=["corrupt", "not-a-dict", "sanity-not-a-dict"],
+)
+async def test_unusable_state_file_is_treated_as_fresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contents: str
+) -> None:
+    _patch_playwright(monkeypatch, chromium_script=[_FakeBrowser("chrome")])
+    state_path = tmp_path / "browser_state.json"
+    state_path.write_text(contents, encoding="utf-8")
+
+    async with BrowserSession(state_path, "chrome") as session:
+        assert session.browser.kind == "chrome"  # type: ignore[attr-defined]
+
+    # The sanity check ran again and the state file was rewritten cleanly.
+    assert json.loads(state_path.read_text())["sanity_passed"] == {"chrome": True}
+
+
+@pytest.mark.asyncio
+async def test_state_file_that_cannot_be_written_does_not_fail_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_playwright(monkeypatch, chromium_script=[_FakeBrowser("chrome")])
+    blocker = tmp_path / "not_a_dir"
+    blocker.write_text("", encoding="utf-8")
+    state_path = blocker / "browser_state.json"
+
+    async with BrowserSession(state_path, "chrome") as session:
+        assert session.browser.kind == "chrome"  # type: ignore[attr-defined]
+    assert not state_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Session lifecycle edges
+# ---------------------------------------------------------------------------
+
+
+def test_browser_property_outside_context_raises(tmp_path: Path) -> None:
+    session = BrowserSession(tmp_path / "browser_state.json", "firefox")
+    with pytest.raises(BrowserUnavailableError, match="not open"):
+        _ = session.browser
+
+
+@pytest.mark.asyncio
+async def test_sanity_check_navigation_error_is_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    browser = _FakeBrowser("firefox", page_raises=PlaywrightError("net::ERR_NAME_NOT_RESOLVED"))
+    _patch_playwright(monkeypatch, firefox_script=[browser])
+    state_path = tmp_path / "browser_state.json"
+
+    with pytest.raises(BrowserUnavailableError, match="sanity check failed"):
+        async with BrowserSession(state_path, "firefox"):
+            pass
+    assert browser.closed
+
+
+class _UncloseableBrowser(_FakeBrowser):
+    async def close(self) -> None:
+        raise PlaywrightError("Target closed")
+
+
+@pytest.mark.asyncio
+async def test_browser_close_failure_on_exit_is_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_playwright(monkeypatch, webkit_script=[_UncloseableBrowser("webkit")])
+    state_path = tmp_path / "browser_state.json"
+
+    async with BrowserSession(state_path, "webkit") as session:
+        assert session.browser.kind == "webkit"  # type: ignore[attr-defined]
+    # Leaving the context closed the session despite the close error.
+    with pytest.raises(BrowserUnavailableError):
+        _ = session.browser
+
+
+# ---------------------------------------------------------------------------
+# Automatic `playwright install` (subprocess faked, never spawned)
+# ---------------------------------------------------------------------------
+
+
+class _FakeInstallerProcess:
+    def __init__(self, returncode: int, output: bytes, hang: bool) -> None:
+        self.returncode = returncode
+        self._output = output
+        self._hang = hang
+        self.killed = False
+
+    async def communicate(self) -> tuple[bytes, None]:
+        if self._hang:
+            raise TimeoutError
+        return self._output, None
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+def _patch_installer(
+    monkeypatch: pytest.MonkeyPatch, *, returncode: int = 0, output: bytes = b"", hang: bool = False
+) -> tuple[_FakeInstallerProcess, list[tuple[str, ...]]]:
+    proc = _FakeInstallerProcess(returncode, output, hang)
+    argv_seen: list[tuple[str, ...]] = []
+
+    async def _fake_exec(*argv: str, **kwargs: object) -> _FakeInstallerProcess:
+        argv_seen.append(argv)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    return proc, argv_seen
+
+
+@pytest.mark.asyncio
+async def test_missing_bundled_browser_runs_playwright_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_playwright(monkeypatch, webkit_script=[_not_installed_error(), _FakeBrowser("webkit")])
+    _, argv_seen = _patch_installer(monkeypatch, returncode=0, output=b"Downloading webkit...")
+
+    async with BrowserSession(tmp_path / "browser_state.json", "webkit") as session:
+        assert session.installed_now
+        assert session.browser.kind == "webkit"  # type: ignore[attr-defined]
+    assert [argv[1:] for argv in argv_seen] == [("-m", "playwright", "install", "webkit")]
+
+
+@pytest.mark.asyncio
+async def test_failed_playwright_install_reports_installer_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_playwright(monkeypatch, firefox_script=[_not_installed_error()])
+    _patch_installer(monkeypatch, returncode=1, output=b"ERROR: disk full")
+
+    with pytest.raises(BrowserUnavailableError, match="disk full"):
+        async with BrowserSession(tmp_path / "browser_state.json", "firefox"):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_timed_out_playwright_install_kills_installer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_playwright(monkeypatch, chromium_script=[_not_installed_error()])
+    proc, _ = _patch_installer(monkeypatch, hang=True)
+
+    with pytest.raises(BrowserUnavailableError, match="timed out"):
+        async with BrowserSession(tmp_path / "browser_state.json", "chromium"):
+            pass
+    assert proc.killed

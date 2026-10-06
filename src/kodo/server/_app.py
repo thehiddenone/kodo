@@ -365,10 +365,6 @@ async def _handle_session_hello(
     await req.manager.replay_backlog(session)
 
 
-async def _handle_ping(req: Request) -> None:
-    await req.reply({"type": "pong"})
-
-
 def _local_entry_installed_path(entry: LocalLLMEntry, kodo_dir: Path) -> str | None:
     """Absolute path to *entry*'s files on disk, once installed — else ``None``.
 

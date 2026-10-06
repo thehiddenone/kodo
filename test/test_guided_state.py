@@ -54,6 +54,17 @@ def test_shadow_path_returns_none_outside_tracked_roots(tmp_path: Path) -> None:
     assert shadow_path(tmp_path / "scripts" / "build.sh", tmp_path) is None
 
 
+def test_shadow_path_returns_none_outside_the_project_root(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    assert shadow_path(tmp_path / "elsewhere" / "specs" / "a.md", project) is None
+    assert is_tracked(tmp_path / "elsewhere" / "specs" / "a.md", project) is False
+
+
+def test_shadow_path_returns_none_for_the_project_root_itself(tmp_path: Path) -> None:
+    assert shadow_path(tmp_path, tmp_path) is None
+
+
 def test_is_tracked_matches_shadow_path(tmp_path: Path) -> None:
     assert is_tracked(tmp_path / "specs" / "a.md", tmp_path) is True
     assert is_tracked(tmp_path / "a.md", tmp_path) is False

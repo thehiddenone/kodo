@@ -283,3 +283,54 @@ def _spec_with_output(output_schema: dict[str, object]) -> ToolSpec:
         input_visibility={},
         output_visibility={},
     )
+
+
+def test_dense_output_schema_renders_union_types_and_malformed_nodes() -> None:
+    """A list ``type`` renders as a pipe union; a non-schema property value
+    renders as an empty string rather than crashing the renderer."""
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": {
+            "exit_code": {"type": ["integer", "null"]},
+            "broken": "not a schema node",
+        },
+    }
+    assert json.loads(dense_output_schema(schema)) == {
+        "exit_code": "(integer|null)",
+        "broken": "",
+    }
+
+
+def test_dense_output_schema_renders_first_object_branch_of_nested_union() -> None:
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": {
+            "detail": {
+                "anyOf": [
+                    "skip-me",
+                    {"type": "string", "description": "Human-readable detail."},
+                    {"type": "null"},
+                ]
+            }
+        },
+    }
+    assert json.loads(dense_output_schema(schema)) == {"detail": "Human-readable detail."}
+
+
+def test_optional_output_paths_walks_union_branches_and_skips_malformed_nodes() -> None:
+    schema: dict[str, object] = {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {"path": {"type": "string"}, "warning": {"type": "string"}},
+                "required": ["path"],
+            },
+            {
+                "type": "object",
+                "properties": {"error": {"type": "string"}, "warning": "malformed"},
+                "required": ["error"],
+            },
+            "not a schema node",
+        ]
+    }
+    assert optional_output_paths(schema) == ("warning",)

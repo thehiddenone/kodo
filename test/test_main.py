@@ -19,16 +19,25 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import shlex
+import shutil
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
 
 import kodo.__main__ as main_mod
 import kodo.agents as subagents_pkg
-from kodo.agents import AgentRegistry
+from kodo.agents import (
+    KIND_AGENT,
+    KIND_SUBAGENT,
+    SHARED_SUBAGENTS_DIRNAME,
+    AgentLoadError,
+    AgentRegistry,
+)
 from kodo.llms import LocalLLMEntry, add_local_entry, get_cloud_registry, get_local_registry
 from kodo.llms.llamacpp import build_openai_tools
 from kodo.runtime import agent_tool_specs
@@ -602,3 +611,731 @@ def test_install_skill_unknown_url_target_is_not_treated_as_local(
 
     assert code == 2
     assert "Error:" in err
+
+
+# ---------------------------------------------------------------------------
+# Hermetic home for the store-backed commands
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point ``Path.home()`` — and so ``~/.kodo`` and every store under it — at ``tmp_path``.
+
+    ``kodo_user_dir``/``kodo_skills_dir``/``kodo_agents_dir`` each compute
+    ``Path.home() / ".kodo"`` at call time, so redirecting ``HOME`` covers all
+    three without patching any of them, and the developer's real ``~/.kodo``
+    is never read or written.
+    """
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    return fake_home
+
+
+def _skills_root(home: Path) -> Path:
+    return home / ".kodo" / "skills"
+
+
+def _agents_root(home: Path) -> Path:
+    return home / ".kodo" / "agents"
+
+
+def _answers(monkeypatch: pytest.MonkeyPatch, *answers: str) -> list[str]:
+    """Feed *answers* to ``input()`` in order; returns the prompts it was shown.
+
+    Running out of answers raises ``EOFError``, exactly like a closed stdin.
+    """
+    queue = list(answers)
+    prompts: list[str] = []
+
+    def _input(prompt: str = "") -> str:
+        prompts.append(prompt)
+        if not queue:
+            raise EOFError
+        return queue.pop(0)
+
+    monkeypatch.setattr("builtins.input", _input)
+    return prompts
+
+
+def _no_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the test if the command prompts at all."""
+
+    def _input(prompt: str = "") -> str:
+        raise AssertionError(f"unexpected prompt: {prompt!r}")
+
+    monkeypatch.setattr("builtins.input", _input)
+
+
+# ---------------------------------------------------------------------------
+# --list-skills
+# ---------------------------------------------------------------------------
+
+
+def test_list_skills_reports_an_empty_store(home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    code, out, err = _run(capsys, "--list-skills")
+    assert code == 0
+    assert err == ""
+    assert out == "No skills installed.\n"
+
+
+def test_list_skills_prints_usable_and_broken_skills(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_skill(_skills_root(home) / "pdf", "Work with PDF files.")
+    broken = _skills_root(home) / "broken"
+    broken.mkdir()
+    (broken / "SKILL.md").write_text("junk, no frontmatter\n", encoding="utf-8")
+
+    code, out, _ = _run(capsys, "--list-skills")
+
+    assert code == 0
+    lines = out.splitlines()
+    assert "pdf: Work with PDF files." in lines
+    assert any(line.startswith("broken: [broken] ") for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# A closed pipe and ``python -m kodo``
+# ---------------------------------------------------------------------------
+
+
+class _ClosedPipe:
+    """A stdout whose reader has gone away: every write raises ``BrokenPipeError``."""
+
+    def __init__(self, fd: int) -> None:
+        self.__fd = fd
+
+    def write(self, text: str) -> int:
+        raise BrokenPipeError
+
+    def flush(self) -> None:
+        raise BrokenPipeError
+
+    def fileno(self) -> int:
+        return self.__fd
+
+
+def test_a_closed_stdout_exits_0_and_silences_further_output(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``| head`` closing early is normal usage: exit 0 and point stdout at devnull."""
+    sink = tmp_path / "stdout.txt"
+    fd = os.open(sink, os.O_WRONLY | os.O_CREAT)
+    try:
+        monkeypatch.setattr(sys, "stdout", _ClosedPipe(fd))
+        assert main_mod.main(["--list-skills"]) == 0
+        # The stdout descriptor now leads to devnull: nothing written to it lands.
+        os.write(fd, b"after the pipe closed")
+    finally:
+        os.close(fd)
+    assert sink.read_bytes() == b""
+
+
+def test_running_the_package_as_a_script_exits_with_mains_code(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["kodo", "--list-skills"])
+    with warnings.catch_warnings():
+        # ``kodo.__main__`` is already imported by this module; runpy says so.
+        warnings.simplefilter("ignore", RuntimeWarning)
+        with pytest.raises(SystemExit) as excinfo:
+            runpy.run_module("kodo", run_name="__main__")
+    assert excinfo.value.code == 0
+    assert capsys.readouterr().out == "No skills installed.\n"
+
+
+# ---------------------------------------------------------------------------
+# Default model: the "installed" definition per entry kind
+# ---------------------------------------------------------------------------
+
+
+def test_an_existing_custom_file_entry_is_the_default_model(
+    kodo_home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"GGUF")
+    add_local_entry(
+        kodo_home,
+        LocalLLMEntry(name="my-file", kind="custom_file", description="A GGUF.", path=str(gguf)),
+    )
+    code, out, err = _run(capsys, "--system-prompt", _PINNED_AGENT)
+    assert code == 0
+    assert err == ""
+    assert out == f"{_rendered(_PINNED_AGENT)}\n"
+
+
+def test_a_custom_file_entry_whose_file_is_gone_is_not_installed(
+    kodo_home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    add_local_entry(
+        kodo_home,
+        LocalLLMEntry(
+            name="my-file",
+            kind="custom_file",
+            description="A GGUF.",
+            path=str(tmp_path / "deleted.gguf"),
+        ),
+    )
+    code, out, err = _run(capsys, "--system-prompt", _PINNED_AGENT)
+    assert code == 2
+    assert out == ""
+    assert "--model" in err
+
+
+class _ManagerWithOneDownload:
+    """A local model manager reporting exactly one registry entry as downloaded."""
+
+    def __init__(self, installed: str, path: Path) -> None:
+        self.__installed = installed
+        self.__path = path
+
+    def get_model_path(self, model_id: str) -> Path | None:
+        return self.__path if model_id == self.__installed else None
+
+
+def test_a_downloaded_catalog_entry_is_the_default_model(
+    kodo_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    downloaded = sorted(get_local_registry(kodo_home))[-1]
+    manager = _ManagerWithOneDownload(downloaded, tmp_path / "model.gguf")
+    monkeypatch.setattr(main_mod, "get_local_model_manager", lambda _kodo_dir: manager)
+
+    code, out, err = _run(capsys, "--tools", _PINNED_AGENT)
+
+    assert code == 0
+    assert err == ""
+    assert json.loads(out) == _oai_tools(_PINNED_AGENT)
+
+
+# ---------------------------------------------------------------------------
+# --install-skill TARGET: local-path failures
+# ---------------------------------------------------------------------------
+
+
+def test_install_skill_local_path_that_is_not_a_skill_exits_2(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    not_a_skill = tmp_path / "notes.txt"
+    not_a_skill.write_text("hello\n", encoding="utf-8")
+
+    code, out, err = _run(capsys, "--install-skill", str(not_a_skill))
+
+    assert code == 2
+    assert out == ""
+    assert err.startswith("Error: ")
+    assert not _skills_root(home).exists()
+
+
+def test_install_skill_local_conflict_without_a_terminal_exits_2(
+    home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_skill(tmp_path / "source" / "pdf", "New version.")
+    _write_skill(_skills_root(home) / "pdf", "Old version.")
+    _answers(monkeypatch)  # stdin already at EOF
+
+    code, out, err = _run(capsys, "--install-skill", str(source))
+
+    assert code == 2
+    assert "--yes" in err
+    assert "Old version." in (_skills_root(home) / "pdf" / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_install_skill_local_source_broken_while_confirming_exits_2(
+    home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The source is re-read for the overwrite, so a change during the prompt is caught."""
+    source = _write_skill(tmp_path / "source" / "pdf", "New version.")
+    _write_skill(_skills_root(home) / "pdf", "Old version.")
+
+    def _break_source_then_confirm(_prompt: str = "") -> str:
+        (source / "SKILL.md").write_text("junk, no frontmatter\n", encoding="utf-8")
+        return "y"
+
+    monkeypatch.setattr("builtins.input", _break_source_then_confirm)
+
+    code, out, err = _run(capsys, "--install-skill", str(source))
+
+    assert code == 2
+    assert "Installed:" not in out
+    assert err.startswith("Error: ")
+    assert "Old version." in (_skills_root(home) / "pdf" / "SKILL.md").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# --install-skill URL: the repository flow (local ``file://`` repos, no network)
+# ---------------------------------------------------------------------------
+
+_requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="git CLI not on PATH")
+
+
+def _skill_repo(tmp_path: Path, files: dict[str, str]) -> Path:
+    """A one-commit git repository holding *files* (relative path -> content)."""
+    repo = tmp_path / "skillpack"
+    repo.mkdir()
+    for relpath, content in files.items():
+        path = repo / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    _commit_all(repo)
+    return repo
+
+
+def _commit_all(repo: Path) -> None:
+    identity = ["-c", "user.email=test@example.com", "-c", "user.name=Test"]
+    if not (repo / ".git").exists():
+        subprocess.run(["git", *identity, "init", "--quiet"], cwd=repo, check=True)
+    subprocess.run(["git", *identity, "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", *identity, "commit", "--quiet", "-m", "change"], cwd=repo, check=True)
+
+
+def _skill_md(description: str) -> str:
+    return f"---\ndescription: {description}\n---\n\nDo the thing.\n"
+
+
+@pytest.fixture
+def two_skill_repo(tmp_path: Path) -> Path:
+    return _skill_repo(
+        tmp_path,
+        {
+            "docx/SKILL.md": _skill_md("Work with Word files."),
+            "pdf/SKILL.md": _skill_md("Work with PDF files."),
+        },
+    )
+
+
+def _url(repo: Path) -> str:
+    """A ``file://`` URL: never an existing local path, so it takes the repo branch."""
+    return f"file://{repo}"
+
+
+def _installed_skills(home: Path) -> set[str]:
+    root = _skills_root(home)
+    return {p.name for p in root.iterdir()} if root.is_dir() else set()
+
+
+@_requires_git
+def test_install_skill_repo_with_no_valid_skills_is_not_an_error(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _skill_repo(tmp_path, {"README.md": "not a skill\n"})
+
+    code, out, err = _run(capsys, "--install-skill", _url(repo))
+
+    assert code == 0
+    assert err == ""
+    assert out == f"No valid skills found in {_url(repo)}.\n"
+
+
+@_requires_git
+def test_install_skill_repo_with_yes_installs_everything_without_prompting(
+    home: Path,
+    two_skill_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _no_input(monkeypatch)
+
+    code, out, err = _run(capsys, "--install-skill", _url(two_skill_repo), "-y")
+
+    assert code == 0
+    assert err == ""
+    assert {"Installed: pdf", "Installed: docx"} <= set(out.splitlines())
+    assert _installed_skills(home) == {"pdf", "docx"}
+
+
+@_requires_git
+def test_install_skill_repo_asks_per_skill_and_reprompts_on_a_bad_answer(
+    home: Path,
+    two_skill_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_skill(_skills_root(home) / "pdf", "Old version.")
+    prompts = _answers(monkeypatch, "maybe", "n", "yes")
+
+    code, out, _ = _run(capsys, "--install-skill", _url(two_skill_repo))
+
+    assert code == 0
+    assert "Please answer y, n, a (yes to all remaining), or q (quit)." in out
+    assert "Installed: pdf" in out
+    assert "Installed: docx" not in out
+    assert _installed_skills(home) == {"pdf"}
+    pdf_prompt = next(p for p in prompts if p.startswith("Install pdf:"))
+    assert "already installed locally" in pdf_prompt
+    docx_prompt = next(p for p in prompts if p.startswith("Install docx:"))
+    assert "already installed locally" not in docx_prompt
+    assert "Work with PDF files." in (_skills_root(home) / "pdf" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+
+@_requires_git
+def test_install_skill_repo_all_answer_takes_every_remaining_skill(
+    home: Path,
+    two_skill_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    prompts = _answers(monkeypatch, "a")
+
+    code, _, _ = _run(capsys, "--install-skill", _url(two_skill_repo))
+
+    assert code == 0
+    assert len(prompts) == 1
+    assert _installed_skills(home) == {"pdf", "docx"}
+
+
+@_requires_git
+def test_install_skill_repo_quit_installs_nothing(
+    home: Path,
+    two_skill_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _answers(monkeypatch, "y", "q")
+
+    code, out, _ = _run(capsys, "--install-skill", _url(two_skill_repo))
+
+    assert code == 0
+    assert "Installation cancelled." in out
+    assert _installed_skills(home) == set()
+
+
+@_requires_git
+def test_install_skill_repo_declining_everything_installs_nothing(
+    home: Path,
+    two_skill_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _answers(monkeypatch, "", "no")
+
+    code, out, _ = _run(capsys, "--install-skill", _url(two_skill_repo))
+
+    assert code == 0
+    assert out.endswith("Nothing selected to install.\n")
+    assert _installed_skills(home) == set()
+
+
+@_requires_git
+def test_install_skill_repo_without_a_terminal_exits_2(
+    home: Path,
+    two_skill_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _answers(monkeypatch)  # stdin already at EOF
+
+    code, _, err = _run(capsys, "--install-skill", _url(two_skill_repo))
+
+    assert code == 2
+    assert "--yes" in err
+    assert _installed_skills(home) == set()
+
+
+@_requires_git
+def test_install_skill_repo_reports_a_skill_removed_while_choosing(
+    home: Path,
+    two_skill_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The repo is cloned again to install, so a skill gone by then is reported, not faked."""
+
+    def _remove_pdf_then_take_all(_prompt: str = "") -> str:
+        shutil.rmtree(two_skill_repo / "pdf")
+        _commit_all(two_skill_repo)
+        return "a"
+
+    monkeypatch.setattr("builtins.input", _remove_pdf_then_take_all)
+
+    code, out, err = _run(capsys, "--install-skill", _url(two_skill_repo))
+
+    assert code == 0
+    assert "Installed: docx" in out
+    assert f"Skipped (no longer found in {_url(two_skill_repo)}): pdf" in err
+    assert _installed_skills(home) == {"docx"}
+
+
+# ---------------------------------------------------------------------------
+# --list-agents / --install-agent (doc/USER_AGENTS.md)
+# ---------------------------------------------------------------------------
+
+
+def _write_user_agent(root: Path, name: str, *, version: str = "2.0.0", body: str = "") -> None:
+    """Write a top-level agent's two source files directly under *root*."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / f"agent_{name}.md").write_text(
+        f"---\nname: {name}\nversion: {version}\ntools:\n  - read_file\n---\n"
+        f"You are {name}.\n{body}\n",
+        encoding="utf-8",
+    )
+    (root / f"{name}.json").write_text(
+        json.dumps({"name": name, "description": f"The {name} agent."}), encoding="utf-8"
+    )
+
+
+def _write_user_subagent(root: Path, name: str, *, version: str = "1.5.0") -> None:
+    """Write one sub-agent (prompt + contract) under *root*'s shared sub-agents directory."""
+    directory = root / SHARED_SUBAGENTS_DIRNAME / name
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"subagent_{name}.md").write_text(
+        f"---\nname: {name}\nversion: {version}\ntools:\n  - read_file\n  - return_result\n"
+        f"---\nYou are {name}.\n\n## Purpose\n\nDoes the {name} job.\n",
+        encoding="utf-8",
+    )
+    contract = {
+        "name": name,
+        "input_schema": {
+            "shape": "raw",
+            "schema": {
+                "type": "object",
+                "properties": {"instructions": {"type": "string", "description": "d"}},
+                "required": ["instructions"],
+            },
+        },
+        "output_schema": {
+            "shape": "raw",
+            "schema": {
+                "type": "object",
+                "properties": {"summary": {"type": "string", "description": "d"}},
+                "required": ["summary"],
+            },
+        },
+    }
+    (directory / f"{name}.json").write_text(json.dumps(contract), encoding="utf-8")
+
+
+@pytest.fixture
+def agent_source(tmp_path: Path) -> Path:
+    """A source directory offering one agent (``reviewer``) and one sub-agent (``auditor``)."""
+    source = tmp_path / "agent-source"
+    _write_user_agent(source, "reviewer")
+    _write_user_subagent(source, "auditor")
+    return source
+
+
+def _raise_agent_load_error(*_args: object, **_kwargs: object) -> AgentRegistry:
+    raise AgentLoadError("packaged agent kodo_guide is corrupt")
+
+
+def test_list_agents_reports_an_empty_store(home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    code, out, err = _run(capsys, "--list-agents")
+    assert code == 0
+    assert err == ""
+    assert out == f"No user agents installed under {_agents_root(home)}.\n"
+
+
+def test_list_agents_prints_healthy_and_broken_entries(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _agents_root(home)
+    _write_user_agent(root / "reviewer", "reviewer")
+    _write_user_subagent(root, "auditor")
+    _write_user_agent(root / "sloppy", "sloppy", body="{SHARED:no_such_block}")
+
+    code, out, _ = _run(capsys, "--list-agents")
+
+    assert code == 0
+    lines = [line.split() for line in out.splitlines()]
+    assert [KIND_AGENT, "reviewer", "2.0.0"] in lines
+    assert [KIND_SUBAGENT, "auditor", "1.5.0"] in lines
+    sloppy = next(line for line in lines if line[1] == "sloppy")
+    assert sloppy[:3] == [KIND_AGENT, "sloppy", "BROKEN:"]
+
+
+def test_list_agents_exits_2_when_a_packaged_agent_fails_to_load(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(main_mod, "AgentRegistry", _raise_agent_load_error)
+
+    code, out, err = _run(capsys, "--list-agents")
+
+    assert code == 2
+    assert out == ""
+    assert "kodo_guide is corrupt" in err
+
+
+def test_install_agent_installs_a_local_source_and_lists_it(
+    home: Path,
+    agent_source: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _no_input(monkeypatch)
+
+    code, out, _ = _run(capsys, "--install-agent", str(agent_source))
+
+    assert code == 0
+    assert {"installed reviewer", "installed auditor"} <= set(out.splitlines())
+    _, listed, _ = _run(capsys, "--list-agents")
+    assert [KIND_AGENT, "reviewer", "2.0.0"] in [line.split() for line in listed.splitlines()]
+
+
+def test_install_agent_from_a_missing_directory_exits_1(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out, _ = _run(capsys, "--install-agent", str(tmp_path / "nowhere"))
+    assert code == 1
+    assert out.startswith("error: ")
+    assert not _agents_root(home).exists() or not any(_agents_root(home).iterdir())
+
+
+def test_install_agent_from_a_source_holding_no_agents_exits_1(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    code, out, _ = _run(capsys, "--install-agent", str(empty))
+    assert code == 1
+    assert "holds no agents" in out
+
+
+def test_install_agent_with_nothing_installable_exits_1(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = tmp_path / "reserved"
+    _write_user_agent(source, "kodo_evil")
+
+    code, out, _ = _run(capsys, "--install-agent", str(source))
+
+    assert code == 1
+    assert "kodo_evil" in out
+    assert "SKIPPED:" in out
+    assert not (_agents_root(home) / "kodo_evil").exists()
+
+
+def test_install_agent_installs_the_good_entries_and_reports_the_skipped_one(
+    home: Path, agent_source: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_user_agent(agent_source, "kodo_evil")
+
+    code, out, _ = _run(capsys, "--install-agent", str(agent_source))
+
+    assert code == 0
+    lines = out.splitlines()
+    assert "installed reviewer" in lines
+    assert any(line.startswith("skipped ") and "kodo_evil" in line for line in lines)
+
+
+def _bump_reviewer(source: Path) -> None:
+    _write_user_agent(source, "reviewer", version="3.0.0")
+
+
+def _installed_reviewer_prompt(home: Path) -> str:
+    return (_agents_root(home) / "reviewer" / "agent_reviewer.md").read_text(encoding="utf-8")
+
+
+def test_install_agent_conflict_kept_on_request(
+    home: Path,
+    agent_source: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _run(capsys, "--install-agent", str(agent_source))
+    _bump_reviewer(agent_source)
+    prompts = _answers(monkeypatch, "keep")
+
+    code, out, _ = _run(capsys, "--install-agent", str(agent_source))
+
+    assert code == 0
+    assert len(prompts) == 1
+    assert "Already installed:" in out
+    assert "kept the installed reviewer" in out.splitlines()
+    assert "version: 2.0.0" in _installed_reviewer_prompt(home)
+
+
+def test_install_agent_conflict_replaced_on_request(
+    home: Path,
+    agent_source: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _run(capsys, "--install-agent", str(agent_source))
+    _bump_reviewer(agent_source)
+    _answers(monkeypatch, "Replace")
+
+    code, out, _ = _run(capsys, "--install-agent", str(agent_source))
+
+    assert code == 0
+    assert "installed reviewer" in out.splitlines()
+    assert "version: 3.0.0" in _installed_reviewer_prompt(home)
+
+
+def test_install_agent_conflict_replaced_without_asking_under_yes(
+    home: Path,
+    agent_source: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _run(capsys, "--install-agent", str(agent_source))
+    _bump_reviewer(agent_source)
+    _no_input(monkeypatch)
+
+    code, _, _ = _run(capsys, "--install-agent", str(agent_source), "--yes")
+
+    assert code == 0
+    assert "version: 3.0.0" in _installed_reviewer_prompt(home)
+
+
+def test_install_agent_source_vanishing_mid_install_exits_1(
+    home: Path,
+    agent_source: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _run(capsys, "--install-agent", str(agent_source))
+    _bump_reviewer(agent_source)
+
+    def _delete_source_then_replace(_prompt: str = "") -> str:
+        shutil.rmtree(agent_source)
+        return "replace"
+
+    monkeypatch.setattr("builtins.input", _delete_source_then_replace)
+
+    code, out, _ = _run(capsys, "--install-agent", str(agent_source))
+
+    assert code == 1
+    assert out.splitlines()[-1].startswith("error: ")
+    assert "version: 2.0.0" in _installed_reviewer_prompt(home)
+
+
+def test_install_agent_that_installs_but_cannot_load_exits_1(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Each file parses on its own, but the registry refuses the bundle as a whole."""
+    source = tmp_path / "sloppy-source"
+    _write_user_agent(source, "sloppy", body="{SHARED:no_such_block}")
+
+    code, out, _ = _run(capsys, "--install-agent", str(source))
+
+    assert code == 1
+    assert "installed sloppy" in out
+    assert "Installed, but Kōdo cannot load:" in out
+    assert "  sloppy: " in out
+
+
+def test_install_agent_exits_1_when_the_registry_cannot_load_afterwards(
+    home: Path,
+    agent_source: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(main_mod, "AgentRegistry", _raise_agent_load_error)
+
+    code, out, _ = _run(capsys, "--install-agent", str(agent_source))
+
+    assert code == 1
+    assert "installed reviewer" in out
+    assert out.splitlines()[-1] == "error: packaged agent kodo_guide is corrupt"

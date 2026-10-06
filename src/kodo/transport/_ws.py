@@ -125,9 +125,14 @@ class WebSocketDispatcher:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
 
-        if self.__ws is not None:
+        previous = self.__ws
+        if previous is not None:
             _log.warning("Replacing existing WebSocket connection")
-            await self.__ws.close()
+            await previous.close()
+            # The replaced client can no longer answer what was sent to it. Its
+            # own cleanup below may run only after this connection is installed
+            # (e.g. it was mid-dispatch), and then it must leave this one alone.
+            self.__cancel_pending_responses()
 
         self.__ws = ws
         _log.info("WebSocket connected from %s", request.remote)
@@ -141,16 +146,20 @@ class WebSocketDispatcher:
                 elif msg.type == WSMsgType.ERROR:
                     _log.error("WebSocket protocol error: %s", ws.exception())
         finally:
-            self.__ws = None
-            # Cancel all pending server-initiated request futures so that
-            # callers (KeyBroker, GateOrchestrator) are not left hanging.
-            for future in self.__pending_responses.values():
-                if not future.done():
-                    future.cancel()
-            self.__pending_responses.clear()
+            if self.__ws is ws:
+                self.__ws = None
+                self.__cancel_pending_responses()
             _log.info("WebSocket disconnected")
 
         return ws
+
+    def __cancel_pending_responses(self) -> None:
+        # Cancel all pending server-initiated request futures so that callers
+        # (KeyBroker, GateOrchestrator) are not left hanging.
+        for future in self.__pending_responses.values():
+            if not future.done():
+                future.cancel()
+        self.__pending_responses.clear()
 
     async def __dispatch(self, raw: str) -> None:
         try:

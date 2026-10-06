@@ -9,6 +9,7 @@ deliberately broken, and the property under test is almost always the same one â
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -510,6 +511,98 @@ def test_ensure_root_creates_both_halves_of_the_layout(tmp_path: Path) -> None:
     store.ensure_root()
     assert store.root.is_dir()
     assert store.subagents_dir.is_dir()
+
+
+def test_an_empty_name_is_refused() -> None:
+    assert reserved_name_error("") == "the name is empty"
+
+
+def test_delete_wraps_a_removal_failure(user_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    directory = _write_agent(user_root, "reviewer")
+
+    def _fail(path: object, *args: object, **kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(shutil, "rmtree", _fail)
+    with pytest.raises(UserAgentDeleteError, match="could not delete"):
+        UserAgentStore(user_root).delete("reviewer", top_level=True)
+    assert directory.is_dir()
+
+
+def test_delete_refuses_a_symlink_pointing_out_of_the_root(user_root: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keepme.txt").write_text("important", encoding="utf-8")
+    try:
+        (user_root / "sneaky").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable on this platform/account")
+
+    with pytest.raises(UserAgentDeleteError, match="could not delete"):
+        UserAgentStore(user_root).delete("sneaky", top_level=True)
+    assert (outside / "keepme.txt").exists()
+
+
+def _deny_iterdir(monkeypatch: pytest.MonkeyPatch, denied: Path) -> None:
+    """Make ``Path.iterdir`` fail for *denied* only, as an unreadable directory would."""
+    real_iterdir = Path.iterdir
+
+    def _iterdir(self: Path) -> Iterator[Path]:
+        if self == denied:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _iterdir)
+
+
+def test_an_unlistable_root_becomes_one_broken_row(
+    user_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_agent(user_root, "reviewer")
+    _deny_iterdir(monkeypatch, user_root)
+    result = UserAgentStore(user_root).scan()
+    assert result.agents == ()
+    assert [(b.name, b.is_top_level) for b in result.broken] == [(user_root.name, True)]
+    assert "Permission denied" in result.broken[0].error
+
+
+def test_an_unlistable_subagents_directory_does_not_hide_the_bundles(
+    user_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_agent(user_root, "reviewer")
+    _write_subagent(user_root, "auditor")
+    _deny_iterdir(monkeypatch, user_root / SHARED_SUBAGENTS_DIRNAME)
+    result = UserAgentStore(user_root).scan()
+    assert [a.name for a in result.agents] == ["reviewer"]
+    assert [(b.name, b.is_top_level) for b in result.broken] == [(SHARED_SUBAGENTS_DIRNAME, False)]
+
+
+def test_a_bundle_with_an_invalid_config_is_broken(user_root: Path) -> None:
+    directory = _write_agent(user_root, "reviewer")
+    (directory / "reviewer.json").write_text("{not json", encoding="utf-8")
+    result = UserAgentStore(user_root).scan()
+    assert result.agents == ()
+    assert result.configs == ()
+    assert [b.name for b in result.broken] == ["reviewer"]
+    assert "not valid JSON" in result.broken[0].error
+
+
+def test_a_subagent_whose_prompt_does_not_parse_is_broken(user_root: Path) -> None:
+    prompt = _write_subagent(user_root, "auditor")
+    prompt.write_text("no frontmatter here\n", encoding="utf-8")
+    result = UserAgentStore(user_root).scan()
+    assert result.agents == ()
+    assert [(b.name, b.is_top_level) for b in result.broken] == [("auditor", False)]
+    assert "frontmatter" in result.broken[0].error
+
+
+def test_a_subagent_with_an_invalid_contract_is_broken(user_root: Path) -> None:
+    prompt = _write_subagent(user_root, "auditor")
+    (prompt.parent / "auditor.json").write_text("{not json", encoding="utf-8")
+    result = UserAgentStore(user_root).scan()
+    assert result.agents == ()
+    assert result.specs == ()
+    assert [(b.name, b.is_top_level) for b in result.broken] == [("auditor", False)]
 
 
 # ---------------------------------------------------------------------------

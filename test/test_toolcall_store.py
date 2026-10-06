@@ -166,3 +166,69 @@ def test_document_headings_survive_a_nested_fence_value() -> None:
     # "## Output" must be a real heading, i.e. outside every code block.
     assert all("## Output" not in b.content for b in fenced_blocks(doc))
     assert "\n## Output\n" in doc
+
+
+def test_non_compliant_document_flags_the_repair() -> None:
+    doc = render_tool_call_markdown(
+        name="read_file",
+        external_name="Read File",
+        user_description="Read a file",
+        security_label="Low",
+        compliant=False,
+        tool_input={},
+        output={},
+    )
+    assert "repaired (output did not match schema)" in doc
+    assert "## Input\n\n_(empty)_" in doc
+
+
+# ---------------------------------------------------------------------------
+# Scalar and container shapes
+# ---------------------------------------------------------------------------
+
+
+def test_scalars_render_inline() -> None:
+    doc = json_to_markdown({"none": None, "yes": True, "no": False, "count": 3, "ratio": 0.5})
+    assert doc == (
+        "## none\n\n_(none)_\n\n"
+        "## yes\n\n`true`\n\n"
+        "## no\n\n`false`\n\n"
+        "## count\n\n`3`\n\n"
+        "## ratio\n\n`0.5`"
+    )
+
+
+def test_top_level_scalar_renders_without_heading() -> None:
+    assert json_to_markdown("plain") == "plain"
+    assert json_to_markdown(7) == "`7`"
+
+
+def test_long_single_line_string_is_fenced() -> None:
+    text = "x" * 200
+    assert json_to_markdown(text) == f"```\n{text}\n```"
+
+
+def test_empty_containers_render_placeholders() -> None:
+    assert json_to_markdown({}) == "_(empty)_"
+    assert json_to_markdown([]) == "_(empty list)_"
+    assert json_to_markdown({"items": []}) == "## items\n\n_(empty list)_"
+
+
+def test_nested_dict_gets_deeper_heading() -> None:
+    doc = json_to_markdown({"outer": {"inner": "v"}})
+    assert doc == "## outer\n\n### inner\n\nv"
+
+
+def test_list_of_dicts_under_key_gets_indexed_headings() -> None:
+    doc = json_to_markdown({"files": [{"path": "a.py"}, {"path": "b.py"}]})
+    assert doc == ("## files[0]\n\n### path\n\na.py\n\n## files[1]\n\n### path\n\nb.py")
+
+
+def test_unnamed_list_of_containers_uses_item_label() -> None:
+    doc = json_to_markdown([{"k": 1}, ["x", "y"]])
+    assert doc == "## item[0]\n\n### k\n\n`1`\n\n## item[1]\n\n- x\n- y"
+
+
+def test_heading_depth_is_clamped_to_six() -> None:
+    doc = json_to_markdown({"deep": "v"}, level=9)
+    assert doc == "###### deep\n\nv"

@@ -5,8 +5,6 @@ doc/LOCAL_INFERENCE.md for the llama.cpp mechanism each one rides on.
 
 from __future__ import annotations
 
-import logging
-
 __all__ = [
     "GPT_OSS_REASONING_EFFORT_FAMILY",
     "QWEN4EXP_REASONING_EFFORT_FAMILY",
@@ -19,8 +17,6 @@ __all__ = [
     "local_thinking_family",
     "local_thinking_tiers",
 ]
-
-_log = logging.getLogger(__name__)
 
 #: base_llm values launched with an explicit ``--reasoning-budget -1`` CLI
 #: flag (see :func:`kodo.llms.llamacpp.ensure_llama_running`), which makes the
@@ -206,38 +202,16 @@ REASONING_BUDGET_MESSAGE = (
 
 #: CLI flags kodo manages automatically per session for the Qwen
 #: reasoning-budget family (``ensure_llama_running``,
-#: ``kodo/llms/llamacpp/_manager.py``) — no flavor, predefined or custom, may
-#: set these itself. Any occurrence in flavor-supplied ``llama_args`` is
-#: silently dropped before the flavor is even persisted (see
-#: :func:`~kodo.llms.local_registry._flavors.add_flavor`/
-#: :func:`~kodo.llms.local_registry._flavors.update_flavor` below), and the
-#: correct values are force-assigned again at launch time regardless, in
-#: case a flavor saved before this existed still carries them.
+#: ``kodo/llms/llamacpp/_manager.py``) — no profile may set these itself.
+#: They are part of :data:`~kodo.llms.local_registry.RESERVED_LLAMA_ARGS`, so
+#: any occurrence in profile-supplied ``llama_args`` is dropped before the
+#: profile is persisted (:func:`~kodo.llms.local_registry.strip_reserved_llama_args`),
+#: and the correct values are force-assigned again at launch time regardless,
+#: in case a profile saved before this existed still carries them.
 RESERVED_REASONING_CAP_ARGS: tuple[str, ...] = (
     "--reasoning-budget",
     "--reasoning-budget-message",
 )
-
-
-def _strip_reasoning_cap_args(llama_args: dict[str, str]) -> dict[str, str]:
-    """Drop any :data:`RESERVED_REASONING_CAP_ARGS` key from *llama_args*.
-
-    Used by
-    :func:`~kodo.llms.local_registry._flavors.add_flavor`/
-    :func:`~kodo.llms.local_registry._flavors.update_flavor` so a flavor's
-    own CLI args can never carry (and therefore never later silently
-    defeat) the per-session reasoning-budget mechanism — see
-    :data:`RESERVED_REASONING_CAP_ARGS`.
-    """
-    stripped = {k: v for k, v in llama_args.items() if k not in RESERVED_REASONING_CAP_ARGS}
-    if len(stripped) != len(llama_args):
-        dropped = sorted(set(llama_args) - set(stripped))
-        _log.warning(
-            "Dropped reserved reasoning-cap arg(s) %s from flavor llama_args — these are "
-            "managed automatically per session, not by flavors",
-            dropped,
-        )
-    return stripped
 
 
 def local_thinking_family(base_llm: str) -> str | None:

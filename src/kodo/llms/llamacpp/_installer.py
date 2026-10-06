@@ -344,9 +344,18 @@ def _on_rmtree_error(func: Any, path: str, _exc: BaseException) -> None:
     no matter who else has it open, so this is worth trying before giving up.
     Re-raises whatever *func* raises the second time, which is what lets
     :func:`_rmtree_retrying` see a genuine sharing violation and back off.
+
+    Only the single-argument removals are retried: ``rmtree`` also reports
+    failures of calls such as ``os.open``/``os.scandir``, which cannot be
+    re-invoked with just *path*, so those re-raise the original error. The
+    write bit is *added* to the existing mode rather than replacing it — on
+    POSIX a bare ``S_IWRITE`` would strip a directory's read/search bits and
+    make every later retry fail.
     """
+    if func not in (os.unlink, os.remove, os.rmdir):
+        raise _exc
     with suppress(OSError):
-        os.chmod(path, stat.S_IWRITE)
+        os.chmod(path, stat.S_IMODE(os.lstat(path).st_mode) | stat.S_IWRITE)
     func(path)
 
 

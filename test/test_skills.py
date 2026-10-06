@@ -281,6 +281,48 @@ def test_store_delete_does_not_follow_a_symlink_out_of_the_store(tmp_path: Path)
     assert (outside / "keepme.txt").exists()
 
 
+def test_store_exposes_its_root(tmp_path: Path) -> None:
+    assert SkillStore(tmp_path / "skills").root == tmp_path / "skills"
+
+
+def test_store_entries_is_empty_when_the_root_cannot_be_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install(tmp_path, "pdf", _skill_md("pdf", "P."))
+
+    def _deny(self: Path) -> object:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "iterdir", _deny)
+    assert SkillStore(tmp_path).entries() == []
+
+
+def test_store_delete_wraps_a_removal_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = _install(tmp_path, "pdf", _skill_md("pdf", "P."))
+
+    def _fail(path: object, *args: object, **kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(shutil, "rmtree", _fail)
+    with pytest.raises(SkillDeleteError, match="Permission denied"):
+        SkillStore(tmp_path).delete("pdf")
+    assert directory.exists()
+
+
+def test_store_get_returns_none_when_the_name_cannot_be_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install(tmp_path, "pdf", _skill_md("pdf", "P."))
+
+    def _fail(self: Path, strict: bool = False) -> Path:
+        raise OSError("resolve failed")
+
+    monkeypatch.setattr(Path, "resolve", _fail)
+    assert SkillStore(tmp_path).get("pdf") is None
+
+
 # ---------------------------------------------------------------------------
 # render_catalog
 # ---------------------------------------------------------------------------

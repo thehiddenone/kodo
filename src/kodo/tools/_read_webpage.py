@@ -103,6 +103,9 @@ class ReadWebpageTool(Tool):
                 title, content = await self.__fetch_curl(url, content_filter)
             else:
                 title, content = await self.__fetch_browser(url, browser, headed, content_filter)
+            # Inside the try: the "too thin" gate raises AntiBotWallError too,
+            # and must come back as a tool error like any other wall.
+            result = self.__finalize(content_filter, title, content)
         except InvalidUrlError as exc:
             return json.dumps({"error": str(exc)})
         except AntiBotWallError as exc:
@@ -113,7 +116,7 @@ class ReadWebpageTool(Tool):
             _log.warning("read_webpage failed for %s: %s", url, exc, exc_info=True)
             return json.dumps({"error": f"Could not read {url}: {exc}"})
 
-        return json.dumps({"content": self.__finalize(content_filter, title, content)})
+        return json.dumps({"content": result})
 
     async def __fetch_browser(
         self, url: str, browser: BrowserKind, headed: bool, content_filter: ContentFilter

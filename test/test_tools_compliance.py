@@ -32,6 +32,7 @@ from kodo.toolspecs import (
     SCHEMA_COMPLIANCE_KEY,
     VISIBILITY_VALUES,
     SecurityImpact,
+    augment_output_schema,
     normalize_output,
     requires_intent,
     tool_result_succeeded,
@@ -263,6 +264,110 @@ def test_tool_result_succeeded_classification() -> None:
         tool_result_succeeded({"status": "rejected_with_feedback", "path": "a.txt", "feedback": []})
         is False
     )
+
+
+_OBJ_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {"path": {"type": "string"}, "count": {"type": "integer"}},
+    "required": ["path"],
+}
+
+
+def test_augment_output_schema_adds_engine_field_without_mutating_input() -> None:
+    original = json.loads(json.dumps(_OBJ_SCHEMA))
+    augmented = augment_output_schema(_OBJ_SCHEMA)
+    assert original == _OBJ_SCHEMA
+    props = augmented["properties"]
+    assert isinstance(props, dict)
+    assert props[SCHEMA_COMPLIANCE_KEY]["type"] == "boolean"
+    assert set(props) == {"path", "count", SCHEMA_COMPLIANCE_KEY}
+    assert augmented["required"] == ["path", SCHEMA_COMPLIANCE_KEY]
+
+
+def test_augment_output_schema_replaces_a_predeclared_engine_field() -> None:
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": {SCHEMA_COMPLIANCE_KEY: {"type": "string", "description": "spoofed"}},
+        "required": [SCHEMA_COMPLIANCE_KEY],
+    }
+    augmented = augment_output_schema(schema)
+    props = augmented["properties"]
+    assert isinstance(props, dict)
+    assert props[SCHEMA_COMPLIANCE_KEY]["type"] == "boolean"
+    assert augmented["required"] == [SCHEMA_COMPLIANCE_KEY]
+
+
+def test_augment_output_schema_fills_in_missing_properties_and_required() -> None:
+    augmented = augment_output_schema({"type": "object"})
+    assert list(augmented["properties"]) == [SCHEMA_COMPLIANCE_KEY]  # type: ignore[call-overload]
+    assert augmented["required"] == [SCHEMA_COMPLIANCE_KEY]
+
+
+def test_augment_output_schema_augments_each_one_of_branch() -> None:
+    schema: dict[str, object] = {"oneOf": [_OBJ_SCHEMA, {"type": "object"}, "not-a-schema"]}
+    augmented = augment_output_schema(schema)
+    branches = augmented["oneOf"]
+    assert isinstance(branches, list)
+    first, second, third = branches
+    assert SCHEMA_COMPLIANCE_KEY in first["required"]
+    assert SCHEMA_COMPLIANCE_KEY in second["required"]
+    assert third == "not-a-schema"
+
+
+@pytest.mark.parametrize(("raw", "text"), [(None, ""), (42, "42"), ("plain", "plain")])
+def test_normalize_output_wraps_non_object_results(raw: object, text: str) -> None:
+    normalized, compliant = normalize_output(_OBJ_SCHEMA, raw)
+    assert compliant is False
+    assert normalized == {"result": text, SCHEMA_COMPLIANCE_KEY: False}
+
+
+def test_normalize_output_ignores_a_producer_supplied_compliance_flag() -> None:
+    normalized, compliant = normalize_output(
+        _OBJ_SCHEMA, {"path": "a.txt", SCHEMA_COMPLIANCE_KEY: False}
+    )
+    assert compliant is True
+    assert normalized == {"path": "a.txt", SCHEMA_COMPLIANCE_KEY: True}
+
+
+def test_normalize_output_drops_undeclared_and_backfills_required() -> None:
+    normalized, compliant = normalize_output(_OBJ_SCHEMA, {"count": 2, "extra": True})
+    assert compliant is False
+    assert normalized == {"count": 2, "path": "", SCHEMA_COMPLIANCE_KEY: False}
+
+
+def test_normalize_output_without_declared_properties_keeps_every_field() -> None:
+    normalized, compliant = normalize_output({"type": "object"}, {"anything": 1})
+    assert compliant is True
+    assert normalized == {"anything": 1, SCHEMA_COMPLIANCE_KEY: True}
+
+
+def test_normalize_output_one_of_picks_the_first_compliant_branch() -> None:
+    other: dict[str, object] = {
+        "type": "object",
+        "properties": {"status": {"type": "string"}},
+        "required": ["status"],
+    }
+    schema: dict[str, object] = {"oneOf": ["skip-me", _OBJ_SCHEMA, other]}
+    normalized, compliant = normalize_output(schema, {"status": "done"})
+    assert compliant is True
+    assert normalized == {"status": "done", SCHEMA_COMPLIANCE_KEY: True}
+
+
+def test_normalize_output_one_of_falls_back_to_first_branch_repair() -> None:
+    other: dict[str, object] = {
+        "type": "object",
+        "properties": {"status": {"type": "string"}},
+        "required": ["status"],
+    }
+    normalized, compliant = normalize_output({"oneOf": [_OBJ_SCHEMA, other]}, {"bogus": 1})
+    assert compliant is False
+    assert normalized == {"path": "", SCHEMA_COMPLIANCE_KEY: False}
+
+
+def test_normalize_output_one_of_without_object_branches_wraps_the_result() -> None:
+    normalized, compliant = normalize_output({"oneOf": ["x", 3]}, {"a": 1})
+    assert compliant is False
+    assert normalized == {"result": str({"a": 1}), SCHEMA_COMPLIANCE_KEY: False}
 
 
 def test_visibility_keys_reference_declared_properties() -> None:

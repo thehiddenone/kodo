@@ -552,21 +552,6 @@ def _check_catalog() -> None:
 _check_catalog()
 
 
-def strip_reserved_llama_args(llama_args: dict[str, str]) -> dict[str, str]:
-    """Drop every :data:`RESERVED_LLAMA_ARGS` key from *llama_args*.
-
-    Applied to every user-supplied profile arg set before it is persisted (see
-    :func:`kodo.llms.local_registry.add_profile`/
-    :func:`~kodo.llms.local_registry.update_profile`), so a reserved flag can
-    never reach :class:`~kodo.llms.llamacpp.LlamaServer`'s command line —
-    where it would either be overridden anyway or break process management.
-
-    Returns:
-        dict[str, str]: A new dict; the input is not mutated.
-    """
-    return {k: v for k, v in llama_args.items() if k not in RESERVED_LLAMA_ARGS}
-
-
 def llama_arg_catalog_to_json() -> list[dict[str, object]]:
     """:data:`LLAMA_ARG_CATALOG` as the wire payload kodo-vsix renders from.
 

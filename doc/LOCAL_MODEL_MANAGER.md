@@ -179,6 +179,11 @@ deleted once the transfer finishes. A `.part` file with **no** sidecar is
 either a fully-finished-and-cleaned-up transfer or a pre-upgrade file from the
 old single-stream downloader; both are handled by treating its on-disk size as
 a trustworthy contiguous prefix (see `_http._download_parallel`'s docstring).
+A sidecar that **exists but can't be used** (unreadable JSON, or a different
+`chunk_size`/`total_size`) is the opposite case: its `.part` was written out of
+order and already truncated to full size, so nothing in it is trusted and every
+chunk is fetched again — trusting it as a prefix would install the never-written
+zero regions as the finished model.
 
 Either way, `ModelFile.downloaded_bytes` in `manager-state.json` is only
 updated at status transitions (download start/pause/fail/complete) plus a

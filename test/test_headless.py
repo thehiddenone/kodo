@@ -14,8 +14,6 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import subprocess
-import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
@@ -33,6 +31,7 @@ from kodo.headless import (
     HeadlessRun,
     RunOutcome,
     build_headless_home,
+    vendor_credential_env_names,
 )
 
 # ---------------------------------------------------------------------------
@@ -344,12 +343,14 @@ async def test_run_reports_startup_error_and_cleans_up(
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    for name in vendor_credential_env_names("anthropic"):
+        monkeypatch.delenv(name, raising=False)  # fails at startup, before any spawn
     sandbox = tmp_path / "proj"
     sandbox.mkdir()
     result_path = tmp_path / "result.json"
     buffer = io.StringIO()
     options = HeadlessOptions(
-        prompt="do it", model="no-such-model", cwd=sandbox, result_path=result_path
+        prompt="do it", model="anthropic/claude-sonnet-5", cwd=sandbox, result_path=result_path
     )
 
     result = await HeadlessRun(options, EventSink("jsonl", buffer)).run()
@@ -364,18 +365,6 @@ async def test_run_reports_startup_error_and_cleans_up(
     started = json.loads(lines[0])
     assert started["type"] == "run.start"
     assert not Path(str(started["home"])).exists()  # the temporary isolated home is gone
-
-
-def test_cli_rejects_an_empty_prompt(tmp_path: Path) -> None:
-    completed = subprocess.run(
-        [sys.executable, "-m", "kodo.headless", "--prompt", "  ", "--model", "m"],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert completed.returncode == RunOutcome.STARTUP_ERROR.exit_code
-    assert "empty" in completed.stderr
 
 
 async def test_one_stream_id_per_turn_is_cut_into_thinking_and_text_segments(

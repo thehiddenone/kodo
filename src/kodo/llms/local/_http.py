@@ -178,24 +178,30 @@ async def download_to_part_file(
         DownloadError: A network error, a server that doesn't honor Range
             requests, a size mismatch, or a local I/O error.
     """
-    part_path.parent.mkdir(parents=True, exist_ok=True)
     req_headers = dict(headers or {})
     req_headers["User-Agent"] = _USER_AGENT
 
-    if expected_size is None:
-        return await _download_sequential(
-            url, part_path, req_headers, cancel_event, on_bytes, timeout
+    # Each transfer maps the I/O errors of its own write loop; this catches
+    # the rest (directory creation, part-file/sidecar setup, the pause-time
+    # sidecar flush) so a caller only ever has DownloadError to handle.
+    try:
+        part_path.parent.mkdir(parents=True, exist_ok=True)
+        if expected_size is None:
+            return await _download_sequential(
+                url, part_path, req_headers, cancel_event, on_bytes, timeout
+            )
+        return await _download_parallel(
+            url,
+            part_path,
+            req_headers,
+            expected_size,
+            cancel_event,
+            on_bytes,
+            timeout,
+            _DEFAULT_PARALLELISM if parallelism is None else parallelism,
         )
-    return await _download_parallel(
-        url,
-        part_path,
-        req_headers,
-        expected_size,
-        cancel_event,
-        on_bytes,
-        timeout,
-        _DEFAULT_PARALLELISM if parallelism is None else parallelism,
-    )
+    except OSError as exc:
+        raise DownloadError(f"Local I/O error writing {part_path}: {exc}") from exc
 
 
 async def _download_sequential(
@@ -278,13 +284,20 @@ async def _download_parallel(
         return total_size
 
     chunk_ranges = _chunk_ranges(total_size, _CHUNK_SIZE)
+    had_sidecar = sidecar_path.is_file()
     completed = _load_sidecar(sidecar_path, _CHUNK_SIZE, total_size)
-    if completed is None:
-        # No (usable) sidecar. A pre-existing `.part` file can only be a
-        # contiguous prefix from a previous single-stream download (or an
-        # earlier, incompatible chunk layout) — whole chunks fully inside that
-        # prefix are safe to trust; a trailing partial chunk is simply
-        # refetched in full.
+    if completed is None and had_sidecar:
+        # A sidecar exists but is unreadable or describes a different layout
+        # (chunk size or total size). Its `.part` was written out of order and
+        # already truncated to full size, so no byte range in it can be
+        # trusted — trusting it as a contiguous prefix would install the
+        # never-written zero regions as the finished file. Start over.
+        completed = set()
+    elif completed is None:
+        # No sidecar at all. A pre-existing `.part` file can only be a
+        # contiguous prefix from a previous single-stream download — whole
+        # chunks fully inside that prefix are safe to trust; a trailing
+        # partial chunk is simply refetched in full.
         completed = set(range(existing_size // _CHUNK_SIZE))
 
     # Persist the sidecar *before* truncating the part file: once both exist,

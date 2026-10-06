@@ -69,7 +69,6 @@ __all__ = [
     "CATALOG_ENTRY_KIND",
     "attach_mtp_sidecars",
     "catalog_sort_key",
-    "entry_to_catalog_json",
     "load_catalog_file",
     "offers_builtin_mtp",
     "scan_catalog_dir",
@@ -201,40 +200,6 @@ def _entry_from_catalog_json(raw: object, *, base_llm: str, name: str) -> LocalL
         min_memory=ints["min_memory"],
         memory=ints["memory"],
     )
-
-
-def entry_to_catalog_json(entry: LocalLLMEntry) -> dict[str, object]:
-    """The catalog-file body that :func:`load_catalog_file` reads back as *entry*.
-
-    ``name`` and ``base_llm`` are left out — they are the file's path.
-
-    Raises:
-        ValueError: If *entry* cannot be expressed as a catalog file: it is not
-            a ``hardcoded_hf`` entry, it offers a knob that is not in
-            :data:`~._knobs_table.KNOBS_BY_ID`, or its ``base_llama_args`` drop
-            one of the shared base args (a file can only add to them).
-    """
-    if entry.kind != CATALOG_ENTRY_KIND:
-        raise ValueError(f"{entry.name}: only {CATALOG_ENTRY_KIND} entries live in catalog files")
-    for knob in entry.knobs:
-        if KNOBS_BY_ID.get(knob.id) != knob:
-            raise ValueError(f"{entry.name}: knob {knob.id!r} is not in the knob table")
-    dropped = sorted(BASE_LLAMA_ARGS.keys() - entry.base_llama_args.keys())
-    if dropped:
-        raise ValueError(f"{entry.name}: base_llama_args drops shared base arg(s) {dropped}")
-    body: dict[str, object] = {key: getattr(entry, key) for key in _STR_FIELDS}
-    body.update({key: getattr(entry, key) for key in _INT_FIELDS})
-    body["mtp_supported"] = entry.mtp_supported
-    body["knobs"] = [knob.id for knob in entry.knobs]
-    body["knob_defaults"] = dict(entry.knob_defaults)
-    extra_args = {
-        flag: value
-        for flag, value in entry.base_llama_args.items()
-        if BASE_LLAMA_ARGS.get(flag) != value
-    }
-    if extra_args:
-        body["base_llama_args"] = extra_args
-    return body
 
 
 def offers_builtin_mtp(knobs: tuple[LlamaKnob, ...]) -> bool:
@@ -378,7 +343,12 @@ def scan_catalog_dir(root: Path) -> tuple[list[LocalLLMEntry], list[str]]:
     for model_dir in model_dirs:
         if model_dir.name.startswith("."):
             continue
-        if model_dir.is_file():
+        try:
+            is_file = model_dir.is_file()
+        except OSError as exc:  # Python 3.12 raises EACCES rather than answering False
+            errors.append(f"{model_dir}: cannot read: {exc}")
+            continue
+        if is_file:
             if model_dir.suffix == ".json":
                 errors.append(
                     f"{model_dir}: catalog files go in a model directory, "
@@ -395,8 +365,13 @@ def scan_catalog_dir(root: Path) -> tuple[list[LocalLLMEntry], list[str]]:
                 path.name.startswith(".")
                 or path.suffix != ".json"
                 or path.name == MTP_SIDECARS_FILENAME
-                or not path.is_file()
             ):
+                continue
+            try:
+                if not path.is_file():
+                    continue
+            except OSError as exc:  # listable but not searchable directory
+                errors.append(f"{path}: cannot read: {exc}")
                 continue
             try:
                 entry = load_catalog_file(path)
@@ -436,7 +411,15 @@ def scan_mtp_sidecars(root: Path) -> tuple[dict[str, tuple[MtpSidecar, ...]], li
     errors: list[str] = []
     for model_dir in model_dirs:
         path = model_dir / MTP_SIDECARS_FILENAME
-        if model_dir.name.startswith(".") or not path.is_file():
+        if model_dir.name.startswith("."):
+            continue
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            # The family directory can't be searched (Python 3.12 raises EACCES
+            # rather than answering False). scan_catalog_dir already reports
+            # that directory, and a heads file here may not even exist.
             continue
         try:
             found[model_dir.name] = load_mtp_sidecars_file(path)

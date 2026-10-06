@@ -19,12 +19,17 @@ incidental weight here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
 from kodo.common import Envelope
-from kodo.server import ConnectionRegistry
+from kodo.server import ConnectionRegistry, Request
 from kodo.transport import Connection
 
 
@@ -148,3 +153,304 @@ async def test_request_shutdown_without_a_stop_callback_is_a_no_op() -> None:
     registry.request_shutdown("no callback set")
 
     await asyncio.sleep(0.3)
+
+
+# ---------------------------------------------------------------------------
+# run_ws — the live socket loop, driven through an in-process loopback server
+# ---------------------------------------------------------------------------
+
+
+_TIMEOUT = 2.0
+
+
+class _LiveManager:
+    """Duck-typed SessionManager covering every call run_ws makes."""
+
+    def __init__(self, sessions: dict[str, object] | None = None) -> None:
+        self.sessions = sessions or {}
+        self.dropped: list[str] = []
+        self.running = False
+
+    def session_for_connection(self, _conn_id: str) -> object | None:
+        return None
+
+    def get(self, session_id: str) -> object | None:
+        return self.sessions.get(session_id)
+
+    def drop_connection(self, conn: Connection) -> None:
+        self.dropped.append(conn.id)
+
+    def any_running(self) -> bool:
+        return self.running
+
+
+async def _wait_until(predicate: Callable[[], bool], timeout: float = _TIMEOUT) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("condition not met before timeout")
+        await asyncio.sleep(0.01)
+
+
+@asynccontextmanager
+async def _serve(registry: ConnectionRegistry) -> AsyncIterator[TestClient]:
+    app = web.Application()
+    app.router.add_get("/ws", registry.run_ws)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        yield client
+    finally:
+        await client.close()
+
+
+async def _recv(ws: object) -> Envelope:
+    raw = await ws.receive_str(timeout=_TIMEOUT)  # type: ignore[attr-defined]
+    return Envelope.from_json(raw)
+
+
+def test_manager_property_returns_the_injected_manager() -> None:
+    manager = _LiveManager()
+    registry = ConnectionRegistry(manager)  # type: ignore[arg-type]
+    assert registry.manager is manager
+
+
+@pytest.mark.asyncio
+async def test_handler_receives_a_request_with_the_resolved_session() -> None:
+    session = SimpleNamespace(name="the-session")
+    manager = _LiveManager({"s-1": session})
+    registry = ConnectionRegistry(manager)  # type: ignore[arg-type]
+    seen: list[tuple[object, str, object]] = []
+
+    async def _handler(req: Request) -> None:
+        seen.append((req.session, req.session_id, req.manager))
+        await req.reply({"type": "pong", "session_id": req.session_id})
+
+    registry.register_handler("ping", _handler)
+
+    async with _serve(registry) as client, client.ws_connect("/ws") as ws:
+        with_session = Envelope(kind="request", payload={"type": "ping", "session_id": "s-1"})
+        await ws.send_str(with_session.to_json())
+        first = await _recv(ws)
+        unknown = Envelope(kind="request", payload={"type": "ping", "session_id": "nope"})
+        await ws.send_str(unknown.to_json())
+        await _recv(ws)
+        no_session = Envelope(kind="request", payload={"type": "ping"})
+        await ws.send_str(no_session.to_json())
+        third = await _recv(ws)
+
+    assert first.correlation_id == with_session.id
+    assert first.payload == {"type": "pong", "session_id": "s-1"}
+    assert third.payload == {"type": "pong", "session_id": ""}
+    assert seen == [(session, "s-1", manager), (None, "nope", manager), (None, "", manager)]
+
+
+@pytest.mark.asyncio
+async def test_unknown_message_type_and_malformed_frames() -> None:
+    registry = ConnectionRegistry(_LiveManager())  # type: ignore[arg-type]
+
+    async with _serve(registry) as client, client.ws_connect("/ws") as ws:
+        await ws.send_str("not json at all")
+        await ws.send_str('{"payload": {}}')  # no "kind"
+        request = Envelope(kind="request", payload={"type": "bogus"})
+        await ws.send_str(request.to_json())
+        reply = await _recv(ws)
+
+    # The first frame back answers the valid request; the malformed ones got nothing.
+    assert reply.correlation_id == request.id
+    assert reply.payload["type"] == "error"
+    assert reply.payload["code"] == "unknown_message"
+    assert reply.payload["recoverable"] is True
+
+
+@pytest.mark.asyncio
+async def test_control_connection_response_resolves_on_the_connection() -> None:
+    """A response on a connection bound to no session resolves the future the
+    server registered on that Connection itself; a disconnect cancels any
+    future still pending there."""
+    registry = ConnectionRegistry(_LiveManager())  # type: ignore[arg-type]
+    loop = asyncio.get_running_loop()
+    answered: asyncio.Future[dict[str, object]] = loop.create_future()
+    abandoned: asyncio.Future[dict[str, object]] = loop.create_future()
+
+    async def _handler(req: Request) -> None:
+        req.connection.register_response_future("ask-1", answered)
+        req.connection.register_response_future("ask-2", abandoned)
+        await req.reply({"type": "ok"})
+
+    registry.register_handler("setup", _handler)
+
+    async with _serve(registry) as client:
+        async with client.ws_connect("/ws") as ws:
+            await ws.send_str(Envelope(kind="request", payload={"type": "setup"}).to_json())
+            await _recv(ws)
+            answer = Envelope(kind="response", correlation_id="ask-1", payload={"key": "v"})
+            await ws.send_str(answer.to_json())
+            result = await asyncio.wait_for(answered, _TIMEOUT)
+        await _wait_until(abandoned.done)
+
+    assert result == {"key": "v"}
+    assert abandoned.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_detaches_the_connection_from_the_manager() -> None:
+    manager = _LiveManager()
+    registry = ConnectionRegistry(manager)  # type: ignore[arg-type]
+    conn_ids: list[str] = []
+
+    async def _handler(req: Request) -> None:
+        conn_ids.append(req.connection.id)
+        await req.reply({"type": "ok"})
+
+    registry.register_handler("hello", _handler)
+
+    async with _serve(registry) as client:
+        async with client.ws_connect("/ws") as ws:
+            await ws.send_str(Envelope(kind="request", payload={"type": "hello"}).to_json())
+            await _recv(ws)
+            assert manager.dropped == []
+        await _wait_until(lambda: bool(manager.dropped))
+
+    assert manager.dropped == conn_ids
+
+
+# ---------------------------------------------------------------------------
+# Idle self-reap and GPU release
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_idle_shutdown_fires_only_after_the_last_window_leaves() -> None:
+    stopped: list[bool] = []
+    registry = ConnectionRegistry(_LiveManager())  # type: ignore[arg-type]
+
+    async with _serve(registry) as client:
+        registry.set_idle_shutdown(lambda: stopped.append(True), 0.05)
+        async with client.ws_connect("/ws") as ws:
+            await ws.send_str(Envelope(kind="request", payload={"type": "x"}).to_json())
+            await _recv(ws)  # the connection is registered server-side
+            await asyncio.sleep(0.1)  # longer than the grace — must not fire
+            assert stopped == []
+        await _wait_until(lambda: bool(stopped))
+
+    assert stopped == [True]
+
+
+@pytest.mark.asyncio
+async def test_idle_shutdown_with_no_connection_ever_still_fires() -> None:
+    stopped: list[bool] = []
+    registry = ConnectionRegistry(_LiveManager())  # type: ignore[arg-type]
+
+    registry.set_idle_shutdown(lambda: stopped.append(True), 0.01)
+
+    await _wait_until(lambda: bool(stopped))
+    assert stopped == [True]
+
+
+@pytest.mark.asyncio
+async def test_idle_shutdown_is_deferred_while_a_turn_is_running() -> None:
+    stopped: list[bool] = []
+    manager = _LiveManager()
+    manager.running = True
+    registry = ConnectionRegistry(manager)  # type: ignore[arg-type]
+
+    registry.set_idle_shutdown(lambda: stopped.append(True), 0.02)
+    await asyncio.sleep(0.1)  # several grace periods elapse
+    assert stopped == []
+
+    manager.running = False
+    await _wait_until(lambda: bool(stopped))
+    assert stopped == [True]
+
+
+@pytest.mark.asyncio
+async def test_request_shutdown_cancels_a_pending_idle_reap() -> None:
+    stopped: list[str] = []
+    registry = ConnectionRegistry(_LiveManager())  # type: ignore[arg-type]
+    registry.set_idle_shutdown(lambda: stopped.append("stop"), 0.05)
+
+    registry.request_shutdown("explicit")
+
+    await _wait_until(lambda: bool(stopped))
+    await asyncio.sleep(0.1)  # past the idle grace — a stray reap would show up
+    # Exactly one stop: the explicit request, not also the idle reap.
+    assert stopped == ["stop"]
+
+
+@pytest.mark.asyncio
+async def test_gpu_released_when_the_last_window_leaves() -> None:
+    released: list[bool] = []
+    registry = ConnectionRegistry(_LiveManager())  # type: ignore[arg-type]
+
+    async def _release() -> None:
+        released.append(True)
+
+    registry.set_gpu_release_hook(_release)
+
+    async with _serve(registry) as client:
+        async with client.ws_connect("/ws") as ws:
+            await ws.send_str(Envelope(kind="request", payload={"type": "x"}).to_json())
+            await _recv(ws)
+            assert released == []
+        await _wait_until(lambda: bool(released))
+
+    assert released == [True]
+
+
+@pytest.mark.asyncio
+async def test_gpu_kept_while_a_turn_is_still_running() -> None:
+    released: list[bool] = []
+    manager = _LiveManager()
+    manager.running = True
+    registry = ConnectionRegistry(manager)  # type: ignore[arg-type]
+
+    async def _release() -> None:
+        released.append(True)
+
+    registry.set_gpu_release_hook(_release)
+
+    async with _serve(registry) as client:
+        async with client.ws_connect("/ws") as ws:
+            await ws.send_str(Envelope(kind="request", payload={"type": "x"}).to_json())
+            await _recv(ws)
+        await _wait_until(lambda: bool(manager.dropped))
+        await asyncio.sleep(0.05)  # let the scheduled release task run
+
+    assert released == []
+
+
+@pytest.mark.asyncio
+async def test_idle_shutdown_armed_while_connected_does_not_reap() -> None:
+    """Arming the idle reap while a window is already connected must not stop
+    the server out from under that window."""
+    stopped: list[bool] = []
+    registry = ConnectionRegistry(_LiveManager())  # type: ignore[arg-type]
+
+    async with _serve(registry) as client:
+        async with client.ws_connect("/ws") as ws:
+            await ws.send_str(Envelope(kind="request", payload={"type": "x"}).to_json())
+            await _recv(ws)
+            registry.set_idle_shutdown(lambda: stopped.append(True), 0.01)
+            await asyncio.sleep(0.05)
+            assert stopped == []
+        await _wait_until(lambda: bool(stopped))
+
+
+@pytest.mark.asyncio
+async def test_protocol_error_drops_the_connection() -> None:
+    """A frame over aiohttp's default 4 MiB limit is a protocol error; the
+    socket is torn down and the manager is told the connection is gone."""
+    manager = _LiveManager()
+    registry = ConnectionRegistry(manager)  # type: ignore[arg-type]
+
+    async with _serve(registry) as client:
+        async with client.ws_connect("/ws", max_msg_size=0) as ws:
+            await ws.send_str(Envelope(kind="request", payload={"type": "x"}).to_json())
+            await _recv(ws)
+            with contextlib.suppress(OSError):
+                await ws.send_str("x" * (4 * 1024 * 1024 + 1))
+                await ws.receive(timeout=_TIMEOUT)
+        await _wait_until(lambda: bool(manager.dropped))
+
+    assert len(manager.dropped) == 1

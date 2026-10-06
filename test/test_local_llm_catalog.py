@@ -14,8 +14,10 @@ back from the user root.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import sys
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -258,6 +260,9 @@ _CORRUPTIONS: dict[str, Callable[[dict[str, object]], object]] = {
     "bool-where-int-expected": _set("min_memory", True),
     "negative-int": _set("memory", -1),
     "non-string-arg-value": _set("base_llama_args", {"--threads": 6}),
+    "knobs-not-an-array": _set("knobs", "kv-cache"),
+    "non-string-text-field": _set("description", 42),
+    "non-bool-mtp-flag": _set("mtp_supported", "yes"),
 }
 
 
@@ -279,6 +284,15 @@ def test_an_invalid_user_copy_is_skipped_and_the_shipped_entry_stays(
     assert get_local_registry(tmp_path)[_SAMPLE_FILE.stem] == shipped
     # Proves the file was rejected rather than accepted-and-ignored: only a
     # file that failed to load makes the purge stand down.
+    assert prune_unknown_model_state(tmp_path, ["gone-model"]) == ()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="':' is not allowed in Windows file names")
+def test_a_user_entry_named_like_an_mtp_head_download_is_skipped(tmp_path: Path) -> None:
+    """The ``mtp-head:`` prefix is reserved for head downloads, never an entry name."""
+    _write(_user_file(tmp_path, "My-Family", "mtp-head:my-model"), _read(_SAMPLE_FILE))
+
+    assert "mtp-head:my-model" not in get_local_registry(tmp_path)
     assert prune_unknown_model_state(tmp_path, ["gone-model"]) == ()
 
 
@@ -383,3 +397,103 @@ def test_a_user_catalog_entry_is_removed_by_deleting_its_file_not_via_the_api(
     with pytest.raises(ValueError, match=re.escape(str(user_catalog_dir(tmp_path)))):
         remove_local_entry(tmp_path, "my-model")
     assert "my-model" in get_local_registry(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Display order of an unparseable size hint
+# ---------------------------------------------------------------------------
+
+
+def test_an_entry_whose_size_hint_does_not_parse_sorts_last_in_its_family(
+    tmp_path: Path,
+) -> None:
+    body = _read(_SAMPLE_FILE)
+    _write(_user_file(tmp_path, "My-Family", "aaa-unsized"), {**body, "size_hint": "a lot"})
+    _write(_user_file(tmp_path, "My-Family", "zzz-small"), {**body, "size_hint": "1 MB"})
+    _write(_user_file(tmp_path, "My-Family", "mmm-big"), {**body, "size_hint": "2 TB"})
+
+    family = [e.name for e in get_local_registry(tmp_path).values() if e.base_llm == "My-Family"]
+
+    assert family == ["mmm-big", "zzz-small", "aaa-unsized"]
+
+
+# ---------------------------------------------------------------------------
+# Unreadable user catalog directories: skipped, purge suspended
+# ---------------------------------------------------------------------------
+
+_CANNOT_REVOKE_READ = sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0)
+
+
+@pytest.mark.skipif(_CANNOT_REVOKE_READ, reason="needs POSIX permissions and a non-root user")
+def test_an_unreadable_user_catalog_root_serves_the_shipped_catalog(tmp_path: Path) -> None:
+    shipped = get_local_registry(tmp_path / "pristine")
+    _user_only_entry(tmp_path)
+    root = user_catalog_dir(tmp_path)
+    root.chmod(0o000)
+    try:
+        served = get_local_registry(tmp_path)
+        purged = prune_unknown_model_state(tmp_path, ["gone-model"])
+    finally:
+        root.chmod(0o700)
+
+    assert served == shipped
+    assert purged == ()
+
+
+@pytest.mark.skipif(_CANNOT_REVOKE_READ, reason="needs POSIX permissions and a non-root user")
+@pytest.mark.parametrize(
+    "mode",
+    [0o100, 0o400, 0o000],
+    ids=["traversable-not-listable", "listable-not-traversable", "no-access"],
+)
+def test_an_unreadable_family_directory_is_skipped_and_suspends_the_purge(
+    tmp_path: Path, mode: int
+) -> None:
+    """A family directory that cannot be read, whichever permission it lacks,
+    loses only its own entries — it never fails the whole registry."""
+    _user_only_entry(tmp_path, base_llm="Readable", name="readable-model")
+    _user_only_entry(tmp_path, base_llm="Unlistable", name="hidden-model")
+    family = user_catalog_dir(tmp_path) / "Unlistable"
+    family.chmod(mode)
+    try:
+        served = get_local_registry(tmp_path)
+        purged = prune_unknown_model_state(tmp_path, ["gone-model"])
+    finally:
+        family.chmod(0o700)
+
+    assert "readable-model" in served
+    assert "hidden-model" not in served
+    assert purged == ()
+
+
+# ---------------------------------------------------------------------------
+# A file's built-in MTP default survives its family gaining heads
+# ---------------------------------------------------------------------------
+
+_CHECKBOX_ID = "spec-decoding-mtp"
+
+
+def _shipped_body_with_built_in_mtp() -> dict[str, object]:
+    for path in _SHIPPED_FILES:
+        body = _read(path)
+        knobs = body.get("knobs")
+        if body.get("mtp_supported") is True and isinstance(knobs, list) and _CHECKBOX_ID in knobs:
+            return body
+    raise AssertionError(f"no shipped entry lists the {_CHECKBOX_ID!r} checkbox")
+
+
+def test_a_files_checkbox_default_on_becomes_the_built_in_head_option(tmp_path: Path) -> None:
+    body = _shipped_body_with_built_in_mtp()
+    defaults = body.get("knob_defaults", {})
+    assert isinstance(defaults, dict)
+    body["knob_defaults"] = {**defaults, _CHECKBOX_ID: "on"}
+    _write(_user_file(tmp_path, "My-Family", "my-model"), body)
+    heads = user_catalog_dir(tmp_path) / "My-Family" / MTP_SIDECARS_FILENAME
+    _write(heads, {"q8_0": {"repo_id": "acme/heads", "filename": "mtp.gguf", "quant_type": "Q8_0"}})
+
+    entry = get_local_registry(tmp_path)["my-model"]
+    pickers = [knob for knob in entry.knobs if knob.id.startswith(f"{_CHECKBOX_ID}-head:")]
+
+    assert len(pickers) == 1
+    assert _CHECKBOX_ID not in entry.knob_defaults
+    assert get_knob_selections(tmp_path, entry)[pickers[0].id] == "builtin"
