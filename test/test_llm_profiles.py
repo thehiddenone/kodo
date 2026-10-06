@@ -21,6 +21,7 @@ import pytest
 from kodo.llms.llamacpp._llama_server import LlamaServer, LlamaServerConfig
 from kodo.llms.local_registry import (
     GPT_OSS_REASONING_EFFORT_FAMILY,
+    MUSE_GLIMMER_REASONING_STRENGTH_FAMILY,
     QWEN4EXP_REASONING_EFFORT_FAMILY,
     QWEN_REASONING_BUDGET_FAMILY,
     QWEN_TIER_TOKEN_BUDGETS,
@@ -867,6 +868,7 @@ def test_no_thinking_slug_outlives_the_shipped_catalog() -> None:
         QWEN_REASONING_BUDGET_FAMILY
         | GPT_OSS_REASONING_EFFORT_FAMILY
         | QWEN4EXP_REASONING_EFFORT_FAMILY
+        | MUSE_GLIMMER_REASONING_STRENGTH_FAMILY
         | frozenset(QWEN_TIER_TOKEN_BUDGETS)
     )
     assert not tiered - shipped
@@ -879,6 +881,7 @@ def _one_slug_catalog(monkeypatch: pytest.MonkeyPatch, slug: str) -> None:
         "QWEN_REASONING_BUDGET_FAMILY",
         "GPT_OSS_REASONING_EFFORT_FAMILY",
         "QWEN4EXP_REASONING_EFFORT_FAMILY",
+        "MUSE_GLIMMER_REASONING_STRENGTH_FAMILY",
     ):
         monkeypatch.setattr(_catalog, table, frozenset({slug}))
     monkeypatch.setattr(_catalog, "QWEN_TIER_TOKEN_BUDGETS", {slug: {"low": 1}})
@@ -897,6 +900,7 @@ def test_validate_catalog_accepts_thinking_tables_that_match_the_catalog(
         "QWEN_REASONING_BUDGET_FAMILY",
         "GPT_OSS_REASONING_EFFORT_FAMILY",
         "QWEN4EXP_REASONING_EFFORT_FAMILY",
+        "MUSE_GLIMMER_REASONING_STRENGTH_FAMILY",
     ],
 )
 def test_validate_catalog_rejects_a_thinking_family_slug_no_entry_has(

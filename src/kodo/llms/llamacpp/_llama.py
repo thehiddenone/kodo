@@ -72,6 +72,17 @@ _API_KEY = "key_is_not_required_for_local_inference"
 # once. Asking for ``identity`` keeps each chunk flushing as it is produced.
 _NO_COMPRESSION_HEADERS = {"Accept-Encoding": "identity"}
 
+# The ``chat_template_kwargs`` field each template-argument thinking family
+# sends its tier slug under — the field name the model's own Jinja template
+# reads. Muse Glimmer's template reads ``reasoning_strength``; llama.cpp does
+# not translate ``reasoning_effort`` onto it, so the wrong name is silently
+# ignored and the model stays at its template default.
+_TIER_TEMPLATE_KWARG: dict[str, str] = {
+    "gpt_oss_reasoning_effort": "reasoning_effort",
+    "qwen4exp_reasoning_effort": "reasoning_effort",
+    "muse_glimmer_reasoning_strength": "reasoning_strength",
+}
+
 
 def _build_thinking_extra_body(
     base_llm: str, *, override_tier: str | None = None
@@ -99,8 +110,8 @@ def _build_thinking_extra_body(
         LOCAL_INFERENCE.md §2a) — except ``UNLIMITED_THINKING_TIER``, which
         sends ``thinking_budget_tokens: -1`` and ``None`` here (no
         ``max_tokens`` at all). Families with no numeric budget (GPT-OSS,
-        Qwen3.8-Flash-Next) or no thinking family at all get the flat
-        ``_DEFAULT_MAX_TOKENS``.
+        Qwen3.8-Flash-Next, Muse Glimmer) or no thinking family at all get the
+        flat ``_DEFAULT_MAX_TOKENS``.
     """
     family = local_thinking_family(base_llm)
     if family is None:
@@ -132,13 +143,16 @@ def _build_thinking_extra_body(
         max_tokens = budget + _QWEN_MAX_TOKENS_HEADROOM if budget >= 0 else _DEFAULT_MAX_TOKENS
         return extra_body, max_tokens
 
-    # gpt_oss_reasoning_effort / qwen4exp_reasoning_effort — the tier slug IS
-    # the wire value in both, and neither has a numeric budget to size
-    # max_tokens against. They stay separate families only because their tier
+    # The template-argument families (gpt_oss_reasoning_effort,
+    # qwen4exp_reasoning_effort, muse_glimmer_reasoning_strength) — the tier
+    # slug IS the wire value in all of them, and none has a numeric budget to
+    # size max_tokens against. They stay separate families because their tier
     # vocabularies differ (GPT-OSS tops out at "high", Qwen3.8-Flash-Next at
     # "xhigh", and each chat template rejects the other's top tier), which
-    # `local_thinking_tiers` has already resolved by the time we get here.
-    return {"chat_template_kwargs": {"reasoning_effort": tier}}, _DEFAULT_MAX_TOKENS
+    # `local_thinking_tiers` has already resolved by the time we get here —
+    # and Muse Glimmer's also because its field name differs.
+    kwarg = _TIER_TEMPLATE_KWARG[family]
+    return {"chat_template_kwargs": {kwarg: tier}}, _DEFAULT_MAX_TOKENS
 
 
 # ---------------------------------------------------------------------------

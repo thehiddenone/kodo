@@ -44,6 +44,7 @@ from ._catalog_files import (
 from ._mtp_sidecars import MTP_SIDECARS_FILENAME, MtpSidecar
 from ._thinking import (
     GPT_OSS_REASONING_EFFORT_FAMILY,
+    MUSE_GLIMMER_REASONING_STRENGTH_FAMILY,
     QWEN4EXP_REASONING_EFFORT_FAMILY,
     QWEN_REASONING_BUDGET_FAMILY,
     QWEN_TIER_TOKEN_BUDGETS,
@@ -241,6 +242,7 @@ def _validate_catalog() -> None:
         QWEN_REASONING_BUDGET_FAMILY
         | GPT_OSS_REASONING_EFFORT_FAMILY
         | QWEN4EXP_REASONING_EFFORT_FAMILY
+        | MUSE_GLIMMER_REASONING_STRENGTH_FAMILY
         | frozenset(QWEN_TIER_TOKEN_BUDGETS)
     )
     stale = sorted(tiered - base_llms)

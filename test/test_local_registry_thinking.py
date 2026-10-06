@@ -12,6 +12,7 @@ import pytest
 
 from kodo.llms.local_registry import (
     GPT_OSS_REASONING_EFFORT_FAMILY,
+    MUSE_GLIMMER_REASONING_STRENGTH_FAMILY,
     QWEN4EXP_REASONING_EFFORT_FAMILY,
     QWEN_REASONING_BUDGET_FAMILY,
     QWEN_TIER_TOKEN_BUDGETS,
@@ -27,6 +28,7 @@ _FAMILIES: tuple[tuple[frozenset[str], str, str], ...] = (
     (QWEN_REASONING_BUDGET_FAMILY, "qwen_reasoning_budget", "high"),
     (GPT_OSS_REASONING_EFFORT_FAMILY, "gpt_oss_reasoning_effort", "medium"),
     (QWEN4EXP_REASONING_EFFORT_FAMILY, "qwen4exp_reasoning_effort", "xhigh"),
+    (MUSE_GLIMMER_REASONING_STRENGTH_FAMILY, "muse_glimmer_reasoning_strength", "high"),
 )
 
 _CASES: tuple[tuple[str, str, str], ...] = tuple(
@@ -81,7 +83,12 @@ def test_qwen_budget_tiers_end_unlimited_and_have_budgets_for_the_rest(base_llm:
 
 
 @pytest.mark.parametrize(
-    "members", [GPT_OSS_REASONING_EFFORT_FAMILY, QWEN4EXP_REASONING_EFFORT_FAMILY]
+    "members",
+    [
+        GPT_OSS_REASONING_EFFORT_FAMILY,
+        QWEN4EXP_REASONING_EFFORT_FAMILY,
+        MUSE_GLIMMER_REASONING_STRENGTH_FAMILY,
+    ],
 )
 def test_effort_families_have_no_unlimited_tier(members: frozenset[str]) -> None:
     for base_llm in members:

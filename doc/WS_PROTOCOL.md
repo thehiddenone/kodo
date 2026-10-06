@@ -898,6 +898,8 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                       "tiers": ["low", "medium", "high"], "default": "medium" },
     "Qwen38-Flash-Next": { "family": "qwen4exp_reasoning_effort",
                             "tiers": ["low", "medium", "xhigh"], "default": "xhigh" },
+    "MuseGlimmer-30B": { "family": "muse_glimmer_reasoning_strength",
+                          "tiers": ["low", "medium", "high", "xhigh"], "default": "high" },
     "anthropic": { "family": "anthropic_effort",
                     "tiers": ["low", "medium", "high", "xhigh", "max"], "default": "high" },
     "google": { "family": "google_thinking_level",

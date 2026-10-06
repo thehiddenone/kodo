@@ -1130,6 +1130,48 @@ def test_build_thinking_extra_body_gpt_oss_default_tier() -> None:
     assert max_tokens == _DEFAULT_MAX_TOKENS
 
 
+def test_build_thinking_extra_body_muse_glimmer_sends_reasoning_strength() -> None:
+    """Muse Glimmer's template reads ``reasoning_strength``, not ``reasoning_effort``."""
+    from kodo.llms.llamacpp._llama import _DEFAULT_MAX_TOKENS, _build_thinking_extra_body
+
+    extra_body, max_tokens = _build_thinking_extra_body("MuseGlimmer-30B", override_tier="xhigh")
+    assert extra_body == {"chat_template_kwargs": {"reasoning_strength": "xhigh"}}
+    assert max_tokens == _DEFAULT_MAX_TOKENS
+
+
+def test_build_thinking_extra_body_muse_glimmer_default_tier() -> None:
+    """Muse Glimmer with no override starts at its template's own default, 'high'."""
+    from kodo.llms.llamacpp._llama import _build_thinking_extra_body
+
+    extra_body, _ = _build_thinking_extra_body("MuseGlimmer-30B")
+    assert extra_body == {"chat_template_kwargs": {"reasoning_strength": "high"}}
+
+
+def test_build_thinking_extra_body_rejects_another_familys_tier_for_muse_glimmer() -> None:
+    """A tier Muse Glimmer's ladder lacks (left over from a model switch) falls back
+    to the default rather than reaching the template."""
+    from kodo.llms.llamacpp._llama import _build_thinking_extra_body
+
+    extra_body, _ = _build_thinking_extra_body("MuseGlimmer-30B", override_tier="unlimited")
+    assert extra_body == {"chat_template_kwargs": {"reasoning_strength": "high"}}
+
+
+def test_build_thinking_extra_body_handles_every_tier_of_every_family(tmp_path: Path) -> None:
+    """Every shipped model with a thinking family must be buildable for every one of
+    its tiers — guards a new family added to ``_thinking.py`` but never taught to
+    ``_build_thinking_extra_body`` (which would otherwise fail every request)."""
+    from kodo.llms import get_local_registry, local_thinking_family, local_thinking_tiers
+    from kodo.llms.llamacpp._llama import _build_thinking_extra_body
+
+    base_llms = {e.base_llm for e in get_local_registry(tmp_path).values() if e.base_llm}
+    tiered = sorted(b for b in base_llms if local_thinking_family(b) is not None)
+    assert "MuseGlimmer-30B" in tiered
+    for base_llm in tiered:
+        for tier in local_thinking_tiers(base_llm):
+            extra_body, _ = _build_thinking_extra_body(base_llm, override_tier=tier)
+            assert extra_body, (base_llm, tier)
+
+
 def test_build_thinking_extra_body_none_override_falls_back_to_default() -> None:
     """When override_tier is None, falls back to default tier."""
     from kodo.llms import QWEN_TIER_TOKEN_BUDGETS, local_thinking_default_tier

@@ -1625,7 +1625,7 @@ Each card also shows a ⚠ warning icon to the left of the pin/favorite star whe
 
 Some `base_llm` families support a controllable "thinking budget" — how much
 of the model's reasoning/`<think>` output llama-server is allowed to produce
-before it must answer. Three mechanisms exist, keyed off `base_llm` (never
+before it must answer. Four mechanisms exist, keyed off `base_llm` (never
 `entry.name`, so every quant of a base model shares one setting):
 
 - **`qwen_reasoning_budget`** (6 tiers: `minimal`, `low`, `medium`, `high`,
@@ -1688,23 +1688,30 @@ before it must answer. Three mechanisms exist, keyed off `base_llm` (never
   effort are two different controls, and only one thinking control is
   exposed per model.
 
-`MuseGlimmer-30B` is deliberately in **none** of the three, despite the base
-model itself supporting a graded low/medium/high/xhigh reasoning strength
-(matching Meta's cloud "Muse Spark" — see `kodo/llms/meta/_muse.py`'s
-`_REASONING_EFFORTS`, which also has a `minimal` tier the local GGUF's model
-card doesn't mention). No existing mechanism fits — `qwen4exp_reasoning_effort`
-comes closest on tier names, but it is still a `chat_template_kwargs` field and
-Muse Glimmer ships no chat template to consume one. Muse Glimmer's
-reasoning strength is set by a literal `Reasoning strength: <value>` line in
-the *system prompt*, not a CLI token budget or a `chat_template_kwargs` field
-consumed by the GGUF's own Jinja template — its base model ships no
-`chat_template` at all. Wiring it would need a fourth,
-system-prompt-injection thinking-tier mechanism (new code in `_llama.py` and
-wherever the request's system prompt gets assembled, well beyond a
-`local_registry/` change), and upstream llama.cpp support for the tiers
-themselves is still incomplete as of 2026-08-21 (model support merged in
-ggml-org/llama.cpp#26841, but the PR that sets Muse Glimmer's own thinking
-tags, #27475, is still open). Revisit once that lands.
+- **`muse_glimmer_reasoning_strength`** (4 tiers: `low`, `medium`, `high`,
+  `xhigh`) — `MuseGlimmer-30B` (`MUSE_GLIMMER_REASONING_STRENGTH_FAMILY`).
+  The same per-request template-argument mechanism as the two effort
+  families — no launch-time flags, `_DEFAULT_MAX_TOKENS` — but under a
+  different **field name**: each request sends
+  `chat_template_kwargs: {"reasoning_strength": "<tier>"}`. The Jinja
+  template embedded in the GGUF reads `reasoning_strength` and renders it as
+  the `Reasoning strength: <value>.` system-prompt line the model card
+  documents; llama.cpp does not map OpenAI's `reasoning_effort` onto it, so
+  that spelling would be silently ignored and the model would stay at the
+  template default. `_build_thinking_extra_body` picks the field name per
+  family from `_TIER_TEMPLATE_KWARG` (`_llama.py`). Default tier is `high`,
+  the template's own fallback. Needs llama.cpp ≥ b10353 (Meta's own llama.cpp
+  guide), which the catalog's b10549 pin already exceeds.
+
+  **Update 2026-10-05:** until this date `MuseGlimmer-30B` was deliberately in
+  none of the families, on the premise that the model "ships no chat
+  template" and so the system-prompt line would need a new
+  system-prompt-injection mechanism, blocked further on the open llama.cpp PR
+  #27475. Reading the GGUF header disproved the premise — Unsloth's GGUF
+  embeds a template that renders the line itself from the
+  `reasoning_strength` kwarg (default `high`) — and #27475 turned out to
+  matter only for a per-request *token* cap (`reasoning_budget_tokens`), which
+  this family does not use.
 
 Further families exist that are *not* local and therefore not in
 `local_registry/` at all — **one per cloud vendor**. See §4.5a.
@@ -1720,8 +1727,8 @@ Because those `frozenset`s (and `QWEN_TIER_TOKEN_BUDGETS`) are keyed by
 `base_llm` **strings**, a slug that no catalog entry carries any more matches
 nothing and silently strips that family's thinking tiers — the model keeps
 working, just with the thinking control gone. Nothing at runtime can tell
-that apart from a model that legitimately has no family (`MuseGlimmer-30B`,
-`Qwen3-Coder-Next-80B`, every `custom_*` entry), so
+that apart from a model that legitimately has no family
+(`Qwen3-Coder-Next-80B`, every `custom_*` entry), so
 `_catalog._validate_catalog()` checks it at **import time** instead: every
 slug named in `_thinking.py` must belong to some **shipped** catalog entry
 (`_HARDCODED_LOCAL_MODELS`), or kodo fails to start with the stale slug named.

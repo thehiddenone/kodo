@@ -7,6 +7,7 @@ from __future__ import annotations
 
 __all__ = [
     "GPT_OSS_REASONING_EFFORT_FAMILY",
+    "MUSE_GLIMMER_REASONING_STRENGTH_FAMILY",
     "QWEN4EXP_REASONING_EFFORT_FAMILY",
     "QWEN_REASONING_BUDGET_FAMILY",
     "QWEN_TIER_TOKEN_BUDGETS",
@@ -59,6 +60,18 @@ GPT_OSS_REASONING_EFFORT_FAMILY: frozenset[str] = frozenset({"GPT-OSS-120B", "GP
 #: template argument, so ``--reasoning-budget`` plays no part.
 QWEN4EXP_REASONING_EFFORT_FAMILY: frozenset[str] = frozenset({"Qwen38-Flash-Next"})
 
+#: base_llm values that take a per-request nested
+#: ``chat_template_kwargs.reasoning_strength`` of
+#: ``"low"|"medium"|"high"|"xhigh"``. The same per-request template-argument
+#: mechanism as the two reasoning-*effort* families, but under a different
+#: field *name*: Muse Glimmer's embedded chat template reads
+#: ``reasoning_strength`` (and renders it as the ``Reasoning strength: <value>.``
+#: system-prompt line its model card documents), and llama.cpp does not map the
+#: OpenAI-style ``reasoning_effort`` onto it. The four-tier vocabulary also
+#: matches neither effort family. No launch-time CLI flags; the template's own
+#: default is ``high``.
+MUSE_GLIMMER_REASONING_STRENGTH_FAMILY: frozenset[str] = frozenset({"MuseGlimmer-30B"})
+
 #: The Qwen family's top tier, and the only one with no budget at all: it sends
 #: ``thinking_budget_tokens: -1`` and no ``max_tokens``, so llama-server
 #: generates until the model ends its thinking itself or the slot's context is
@@ -75,6 +88,7 @@ _QWEN_TIERS: tuple[str, ...] = (
 )
 _GPT_OSS_TIERS: tuple[str, ...] = ("low", "medium", "high")
 _QWEN4EXP_TIERS: tuple[str, ...] = ("low", "medium", "xhigh")
+_MUSE_GLIMMER_TIERS: tuple[str, ...] = ("low", "medium", "high", "xhigh")
 
 #: Per-base_llm token budget for each finite Qwen-family tier — every tier but
 #: :data:`UNLIMITED_THINKING_TIER`, which has no budget and is deliberately
@@ -192,6 +206,9 @@ _GPT_OSS_DEFAULT_TIER = "medium"
 #: Qwen3.8-Flash-Next's chat template defaults ``reasoning_effort`` to
 #: ``xhigh`` when the field is absent, so kodo starts where the model does.
 _QWEN4EXP_DEFAULT_TIER = "xhigh"
+#: Muse Glimmer's chat template defaults ``reasoning_strength`` to ``high``
+#: when the field is absent, so kodo starts where the model does.
+_MUSE_GLIMMER_DEFAULT_TIER = "high"
 
 #: Injected before the end-of-thinking tag whenever a finite Qwen-family
 #: budget is exhausted (``--reasoning-budget-message``).
@@ -222,9 +239,9 @@ def local_thinking_family(base_llm: str) -> str | None:
 
     Returns:
         str | None: ``"qwen_reasoning_budget"``,
-        ``"gpt_oss_reasoning_effort"``, ``"qwen4exp_reasoning_effort"``, or
-        ``None`` (includes every ``custom_*`` entry, whose ``base_llm`` is
-        always ``""``).
+        ``"gpt_oss_reasoning_effort"``, ``"qwen4exp_reasoning_effort"``,
+        ``"muse_glimmer_reasoning_strength"``, or ``None`` (includes every
+        ``custom_*`` entry, whose ``base_llm`` is always ``""``).
     """
     if base_llm in QWEN_REASONING_BUDGET_FAMILY:
         return "qwen_reasoning_budget"
@@ -232,6 +249,8 @@ def local_thinking_family(base_llm: str) -> str | None:
         return "gpt_oss_reasoning_effort"
     if base_llm in QWEN4EXP_REASONING_EFFORT_FAMILY:
         return "qwen4exp_reasoning_effort"
+    if base_llm in MUSE_GLIMMER_REASONING_STRENGTH_FAMILY:
+        return "muse_glimmer_reasoning_strength"
     return None
 
 
@@ -251,6 +270,8 @@ def local_thinking_tiers(base_llm: str) -> tuple[str, ...]:
         return _GPT_OSS_TIERS
     if family == "qwen4exp_reasoning_effort":
         return _QWEN4EXP_TIERS
+    if family == "muse_glimmer_reasoning_strength":
+        return _MUSE_GLIMMER_TIERS
     return ()
 
 
@@ -262,14 +283,16 @@ def local_thinking_default_tier(base_llm: str) -> str:
 
     Returns:
         str: ``"high"`` for the Qwen reasoning-budget family, ``"medium"``
-        for GPT-OSS, ``"xhigh"`` for Qwen3.8-Flash-Next, or ``""`` if
-        *base_llm* has no thinking family.
+        for GPT-OSS, ``"xhigh"`` for Qwen3.8-Flash-Next, ``"high"`` for Muse
+        Glimmer, or ``""`` if *base_llm* has no thinking family.
     """
     family = local_thinking_family(base_llm)
     if family == "gpt_oss_reasoning_effort":
         return _GPT_OSS_DEFAULT_TIER
     if family == "qwen4exp_reasoning_effort":
         return _QWEN4EXP_DEFAULT_TIER
+    if family == "muse_glimmer_reasoning_strength":
+        return _MUSE_GLIMMER_DEFAULT_TIER
     if family == "qwen_reasoning_budget":
         return _QWEN_DEFAULT_TIER
     return ""

@@ -74,12 +74,13 @@ thinking-mode feature to work at all. llama.cpp only honors a per-request
 `thinking_budget_tokens` override (sent by `LlamaPlugin.__raw_stream` via
 `_build_thinking_extra_body`, `_llama.py`) when the launch-time budget is
 exactly `-1` (unrestricted); any other explicit CLI value locks the budget
-server-side and silently ignores every per-request override. The two
-reasoning-*effort* families — GPT-OSS (`GPT_OSS_REASONING_EFFORT_FAMILY`) and
-Qwen3.8-Flash-Next (`QWEN4EXP_REASONING_EFFORT_FAMILY`) — get no launch flags
-at all: their tiering is purely a per-request
-`chat_template_kwargs.reasoning_effort` field, with no CLI-side counterpart to
-configure. `ensure_llama_running` gates the two flags on an exact
+server-side and silently ignores every per-request override. The three
+template-argument families — GPT-OSS (`GPT_OSS_REASONING_EFFORT_FAMILY`),
+Qwen3.8-Flash-Next (`QWEN4EXP_REASONING_EFFORT_FAMILY`) and Muse Glimmer
+(`MUSE_GLIMMER_REASONING_STRENGTH_FAMILY`) — get no launch flags at all: their
+tiering is purely a per-request `chat_template_kwargs` field
+(`reasoning_effort` for the first two, `reasoning_strength` for Muse Glimmer),
+with no CLI-side counterpart to configure. `ensure_llama_running` gates the two flags on an exact
 `local_thinking_family(...) == "qwen_reasoning_budget"` match, so a new family
 never inherits them by accident.
 

@@ -8,17 +8,21 @@ to a 2048-token sliding window, plus 2 KV heads (GQA) — which is what keeps
 the KV cache small relative to file size even at the full 131K context (see
 the per-entry `gpu_tip`/`mac_tip` notes).
 
-**Deliberately not in either thinking-tier family** (`_thinking`).
-Muse Glimmer's reasoning strength (low/medium/high/xhigh) is documented as
-being set by a literal `Reasoning strength: <value>` line in the system
-prompt — not a CLI token budget (the Qwen family) and not a
-`chat_template_kwargs` field consumed by the GGUF's own Jinja template (the
-GPT-OSS family); the base model's `tokenizer_config.json` has no
-`chat_template` field at all. Wiring that would need a third thinking-tier
-mechanism (system-prompt injection) touching code well beyond this package
-(`_llama.py` and wherever the request's system prompt gets assembled), and
-upstream llama.cpp's own support is still catching up — model support landed
-in ggml-org/llama.cpp#26841 (2026-08-10) and a tool-call parsing fix in #26879
-(2026-08-11), but the PR that actually sets Muse Glimmer's thinking tags
-(#27475) is still open/unmerged as of 2026-08-21. Revisit once that lands and
-kodo has a system-prompt-injection mechanism to hang it on.
+**Thinking tiers: `muse_glimmer_reasoning_strength`** (`_thinking.py`) —
+`low`/`medium`/`high`/`xhigh`, default `high`. Each request sends
+`chat_template_kwargs: {"reasoning_strength": "<tier>"}`; the Jinja template
+embedded in the GGUF renders that as the `Reasoning strength: <value>.`
+system-prompt line the model card documents (falling back to `high` when the
+field is absent). The field is `reasoning_strength`, not `reasoning_effort` —
+llama.cpp does not translate the OpenAI spelling for this template, so the
+wrong name is silently ignored. Requires llama.cpp ≥ b10353 (Meta's llama.cpp
+guide); the entries pin b10549.
+
+**Update 2026-10-05:** these notes previously kept Muse Glimmer out of every
+thinking-tier family, reasoning that the base model ships no chat template,
+so the system-prompt line would need a new injection mechanism, and that
+upstream support waited on ggml-org/llama.cpp#27475. Both were wrong for this
+GGUF: its header carries a `tokenizer.chat_template` with a `render_reasoning`
+macro reading `reasoning_strength`, and #27475 (still open) only sets the
+thinking tags a per-request *token* cap (`reasoning_budget_tokens`) needs — a
+control this family does not use.
