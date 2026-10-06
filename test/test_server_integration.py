@@ -127,6 +127,32 @@ async def _recv_response(
             return env
 
 
+def _seed_custom_hf(name: str) -> Envelope:
+    """Seed a ``custom_hf`` entry *name* and return the request that re-reads the registry.
+
+    No message creates one any more (``local_llm.add_huggingface`` was removed
+    for the Model Importer agent), but entries added before then still load,
+    install and update — which is what the tests using this exercise. The
+    returned ``local_llm.registry_get`` is answered with the same
+    ``local_llm.registry_state`` the add used to reply with.
+    """
+    from kodo.llms import LocalLLMEntry
+    from kodo.llms.local_registry import add_local_entry
+    from kodo.project import kodo_user_dir
+
+    add_local_entry(
+        kodo_user_dir(),
+        LocalLLMEntry(
+            name=name,
+            kind="custom_hf",
+            description="",
+            repo_id=f"acme/{name}",
+            filename="model.gguf",
+        ),
+    )
+    return _make_request("local_llm.registry_get")
+
+
 def _make_request(msg_type: str, *, session_id: str | None = None, **payload: object) -> Envelope:
     body: dict[str, object] = {"type": msg_type, **payload}
     if session_id is not None:
@@ -306,8 +332,9 @@ async def test_top_agents_list_returns_the_full_catalog(
     assert resp.payload["default_agent"] == registry.default_top_agent()
 
 
-# No shipped agent is non-selectable, so these tests install one of their own
-# as a user agent (doc/USER_AGENTS.md) rather than borrowing a real one.
+# The one shipped non-selectable agent is also non-interactive, which agent.set
+# refuses (§7.4h), so these tests install a plain `selectable: false` user agent
+# (doc/USER_AGENTS.md) rather than borrowing a real one.
 _HIDDEN_AGENT = "hidden_agent"
 
 
@@ -364,6 +391,139 @@ async def test_agent_set_accepts_a_non_selectable_agent(
     await ws.send_str(req.to_json())
     resp = await _recv_response(ws, req.id)
     assert resp.payload["type"] == "agent.accepted"
+
+
+# ---------------------------------------------------------------------------
+# agent.run — a session started on a non-interactive agent, then locked
+# (doc/WS_PROTOCOL.md §7.4h)
+# ---------------------------------------------------------------------------
+
+#: Read off the shipped configs rather than named, so the tests keep exercising
+#: whichever agent agent.run can start.
+_RUN_ONLY_AGENT = next(a.name for a in AgentRegistry(_AGENTS_DIR).top_agents() if not a.interactive)
+
+
+async def _agent_run(
+    ws: aiohttp.ClientWebSocketResponse, sid: str, name: str = _RUN_ONLY_AGENT
+) -> tuple[Envelope, list[Envelope]]:
+    req = _make_request("agent.run", session_id=sid, name=name, prompt="acme/Model-GGUF")
+    await ws.send_str(req.to_json())
+    return await _recv_until_response(ws, req.id)
+
+
+async def _send_and_reply(
+    ws: aiohttp.ClientWebSocketResponse, msg_type: str, sid: str, **payload: object
+) -> dict[str, object]:
+    req = _make_request(msg_type, session_id=sid, **payload)
+    await ws.send_str(req.to_json())
+    return (await _recv_response(ws, req.id)).payload
+
+
+def _last_state(events: list[Envelope]) -> dict[str, object]:
+    return [e.payload for e in events if e.payload.get("type") == "state"][-1]
+
+
+async def test_agent_run_starts_a_locked_autonomous_session(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    sid = await _open_session(ws)
+    resp, events = await _agent_run(ws, sid)
+    assert resp.payload["type"] == "agent.run.accepted"
+    state = _last_state(events)
+    assert state["top_agent"] == _RUN_ONLY_AGENT
+    assert state["interactive"] is False
+    assert state["autonomous"] is True
+
+
+async def test_a_fresh_session_takes_input(ws: aiohttp.ClientWebSocketResponse) -> None:
+    hello = await _hello(ws)
+    state = cast("dict[str, object]", hello.payload["state"])
+    assert state["interactive"] is True
+
+
+async def test_agent_run_refuses_an_interactive_agent(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    sid = await _open_session(ws)
+    interactive = AgentRegistry(_AGENTS_DIR).default_top_agent()
+    resp, _ = await _agent_run(ws, sid, name=interactive)
+    assert resp.payload["type"] == "error"
+    assert resp.payload["code"] == "agent_run_refused"
+    # Nothing changed: the session still takes prompts.
+    reply = await _send_and_reply(ws, "prompt.submit", sid, text="hello")
+    assert reply["type"] == "prompt.accepted"
+
+
+async def test_agent_run_refuses_a_session_that_already_had_a_prompt(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    sid = await _open_session(ws)
+    assert (await _send_and_reply(ws, "prompt.submit", sid, text="hello"))["type"] == (
+        "prompt.accepted"
+    )
+    resp, _ = await _agent_run(ws, sid)
+    assert resp.payload["code"] == "agent_run_refused"
+
+
+async def test_agent_run_needs_a_prompt(ws: aiohttp.ClientWebSocketResponse) -> None:
+    sid = await _open_session(ws)
+    reply = await _send_and_reply(ws, "agent.run", sid, name=_RUN_ONLY_AGENT, prompt="  ")
+    assert reply["code"] == "empty_prompt"
+
+
+@pytest.mark.parametrize(
+    ("msg_type", "payload"),
+    [
+        ("prompt.submit", {"text": "and another thing"}),
+        ("agent.set", {"name": ""}),
+        ("mode.set", {"autonomous": False}),
+    ],
+)
+async def test_a_locked_session_refuses_further_input(
+    ws: aiohttp.ClientWebSocketResponse, msg_type: str, payload: dict[str, object]
+) -> None:
+    sid = await _open_session(ws)
+    await _agent_run(ws, sid)
+    reply = await _send_and_reply(ws, msg_type, sid, **payload)
+    assert reply["type"] == "error"
+    assert reply["code"] == "session_locked"
+
+
+async def test_agent_set_cannot_select_a_non_interactive_agent(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    sid = await _open_session(ws)
+    reply = await _send_and_reply(ws, "agent.set", sid, name=_RUN_ONLY_AGENT)
+    assert reply["code"] == "agent_run_only"
+
+
+async def test_a_locked_session_is_still_locked_after_a_server_restart() -> None:
+    """``interactive`` is re-derived from the stored agent, so a resume keeps the lock."""
+    first = TestServer(create_app(Config()))
+    await first.start_server()
+    http = aiohttp.ClientSession()
+    try:
+        a = await http.ws_connect(f"http://127.0.0.1:{first.port}/ws")
+        sid = await _open_session(a)
+        await _agent_run(a, sid)
+        await a.close()
+        await first.close()
+
+        second = TestServer(create_app(Config()))
+        await second.start_server()
+        try:
+            b = await http.ws_connect(f"http://127.0.0.1:{second.port}/ws")
+            hello = await _hello(b, session_id=sid)
+            state = cast("dict[str, object]", hello.payload["state"])
+            assert state["top_agent"] == _RUN_ONLY_AGENT
+            assert state["interactive"] is False
+            reply = await _send_and_reply(b, "prompt.submit", sid, text="more")
+            assert reply["code"] == "session_locked"
+            await b.close()
+        finally:
+            await second.close()
+    finally:
+        await http.close()
 
 
 async def test_agent_set_falls_back_when_the_name_is_unknown(
@@ -853,13 +1013,7 @@ async def test_local_llm_install_pushes_registry_state_again_on_completion(
 ) -> None:
     from kodo.llms.local import LocalModelManager
 
-    req = _make_request(
-        "local_llm.add_huggingface",
-        name="test-model",
-        description="",
-        repo_id="acme/test-model",
-        filename="model.gguf",
-    )
+    req = _seed_custom_hf("test-model")
     await ws.send_str(req.to_json())
     added = await _recv_with_drain(ws)
     assert added.payload["type"] == "local_llm.registry_state"
@@ -902,13 +1056,7 @@ async def test_local_llm_install_pushes_registry_state_after_failure_too(
 ) -> None:
     from kodo.llms.local import LocalModelError, LocalModelManager
 
-    req = _make_request(
-        "local_llm.add_huggingface",
-        name="test-model",
-        description="",
-        repo_id="acme/test-model",
-        filename="model.gguf",
-    )
+    req = _seed_custom_hf("test-model")
     await ws.send_str(req.to_json())
     await _recv_with_drain(ws)  # kickoff-of-add registry_state, not under test here
 
@@ -943,13 +1091,7 @@ async def test_local_llm_update_uninstalls_then_reinstalls(
     installed again."""
     from kodo.llms.local import LocalModelManager
 
-    req = _make_request(
-        "local_llm.add_huggingface",
-        name="test-model",
-        description="",
-        repo_id="acme/test-model",
-        filename="model.gguf",
-    )
+    req = _seed_custom_hf("test-model")
     await ws.send_str(req.to_json())
     await _recv_with_drain(ws)  # add's own registry_state, not under test
 
@@ -1097,13 +1239,7 @@ async def test_local_llm_check_updates_reports_only_stale_names(
     from kodo.llms.local import LocalModelManager
 
     for name in ("stale-model", "current-model"):
-        req = _make_request(
-            "local_llm.add_huggingface",
-            name=name,
-            description="",
-            repo_id=f"acme/{name}",
-            filename="model.gguf",
-        )
+        req = _seed_custom_hf(name)
         await ws.send_str(req.to_json())
         await _recv(ws)  # each add's own registry_state, not under test
 
@@ -1123,19 +1259,20 @@ async def test_local_llm_check_updates_reports_only_stale_names(
     assert evt.payload["updatable"] == ["stale-model"]
 
 
-async def test_add_huggingface_keeps_its_llama_args_as_base_args(
-    ws: aiohttp.ClientWebSocketResponse,
+async def test_add_file_keeps_its_llama_args_as_base_args(
+    ws: aiohttp.ClientWebSocketResponse, tmp_path: Path
 ) -> None:
-    """A freshly-added custom_hf entry's own `llama_args` field (still collected
-    by the "Add local LLM" modal) becomes its Default profile's base args
-    rather than being dropped on the floor — see doc/LLM_REGISTRY.md §4.6. The
-    shared base args are merged underneath, so --jinja survives too."""
+    """A freshly-added custom entry's own `llama_args` field (still collected
+    by the "Add local LLM from file" modal) becomes its Default profile's base
+    args rather than being dropped on the floor — see doc/LLM_REGISTRY.md §4.6.
+    The shared base args are merged underneath, so --jinja survives too."""
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"GGUF")
     req = _make_request(
-        "local_llm.add_huggingface",
+        "local_llm.add_file",
         name="test-model",
         description="",
-        repo_id="acme/test-model",
-        filename="model.gguf",
+        path=str(model),
         llama_args={"--cache-type-k": "q8_0"},
         context_window=32768,
     )
@@ -1149,16 +1286,17 @@ async def test_add_huggingface_keeps_its_llama_args_as_base_args(
     assert args["--jinja"] == ""
 
 
-async def test_add_huggingface_gets_the_shared_knobs(
-    ws: aiohttp.ClientWebSocketResponse,
+async def test_add_file_gets_the_shared_knobs(
+    ws: aiohttp.ClientWebSocketResponse, tmp_path: Path
 ) -> None:
     """A user-added LLM is configurable exactly like a built-in one."""
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"GGUF")
     req = _make_request(
-        "local_llm.add_huggingface",
+        "local_llm.add_file",
         name="test-model",
         description="",
-        repo_id="acme/test-model",
-        filename="model.gguf",
+        path=str(model),
         context_window=32768,
     )
     await ws.send_str(req.to_json())

@@ -132,6 +132,13 @@ starts on is Kōdo's to declare and the user's to override through the
 `default_agent` setting ([SETTINGS.md](SETTINGS.md)) — not an installed agent's
 to claim.
 
+`"interactive": false` is **refused** on a user agent too (since 2026-10-05).
+It marks an agent a session reaches only through `agent.run`, which then locks
+the session against further input ([WS_PROTOCOL.md](WS_PROTOCOL.md) §7.4h) —
+a mechanism for built-in tools such as the Model Importer, not for installed
+agents. Either refusal demotes the agent to a broken row, and it is no longer
+selectable by `agent.set` either.
+
 ### 3.2 A sub-agent
 
 Two files in `~/.kodo/agents/subagents/<name>/`: `subagent_<name>.md`

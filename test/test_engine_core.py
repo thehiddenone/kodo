@@ -123,6 +123,12 @@ class _FakeRegistry:
     def default_top_agent(self) -> str:
         return _REAL_REGISTRY.default_top_agent()
 
+    def is_interactive(self, name: str) -> bool:
+        return _REAL_REGISTRY.is_interactive(name)
+
+    def knows_top_agent(self, value: str) -> bool:
+        return _REAL_REGISTRY.knows_top_agent(value)
+
     def return_result_specs(self, name: str) -> list[object]:
         return []
 

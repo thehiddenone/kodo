@@ -174,6 +174,22 @@ MSG_MODE_SET = "mode.set"
 # accepted values are now whatever top-level agents the registry has loaded.
 MSG_AGENT_SET = "agent.set"
 
+# Client → Server. Session connection. Start a **brand-new** session on a
+# non-interactive top-level agent (``interactive: false`` in its config — e.g.
+# ``kodo_model_importer``) with its one prompt, in one step: the server selects
+# the agent, switches autonomous mode on and queues the prompt as
+# ``prompt.submit`` would. Payload ``{name, prompt}``. Replies
+# ``agent.run.accepted`` after an EVT_STATE whose ``interactive`` is ``false``;
+# refused with an ``error`` of code ``agent_run_refused`` (and nothing changed)
+# when the agent is unknown or interactive, or the session already has a
+# conversation or a queued prompt. From then on the session is locked:
+# ``prompt.submit``, ``agent.set`` and ``mode.set`` reply ``error`` code
+# ``session_locked`` — including after a reload or resume, since ``interactive``
+# is derived from the stored ``top_agent``. ``agent.set`` naming a
+# non-interactive agent is refused with code ``agent_run_only``: ``agent.run``
+# is the only way onto one. doc/WS_PROTOCOL.md §7.4h.
+MSG_AGENT_RUN = "agent.run"
+
 # Client → Server. Session connection. Request the current top-level agent
 # catalog on demand — the ``{agents, default_agent}`` shape ``hello.ack`` used
 # to carry unconditionally before the catalog moved out of it (kodo-vsix's
@@ -675,19 +691,28 @@ MSG_BEDROCK_MODELS_REFRESH = "bedrock.models.refresh"
 # server-owned ``~/.kodo/etc/local-llm-registry.json`` and reply with
 # ``local_llm.registry_state`` (the merged registry + override path) on the
 # same connection — there is no separate ack payload.
-#   local_llm.add_huggingface {name, description, repo_id, filename,
-#                              llama_args?, context_window?}
 #   local_llm.add_file        {name, description, path, llama_args?, context_window?}
 #   local_llm.add_server_url  {name, description, url}
 #   local_llm.uninstall       {name} — frees the downloaded GGUF, keeps the entry
 #                                       (also the "cancel a download" action)
 #   local_llm.remove          {name} — removes a custom entry (hardcoded ones
 #                                       are rejected); uninstalls first if needed
-MSG_LOCAL_LLM_ADD_HUGGINGFACE = "local_llm.add_huggingface"
 MSG_LOCAL_LLM_ADD_FILE = "local_llm.add_file"
 MSG_LOCAL_LLM_ADD_SERVER_URL = "local_llm.add_server_url"
 MSG_LOCAL_LLM_UNINSTALL = "local_llm.uninstall"
 MSG_LOCAL_LLM_REMOVE = "local_llm.remove"
+
+# (``local_llm.add_huggingface``, the hand-filled "add a GGUF from Hugging Face"
+# form, was removed 2026-10-05: kodo-vsix starts the Model Importer agent with
+# ``agent.run`` instead, which writes user catalog files — doc/LLM_REGISTRY.md
+# §4.0b. Existing ``custom_hf`` entries still load, install and remove.)
+
+# Client → Server. Control connection. Re-read the local registry: no payload,
+# replies ``local_llm.registry_state`` like every ``local_llm.*`` mutation. For
+# changes made outside a ``local_llm.*`` message — the user catalog files the
+# Model Importer agent writes from a *session* — which push nothing on their
+# own; kodo-vsix sends it when such a session's turn ends.
+MSG_LOCAL_LLM_REGISTRY_GET = "local_llm.registry_get"
 
 # Client → Server. Launch-configuration management (doc/LLM_REGISTRY.md §4.6).
 # A local registry entry runs under one of two things: its **Default profile**

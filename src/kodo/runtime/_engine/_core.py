@@ -54,6 +54,7 @@ from kodo.findings import (
 )
 from kodo.guided_state import append_accepted, append_review_result
 from kodo.llms import LLMGateway, Message
+from kodo.llms.model_import import LocalCatalogService
 from kodo.project import (
     ProjectLayout,
     SessionWorkspace,
@@ -171,6 +172,7 @@ class WorkflowEngine(
     _session: SessionState
     _worker: asyncio.Task[None] | None
     _main_messages: list[Message]
+    _prompt_queued: bool
     _orch_session_id: str
     _current_vendor: str | None
     _last_thinking_base_llm: str | None
@@ -244,6 +246,9 @@ class WorkflowEngine(
         self._session = SessionState()
         self._worker = None
         self._main_messages = []
+        # Whether any prompt was ever queued on this engine — with an empty
+        # history, what tells agent.run a session is brand new.
+        self._prompt_queued = False
         self._current_prompt_text = ""
         self._orch_session_id = ""
         self._current_vendor = None
@@ -336,12 +341,25 @@ class WorkflowEngine(
             add_security_path_rule=self.add_security_path_rule,
             has_workspace=self._has_workspace,
             root_paths=self._root_paths,
+            local_catalog=self._local_catalog_service,
         )
+        # Created on first use: only the Model Importer's tools reach it.
+        self._local_catalog: LocalCatalogService | None = None
 
     @property
     def session(self) -> SessionState:
         """Current session state snapshot."""
         return self._session
+
+    def _local_catalog_service(self) -> LocalCatalogService:
+        """The session's Model Importer catalog service, created on first use.
+
+        One per engine so the GGUF headers and repo snapshots it caches carry
+        across every importer tool call of the session.
+        """
+        if self._local_catalog is None:
+            self._local_catalog = LocalCatalogService(kodo_user_dir())
+        return self._local_catalog
 
     @property
     def gate(self) -> GateOrchestrator:
@@ -401,6 +419,7 @@ class WorkflowEngine(
             # is exactly why the accepted set is no longer validated in two
             # places. A stale or legacy value resolves to a real agent.
             self._session.top_agent = self._registry.resolve_top_agent(self._transient.top_agent)
+            self._session.interactive = self._registry.is_interactive(self._session.top_agent)
             self._session.edit_control = self._transient.edit_control
             self._session.command_control = self._transient.command_control
             self._session.security_rules = self._transient.security_rules
@@ -439,6 +458,7 @@ class WorkflowEngine(
             # empty placeholder ``SessionState`` carries. The client publishes
             # the same value as ``default_agent`` and does not pick one itself.
             self._session.top_agent = self._registry.default_top_agent()
+            self._session.interactive = self._registry.is_interactive(self._session.top_agent)
             self._transient.update(top_agent=self._session.top_agent)
             # Seed thinking_level from the active model's family default —
             # same reconciliation as the resumed path, with no persisted
@@ -630,6 +650,7 @@ class WorkflowEngine(
             request_id: Envelope ID of the originating request.
         """
         clean_text, attachment_paths = parse_attachment_marker(text)
+        self._prompt_queued = True
         self._transient.update(prompt=clean_text)
         await self._queue.put(
             {"text": clean_text, "attachments": attachment_paths, "request_id": request_id}
@@ -661,8 +682,42 @@ class WorkflowEngine(
                 rename. Unknown values fall back to the registry's default.
         """
         self._session.top_agent = self._registry.resolve_top_agent(name)
+        self._session.interactive = self._registry.is_interactive(self._session.top_agent)
         self._transient.update(top_agent=self._session.top_agent)
         await self._emitters.emit_state()
+
+    async def handle_agent_run(self, name: str, text: str, request_id: str) -> str | None:
+        """Start this brand-new session on a non-interactive agent with one prompt.
+
+        The whole of ``agent.run`` (doc/WS_PROTOCOL.md §7.4h), in one step so
+        no other message can land between its parts: select *name*, switch
+        autonomous mode on (there is no one to answer a question or approve a
+        call), and queue *text* exactly as ``prompt.submit`` would. From then
+        on :attr:`SessionState.interactive` is ``False`` and the server refuses
+        any further prompt, agent switch or mode change for the session.
+
+        Args:
+            name: A top-level agent declaring ``interactive: false``.
+            text: The one prompt the agent runs.
+            request_id: Envelope ID of the originating request.
+
+        Returns:
+            str | None: ``None`` when the run was queued, else why it was
+            refused — the agent is unknown or interactive, or the session
+            already has a conversation or a queued prompt. Nothing changes on
+            a refusal.
+        """
+        if not self._registry.knows_top_agent(name) or self._registry.is_interactive(name):
+            return f"{name!r} is not an agent that agent.run can start"
+        if self._main_messages or self._prompt_queued:
+            return "agent.run can only start a brand-new session"
+        self._session.top_agent = name
+        self._session.interactive = False
+        self._session.autonomous = True
+        self._transient.update(top_agent=name, autonomous=True)
+        await self._emitters.emit_state()
+        await self.handle_prompt_submit(text, request_id)
+        return None
 
     async def handle_edit_control_set(self, value: str) -> None:
         """Set the Edit Control posture.

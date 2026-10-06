@@ -26,6 +26,8 @@ from kodo.common import Envelope
 from kodo.llms import DEFAULT_BEDROCK_REGION, LocalLLMEntry
 from kodo.llms.llamacpp import LlamaInstall, LlamaServer, LlamaServerConfig, RunningServer
 from kodo.llms.local import LocalModelError, LocalModelManager, ModelRecord
+from kodo.llms.local_registry import add_local_entry
+from kodo.project import kodo_user_dir
 from kodo.server import Config, create_app
 from kodo.titling import DEFAULT_HOUSEKEEPER_LLM_ID, HOUSEKEEPER_LLM_OPTIONS
 
@@ -170,13 +172,23 @@ def _names(payload: dict[str, object]) -> set[str]:
 
 
 async def _add_hf(ws: aiohttp.ClientWebSocketResponse, name: str = "hf-model") -> None:
-    await _send(
-        ws,
-        "local_llm.add_huggingface",
-        name=name,
-        repo_id=f"acme/{name}",
-        filename="model.gguf",
+    """Seed a ``custom_hf`` entry and re-read the registry.
+
+    No message creates one any more (``local_llm.add_huggingface`` was removed
+    for the Model Importer agent), but entries added before then still load,
+    download and remove — which is what the tests using this exercise.
+    """
+    add_local_entry(
+        kodo_user_dir(),
+        LocalLLMEntry(
+            name=name,
+            kind="custom_hf",
+            description="",
+            repo_id=f"acme/{name}",
+            filename="model.gguf",
+        ),
     )
+    await _send(ws, "local_llm.registry_get")
     assert (await _event(ws))["type"] == "local_llm.registry_state"
 
 
@@ -629,39 +641,24 @@ async def test_bedrock_refresh_uses_the_request_credentials_and_default_region(
 # ---------------------------------------------------------------------------
 
 
-async def test_add_huggingface_requires_name_repo_and_filename(
+async def test_registry_get_replies_with_the_current_registry(
     ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
-    await _send(ws, "local_llm.add_huggingface", name="x", repo_id="", filename="m.gguf")
-    error = await _event(ws)
-    assert error["type"] == "error"
-    assert "required" in str(error["message"])
-
-
-async def test_add_huggingface_rejects_a_duplicate_name(
-    ws: aiohttp.ClientWebSocketResponse,
-) -> None:
-    await _add_hf(ws)
-    await _send(
-        ws, "local_llm.add_huggingface", name="hf-model", repo_id="acme/b", filename="b.gguf"
+    add_local_entry(
+        kodo_user_dir(),
+        LocalLLMEntry(name="seeded", kind="custom_hf", repo_id="acme/a", filename="a.gguf"),
     )
-    error = await _event(ws)
-    assert error["type"] == "error"
-    assert "already exists" in str(error["message"])
+    await _send(ws, "local_llm.registry_get")
+    assert "seeded" in _names(await _event(ws))
 
 
-async def test_add_huggingface_treats_an_unparseable_context_window_as_unset(
-    ws: aiohttp.ClientWebSocketResponse,
+async def test_add_file_treats_an_unparseable_context_window_as_unset(
+    ws: aiohttp.ClientWebSocketResponse, tmp_path: Path
 ) -> None:
-    await _send(
-        ws,
-        "local_llm.add_huggingface",
-        name="hf-model",
-        repo_id="acme/a",
-        filename="a.gguf",
-        context_window="lots",
-    )
-    assert _entry(await _event(ws), "hf-model")["context_window"] == 0
+    model = tmp_path / "a.gguf"
+    model.write_bytes(b"GGUF")
+    await _send(ws, "local_llm.add_file", name="file-model", path=str(model), context_window="lots")
+    assert _entry(await _event(ws), "file-model")["context_window"] == 0
 
 
 async def test_add_file_lists_an_installed_entry_at_its_path(

@@ -293,6 +293,19 @@ Protocols**, also defined in `_context.py`:
   engine-internal, triggered by the engine when a critic round leaves the
   document's findings backlog empty (`_record_findings`) — never through a tool
   or a protocol indirection.
+  **Added 2026-10-05:** `local_catalog()` returns the session's
+  **`LocalCatalogLike`** — the Model Importer's catalog service
+  (`kodo.llms.model_import.LocalCatalogService`, created on first use, one per
+  engine so its GGUF-header and repo caches span the session). Its five async
+  methods back the five importer tools one-to-one — `list_catalog`
+  (`list_local_llms`), `model_info` (`read_hf_model`), `gguf_header`
+  (`read_gguf_header`), `add_quant` (`add_local_llm_quant`), `set_mtp_heads`
+  (`set_mtp_heads`) — each returning a JSON-ready dict and raising
+  **`ValueError`** for a refusal, which the tool turns into `{"error": ...}`
+  (the concrete `ModelImportError` subclasses it; `kodo.tools` cannot name a
+  `kodo.llms` type). The tools are thin on purpose: every field is validated
+  and every factual claim checked against the GGUF header by the service
+  (doc/LLM_REGISTRY.md §4.0b).
   All three back the single `scaffold_new_project` tool, dispatched on which
   input the agent gave: no `path` and no workspace yet → `bootstrap_project`
   (resolves a workspace-home folder — interactively or, in autonomous mode,
@@ -1093,7 +1106,7 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [toolspecs/_intent.py](../src/kodo/toolspecs/_intent.py) | The shared mandatory `intent` property for first-degree mutating tools + `requires_intent` (§8A). |
 | [toolspecs/_<tool>.py](../src/kodo/toolspecs/) | One `ToolSpec` constant per tool (pure data). |
 | [toolspecs/__init__.py](../src/kodo/toolspecs/__init__.py) | Re-exports specs + `ALL_TOOLS` (for prompt rendering). |
-| [tools/_context.py](../src/kodo/tools/_context.py) | `ToolContext` + the injected Protocols (`GateLike`, `SessionLike`, `EngineServices`, `ApprovalLike`). |
+| [tools/_context.py](../src/kodo/tools/_context.py) | `ToolContext` + the injected Protocols (`GateLike`, `SessionLike`, `EngineServices`, `LocalCatalogLike`, `ApprovalLike`). |
 | [tools/_tool.py](../src/kodo/tools/_tool.py) | The `Tool` ABC: binds a `ToolContext` (read-only `context` property), declares abstract `handle`, and provides `resolve_path` (§5a — the ordinary resolver, or the session scratch directory when `temporary`). |
 | [tools/_&lt;tool&gt;.py](../src/kodo/tools/) | One `Tool` subclass per tool, with `handle(self, tool_input) -> str`. |
 | [tools/_dispatch.py](../src/kodo/tools/_dispatch.py) | `_TOOL_CLASSES` table, `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME`. |
@@ -1108,6 +1121,7 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [llms/anthropic/_claude.py](../src/kodo/llms/anthropic/_claude.py) | Converts `ToolSpec` → API `tools` param; parses `tool_use` → `ToolCallEvent`. |
 | [llms/_interface.py](../src/kodo/llms/_interface.py) | `Message`, `ToolCallEvent`, `TurnEnd`, the `stream_query` contract. |
 | [runtime/_engine/](../src/kodo/runtime/_engine/) | `_make_dispatcher`, `_run_agent_turn` (the tool loop), the `_EngineServices` adapter. |
+| [llms/model_import/](../src/kodo/llms/model_import/) | `LocalCatalogService`, the `LocalCatalogLike` behind the five Model Importer tools (`list_local_llms`, `read_hf_model`, `read_gguf_header`, `add_local_llm_quant`, `set_mtp_heads`) — doc/LLM_REGISTRY.md §4.0b. |
 | [runtime/_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator` (satisfies `GateLike`). |
 
 See also [INTERNALS.md §6A](INTERNALS.md) for the package's place in the

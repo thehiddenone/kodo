@@ -1,0 +1,9 @@
+{
+  "name": "kodo_model_importer",
+  "notes": "Started only by kodo-vsix's Local LLMs 'Add local LLM (GGUF) from huggingface.com' button, through agent.run with the repo id as its one prompt. `interactive: false` makes agent.run the only way onto it and locks its session (no further prompt, agent switch or mode change), which is why it must also be non-selectable: the picker never offers it. Writes only the user catalog, ~/.kodo/local_llms — see doc/LLM_REGISTRY.md §4.0b.",
+  "label": "Model Importer",
+  "description": "Reads a Hugging Face GGUF repo and adds one quant per precision tier to your local LLMs.",
+  "rank": 90,
+  "selectable": false,
+  "interactive": false
+}

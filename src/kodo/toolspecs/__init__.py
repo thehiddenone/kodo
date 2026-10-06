@@ -13,6 +13,7 @@ through a single :class:`kodo.tools.ToolDispatcher`.
 
 from __future__ import annotations
 
+from ._add_local_llm_quant import ADD_LOCAL_LLM_QUANT
 from ._ask_user import ASK_USER
 from ._compliance import (
     SCHEMA_COMPLIANCE_KEY,
@@ -35,10 +36,13 @@ from ._get_root_paths import GET_ROOT_PATHS
 from ._get_web_search_state import GET_WEB_SEARCH_STATE
 from ._guided_dev_status import GUIDED_DEV_STATUS
 from ._intent import INTENT_KEY, INTENT_PROPERTY, requires_intent
+from ._list_local_llms import LIST_LOCAL_LLMS
 from ._plan_step_forward import PLAN_STEP_FORWARD
 from ._query_search_engine import QUERY_SEARCH_ENGINE
 from ._read_attachment import READ_ATTACHMENT
 from ._read_file import READ_FILE
+from ._read_gguf_header import READ_GGUF_HEADER
+from ._read_hf_model import READ_HF_MODEL
 from ._read_webpage import READ_WEBPAGE
 from ._remaining_time import REMAINING_TIME
 from ._return_result import RETURN_RESULT, build_return_result_spec
@@ -55,6 +59,7 @@ from ._run_subagent import (
     subagent_from_tool_name,
 )
 from ._scaffold_new_project import SCAFFOLD_NEW_PROJECT
+from ._set_mtp_heads import SET_MTP_HEADS
 from ._spec import (
     OUTPUT_VISIBILITY_DEFAULT,
     VISIBILITY_ALWAYS,
@@ -88,6 +93,7 @@ NO_PROJECT_ERROR = (
 
 __all__ = [
     "ALL_TOOLS",
+    "ADD_LOCAL_LLM_QUANT",
     "ASK_USER",
     "CREATE_DIRECTORY",
     "CREATE_FILE",
@@ -106,6 +112,7 @@ __all__ = [
     "INTENT_KEY",
     "INTENT_PROPERTY",
     "ENGINE_OWNED_TASK_FIELDS",
+    "LIST_LOCAL_LLMS",
     "MAX_ROUNDS_DEFAULT",
     "MAX_ROUNDS_KEY",
     "NO_PROJECT_ERROR",
@@ -113,6 +120,8 @@ __all__ = [
     "QUERY_SEARCH_ENGINE",
     "READ_ATTACHMENT",
     "READ_FILE",
+    "READ_GGUF_HEADER",
+    "READ_HF_MODEL",
     "READ_WEBPAGE",
     "REMAINING_TIME",
     "RETURN_RESULT",
@@ -121,6 +130,7 @@ __all__ = [
     "RUN_SUBAGENT",
     "RUN_SUBAGENT_PREFIX",
     "SCAFFOLD_NEW_PROJECT",
+    "SET_MTP_HEADS",
     "SCHEMA_COMPLIANCE_KEY",
     "TOOLCHAIN_BUILD",
     "TOOLCHAIN_DEPS",
@@ -152,6 +162,7 @@ __all__ = [
 # Every tool spec in the catalog. Agents' granted tools are validated against it
 # at load time by kodo.agents._registry.
 ALL_TOOLS: tuple[ToolSpec, ...] = (
+    ADD_LOCAL_LLM_QUANT,
     ASK_USER,
     CREATE_DIRECTORY,
     CREATE_FILE,
@@ -166,10 +177,13 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     FIND_TEXT_IN_FILES,
     GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
+    LIST_LOCAL_LLMS,
     PLAN_STEP_FORWARD,
     QUERY_SEARCH_ENGINE,
     READ_ATTACHMENT,
     READ_FILE,
+    READ_GGUF_HEADER,
+    READ_HF_MODEL,
     READ_WEBPAGE,
     REMAINING_TIME,
     RETURN_RESULT,
@@ -177,6 +191,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     RUN_COMMAND,
     RUN_SUBAGENT,
     SCAFFOLD_NEW_PROJECT,
+    SET_MTP_HEADS,
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,
     UPDATE_WEB_SEARCH_STATE,

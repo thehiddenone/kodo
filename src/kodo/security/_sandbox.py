@@ -63,10 +63,13 @@ _ALLOWED_TOOLS = frozenset(
         "get_root_paths",
         "get_web_search_state",
         "guided_dev_status",
+        "list_local_llms",
         "plan_step_forward",
         "query_search_engine",
         "read_attachment",
         "read_file",
+        "read_gguf_header",
+        "read_hf_model",
         "read_webpage",
         "remaining_time",
         "return_result",
@@ -86,6 +89,12 @@ _DENIED_TOOLS: dict[str, str] = {
     ),
     "disable_autonomous_mode": (
         "No user is present in this run; continue autonomously and make the call yourself."
+    ),
+    "add_local_llm_quant": (
+        "A sandboxed run cannot change the local-LLM catalog, which lives outside the sandbox root."
+    ),
+    "set_mtp_heads": (
+        "A sandboxed run cannot change the local-LLM catalog, which lives outside the sandbox root."
     ),
 }
 

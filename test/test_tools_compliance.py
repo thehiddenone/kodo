@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,47 @@ class _FakeGate:
         return ApprovalResponse(action=self._action, feedback="")
 
 
+class _FakeCatalog:
+    """Structural ``LocalCatalogLike``: canned results; any id starting ``bad`` is refused."""
+
+    def __init__(self) -> None:
+        self.added: list[dict[str, object]] = []
+
+    async def list_catalog(self) -> dict[str, object]:
+        return {"families": [], "context_knobs": [], "user_catalog_dir": "/home/u/.kodo/local_llms"}
+
+    async def model_info(self, repo_id: str) -> dict[str, object]:
+        if repo_id.startswith("bad"):
+            raise ValueError(f"Hugging Face repository not found: {repo_id}")
+        return {"repo_id": repo_id, "gguf_quants": [], "mtp_head_files": [], "readme": ""}
+
+    async def gguf_header(self, repo_id: str, filename: str) -> dict[str, object]:
+        if repo_id.startswith("bad"):
+            raise ValueError("not a GGUF file")
+        return {"architecture": "qwen35", "context_length": 262144, "nextn_predict_layers": 1}
+
+    async def add_quant(self, fields: Mapping[str, object]) -> dict[str, object]:
+        if str(fields.get("repo_id", "")).startswith("bad"):
+            raise ValueError("builtin_mtp is false but the header has nextn_predict_layers = 1")
+        self.added.append(dict(fields))
+        return {
+            "path": "/home/u/.kodo/local_llms/F/q.json",
+            "name": str(fields["name"]),
+            "base_llm": "F",
+            "mtp_supported": True,
+            "knobs": ["kv-cache"],
+        }
+
+    async def set_mtp_heads(self, base_llm: str, heads: Sequence[object]) -> dict[str, object]:
+        if base_llm.startswith("bad"):
+            raise ValueError(f"no catalog entry has base_llm {base_llm!r}")
+        return {
+            "path": "/home/u/.kodo/local_llms/F/mtp_sidecars.json",
+            "heads": [],
+            "added": ["q8_0"],
+        }
+
+
 class _FakeServices:
     """Structural ``EngineServices`` returning canned values."""
 
@@ -89,12 +131,16 @@ class _FakeServices:
     ) -> None:
         self._has_workspace = has_workspace
         self._root_paths = root_paths
+        self.catalog = _FakeCatalog()
         # Every plan widget this dispatcher pushed, so a plan test can assert the
         # user was shown the same state the model was told.
         self.plan_states: list[tuple[dict[str, object], str]] = []
 
     def has_workspace(self) -> bool:
         return self._has_workspace
+
+    def local_catalog(self) -> _FakeCatalog:
+        return self.catalog
 
     def root_paths(self) -> tuple[RootPath, ...]:
         return self._root_paths
@@ -1256,6 +1302,72 @@ async def test_remaining_time_compliance(tmp_path: Path) -> None:
     assert parsed["remaining_seconds"] == 0.0
 
 
+@pytest.mark.asyncio
+async def test_model_importer_read_tools_compliance(tmp_path: Path) -> None:
+    d = _make_dispatcher(tmp_path, agent_name="kodo_model_importer")
+    _assert_compliant("list_local_llms", await _dispatch(d, "list_local_llms", {}))
+    info = _assert_compliant(
+        "read_hf_model", await _dispatch(d, "read_hf_model", {"repo_id": "unsloth/X-GGUF"})
+    )
+    assert info["repo_id"] == "unsloth/X-GGUF"
+    header = _assert_compliant(
+        "read_gguf_header",
+        await _dispatch(d, "read_gguf_header", {"repo_id": "unsloth/X-GGUF", "filename": "x.gguf"}),
+    )
+    assert header["nextn_predict_layers"] == 1
+    # The service's refusals and missing arguments come back as error envelopes.
+    for name, payload in (
+        ("read_hf_model", {"repo_id": "bad/repo"}),
+        ("read_hf_model", {}),
+        ("read_gguf_header", {"repo_id": "bad/repo", "filename": "x.gguf"}),
+        ("read_gguf_header", {"repo_id": "unsloth/X-GGUF"}),
+    ):
+        parsed = _assert_compliant(name, await _dispatch(d, name, payload))
+        assert "error" in parsed, (name, payload)
+
+    class _UnreadableCatalog(_FakeCatalog):
+        async def list_catalog(self) -> dict[str, object]:
+            raise ValueError("the user catalog directory cannot be listed")
+
+    services = _FakeServices()
+    services.catalog = _UnreadableCatalog()
+    broken = _make_dispatcher(tmp_path, agent_name="kodo_model_importer", services=services)
+    parsed = _assert_compliant("list_local_llms", await _dispatch(broken, "list_local_llms", {}))
+    assert "cannot be listed" in str(parsed["error"])
+
+
+@pytest.mark.asyncio
+async def test_model_importer_write_tools_compliance(tmp_path: Path) -> None:
+    services = _FakeServices()
+    d = _make_dispatcher(tmp_path, agent_name="kodo_model_importer", services=services)
+    fields: dict[str, object] = {"name": "q", "repo_id": "unsloth/X-GGUF", "filename": "x.gguf"}
+    added = _assert_compliant(
+        "add_local_llm_quant", await _dispatch(d, "add_local_llm_quant", fields)
+    )
+    assert added["name"] == "q"
+    # The call's own fields reach the service untouched — it does the validating.
+    assert services.catalog.added == [fields]
+    refused = _assert_compliant(
+        "add_local_llm_quant",
+        await _dispatch(d, "add_local_llm_quant", {**fields, "repo_id": "bad/repo"}),
+    )
+    assert "nextn_predict_layers" in str(refused["error"])
+
+    head = {
+        "id": "q8_0",
+        "repo_id": "unsloth/X-GGUF",
+        "filename": "MTP/h.gguf",
+        "quant_type": "Q8_0",
+    }
+    heads = _assert_compliant(
+        "set_mtp_heads", await _dispatch(d, "set_mtp_heads", {"base_llm": "F", "heads": [head]})
+    )
+    assert heads["added"] == ["q8_0"]
+    for payload in ({"base_llm": "bad", "heads": [head]}, {"base_llm": "F", "heads": []}, {}):
+        parsed = _assert_compliant("set_mtp_heads", await _dispatch(d, "set_mtp_heads", payload))
+        assert "error" in parsed, payload
+
+
 def test_all_dispatchable_tools_are_covered() -> None:
     """Fail if a new dispatchable tool is added without a compliance scenario."""
     covered = {
@@ -1290,6 +1402,11 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "wait",
         "remaining_time",
         "use_skill",
+        "list_local_llms",
+        "read_hf_model",
+        "read_gguf_header",
+        "add_local_llm_quant",
+        "set_mtp_heads",
     }
     assert set(DISPATCHABLE_TOOLS_BY_NAME) == covered, (
         "Dispatchable tools changed; add a compliance scenario for: "

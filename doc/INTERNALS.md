@@ -163,6 +163,13 @@ imported); the annotation on each line names the packages pulled in.
  └────────┴─────────┴──────────────┴───────┴────────┴─────────────┴──────────┴───────────┴────────┘
 ```
 
+Inside `llms`, `llms.model_import` (added 2026-10-05) is the only
+sub-package that combines `llms.local` (the Hub, GGUF headers) with
+`llms.local_registry` (the catalog format); `runtime` alone imports it, to
+hand its `LocalCatalogService` to the Model Importer tools through
+`EngineServices.local_catalog()` — `tools` sees it only as the
+`LocalCatalogLike` protocol (doc/TOOLS.md §5, doc/LLM_REGISTRY.md §4.0b).
+
 `runtime` is the sole importer of `mirror`, `security`, and (`security` aside)
 `shellparser` (via `runtime/_checkpoints.py` §10b and `runtime/_engine/`) —
 none of the three is reachable from `tools`, `subagents`, or `llms`. `tools`

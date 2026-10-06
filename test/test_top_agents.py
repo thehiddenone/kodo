@@ -126,6 +126,7 @@ def test_load_requires_a_description(tmp_path: Path) -> None:
         ("rank", True, "'rank' must be an integer"),
         ("selectable", "yes", "'selectable' must be true or false"),
         ("default", 1, "'default' must be true or false"),
+        ("interactive", "no", "'interactive' must be true or false"),
         ("label", 3, "'label' must be a string"),
     ],
 )
@@ -133,6 +134,34 @@ def test_load_rejects_a_wrong_type(tmp_path: Path, key: str, value: object, matc
     path = _write_config(tmp_path, "reviewer", **{key: value})
     with pytest.raises(TopAgentLoadError, match=match):
         load_top_agent(path)
+
+
+def test_an_agent_is_interactive_unless_it_says_otherwise(tmp_path: Path) -> None:
+    assert load_top_agent(_write_config(tmp_path, "reviewer")).interactive is True
+    runner = _write_config(tmp_path, "runner", selectable=False, default=False, interactive=False)
+    assert load_top_agent(runner).interactive is False
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"selectable": True, "default": False}, {"selectable": False, "default": True}],
+)
+def test_a_non_interactive_agent_must_be_hidden_and_not_the_default(
+    tmp_path: Path, overrides: dict[str, object]
+) -> None:
+    # The picker cannot offer an agent that takes no input, and a new session
+    # cannot start on one: agent.run is the only way onto it.
+    path = _write_config(tmp_path, "runner", interactive=False, **overrides)
+    with pytest.raises(TopAgentLoadError, match="agent.run"):
+        load_top_agent(path)
+
+
+def test_the_registry_reports_which_agents_take_input() -> None:
+    registry = AgentRegistry(_REAL_AGENTS_DIR)
+    for agent in registry.top_agents():
+        assert registry.is_interactive(agent.name) is agent.interactive, agent.name
+    # An unknown name never locks a session.
+    assert registry.is_interactive("no_such_agent") is True
 
 
 def test_load_rejects_malformed_json(tmp_path: Path) -> None:
@@ -182,10 +211,12 @@ def test_guides_picker_label_matches_its_display_name() -> None:
     assert registry.get("kodo_guide").display_name == "Guide"
 
 
-def test_only_selectable_agents_would_reach_a_picker() -> None:
+def test_a_shipped_agent_is_hidden_from_the_picker_only_when_agent_run_starts_it() -> None:
+    # A non-selectable agent nobody can start would be dead weight; the only
+    # route onto a hidden agent is agent.run, which requires interactive: false.
     registry = AgentRegistry(_REAL_AGENTS_DIR)
-    hidden = {a.name for a in registry.top_agents() if not a.selectable}
-    assert hidden == set(), "every shipped top-level agent is user-facing"
+    hidden = [a for a in registry.top_agents() if not a.selectable]
+    assert [a.name for a in hidden if a.interactive] == []
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ the ``kodo.toolspecs`` one-file-per-tool convention.
 
 from __future__ import annotations
 
+from ._add_local_llm_quant import AddLocalLlmQuantTool
 from ._ask_user import AskUserTool
 from ._context import (
     ApprovalLike,
@@ -25,6 +26,7 @@ from ._context import (
     EditReviewLike,
     EngineServices,
     GateLike,
+    LocalCatalogLike,
     PermissionLike,
     PermissionPartLike,
     RootPath,
@@ -54,6 +56,7 @@ from ._get_plan import GetPlanTool
 from ._get_root_paths import GetRootPathsTool
 from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
+from ._list_local_llms import ListLocalLlmsTool
 from ._paths import (
     LogicalPathResolver,
     NoWorkspaceError,
@@ -66,6 +69,8 @@ from ._plan_step_forward import PlanStepForwardTool
 from ._query_search_engine import QuerySearchEngineTool
 from ._read_attachment import ReadAttachmentTool
 from ._read_file import ReadFileTool
+from ._read_gguf_header import ReadGgufHeaderTool
+from ._read_hf_model import ReadHfModelTool
 from ._read_webpage import ReadWebpageTool
 from ._remaining_time import RemainingTimeTool
 from ._return_result import ReturnResultTool
@@ -73,6 +78,7 @@ from ._rollback import RollbackTool
 from ._run_command import RunCommandTool
 from ._run_subagent import RunSubagentTool
 from ._scaffold_new_project import ScaffoldNewProjectTool
+from ._set_mtp_heads import SetMtpHeadsTool
 from ._tool import Tool
 from ._toolchain_build import ToolchainBuildTool
 from ._toolchain_deps import ToolchainDepsTool
@@ -84,6 +90,7 @@ from ._web_search import WebSearchTool
 __all__ = [
     "DISPATCHABLE_TOOLS_BY_NAME",
     "ApprovalLike",
+    "AddLocalLlmQuantTool",
     "AskUserTool",
     "CreateDirectoryTool",
     "CreateFileTool",
@@ -97,12 +104,14 @@ __all__ = [
     "FindFilesTool",
     "FindTextInFilesTool",
     "GateLike",
+    "LocalCatalogLike",
     "GetFindingsTool",
     "GetPlanTool",
     "PlanStepForwardTool",
     "GetRootPathsTool",
     "GetWebSearchStateTool",
     "GuidedDevStatusTool",
+    "ListLocalLlmsTool",
     "LogicalPathResolver",
     "NoWorkspaceError",
     "PathResolver",
@@ -111,6 +120,8 @@ __all__ = [
     "QuerySearchEngineTool",
     "ReadAttachmentTool",
     "ReadFileTool",
+    "ReadGgufHeaderTool",
+    "ReadHfModelTool",
     "ReadWebpageTool",
     "RemainingTimeTool",
     "ReturnResultTool",
@@ -119,6 +130,7 @@ __all__ = [
     "RunCommandTool",
     "RunSubagentTool",
     "ScaffoldNewProjectTool",
+    "SetMtpHeadsTool",
     "SecurityDecisionLike",
     "SecurityLike",
     "SessionLike",

@@ -959,10 +959,17 @@ Four entry kinds:
 
 | kind | added via | installed-state rule | install/uninstall? |
 |---|---|---|---|
-| `hardcoded_hf` | a catalog file — shipped, or in `~/.kodo/local_llms/` (§4.0) | installed per `LocalModelManager` state | yes |
-| `custom_hf` | "Add local LLM from huggingface.com" | same as `hardcoded_hf` | yes |
+| `hardcoded_hf` | a catalog file — shipped, or in `~/.kodo/local_llms/` (§4.0), hand-written or by the Model Importer agent (§4.0b) | installed per `LocalModelManager` state | yes |
+| `custom_hf` | nothing any more — see below | same as `hardcoded_hf` | yes |
 | `custom_file` | "Add local LLM from file" | file exists at `entry.path` | no — see below |
 | `custom_server_url` | "Add a link to local llama-server" | always installed | no |
+
+**Update 2026-10-05:** `custom_hf` entries are no longer created. The
+"Add local LLM (GGUF) from huggingface.com" button used to open a hand-filled
+form (name, repo, filename, args) that sent `local_llm.add_huggingface`; it now
+starts the Model Importer agent (§4.0b), which writes `hardcoded_hf` catalog
+files instead, and the message was removed. Entries created before then still
+load, install, update and remove exactly as before.
 
 `kodo/llms/local_registry/` owns `get_local_registry(kodo_dir)`, which
 merges the catalog (§4.0) with the external collection persisted at
@@ -1274,6 +1281,68 @@ Flash-Next head as bigger *and slower* than Q8_0 with near-identical
 acceptance (66.5% vs 66.1%); it is still listed first because the list is
 ordered by precision, not by speed. The other MTP families (Ornith15-35B-A3B,
 Qwen35-9B, Qwen36-*) publish no standalone heads and keep the checkbox.
+
+### 4.0b The Model Importer agent — catalog files from a Hugging Face repo
+
+Since 2026-10-05, kodo-vsix's "Add local LLM (GGUF) from huggingface.com"
+asks for one GGUF repository id and opens a new session running the built-in
+`kodo_model_importer` agent on it. The agent adds one quant per precision tier
+to the **user** catalog (§4.0) — never the shipped one — plus the family's
+standalone MTP heads (§4.0a). The session is read-only: the agent is
+`selectable: false` + `interactive: false`, started by `agent.run` and locked
+against further input (WS_PROTOCOL.md §7.4h). Nothing is downloaded; the new
+quants appear under "Available local LLM quants" when the session's turn ends
+(kodo-vsix sends `local_llm.registry_get`).
+
+**Who decides what.** The agent picks the quants, the family (`base_llm`),
+the minimum llama.cpp build and the prose fields; its prompt
+(`agents/agent_kodo_model_importer.md`) fixes each choice with a stated rule —
+tier order `UD-Q<n>_K_XL` > `Q<n>_K_M` > `Q<n>_0` > …, memory = size + 8 GB
+rounded to a Mac tier, tip templates. Everything factual is the service's
+(`kodo.llms.model_import.LocalCatalogService`), so a wrong claim cannot reach
+a file:
+
+| | how |
+|---|---|
+| **derived** (the agent cannot pass it) | `size_hint` — the quant's summed shard sizes from the Hub, decimal units like the shipped files; `context_window` — the GGUF header's `<arch>.context_length`; the six shared knobs; `knob_defaults: {"kv-cache": "f16"}` for a ≥16-bit quant (as every shipped F16/BF16 entry has) |
+| **stated, then checked against the GGUF header** | `builtin_mtp` must equal `nextn_predict_layers > 0` (true adds `spec-decoding-mtp` and `mtp_supported`); `context_knob` must be the knob whose architecture equals `general.architecture` — required when one exists, empty when none does (`context_knob_architectures()` reads each knob's `--override-kv <arch>.context_length` target) |
+| **refused** | a `name` any served entry already has (a user file named like a shipped entry would replace it, §4.0); a `repo_id`+`filename` another entry serves; a later shard, an MTP head or an `mmproj` file passed as a quant; a `quant_type` with no bit width; a malformed `name`/`base_llm` |
+
+The header is read with `kodo.llms.local.read_gguf_metadata`: HTTP range
+requests in growing windows (4 MB, doubling, capped at 64 MB — a 248K-token
+vocabulary alone is ~11 MB), parsed by a ~150-line GGUF v2/v3 reader rather
+than the `gguf` package (which would pull in numpy). The repo itself comes
+through `huggingface_hub.model_info(files_metadata=True)` plus the raw
+`README.md`, not `read_webpage`: exact sizes, structured license fields, no
+50K-character cap and no anti-bot heuristics firing on a model card. Both use
+whatever token `huggingface_hub` finds itself (`HF_TOKEN`); the extension's
+stored tokens are reachable only on the control connection, so a gated repo
+fails with a clear error.
+
+**MTP heads.** `set_mtp_heads` reads each head's header and refuses a file
+with no MTP layers, a `shared_target_tensors` head (§4.0a, decision 3), and a
+head of a different architecture from the family's quants. Each head gets
+`llamacpp_version: 11330` (`MTP_HEAD_MIN_LLAMACPP_VERSION`, the b11330 floor).
+Because a user `mtp_sidecars.json` replaces the family's shipped list, the
+service writes the family's *current* heads (user file if any, else shipped)
+plus the new ones — and writes nothing when every head is already listed, so
+an unchanged copy never freezes the shipped list against later releases.
+
+**Writing.** `local_registry.write_user_catalog_entry` /
+`write_user_mtp_sidecars` validate the body with the loader's own parser
+(`parse_catalog_entry`, `parse_mtp_sidecars`) before touching the disk, write
+the shipped files' canonical form (`entry_to_catalog_json`: 18 keys in the
+shipped order, 2-space indent, `ensure_ascii=False`, trailing newline) to a
+hidden temp file the scan skips, and rename it into place.
+
+**Known gaps** (each reported by the agent as a `<kodo_warn>`): a *new*
+family gets no thinking tiers and no YaRN context dropdown — both are code
+(§4.5, §4.6) — and `llamacpp_version` is `0` when two web searches do not find
+the release that added the architecture. Reusing an existing family's
+`base_llm` inherits its tiers and heads, which is why the agent reuses one
+whenever the base model matches. Deleting an imported file later is the
+purge trap of §4.1b: an installed GGUF whose entry is gone is deleted at the
+next start.
 
 ### 4.1 Install / pause / resume / uninstall
 

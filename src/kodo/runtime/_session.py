@@ -108,6 +108,14 @@ class SessionState:
             mirrors-``TransientStore.security_path_rules`` relationship as
             ``security_rules``; kept as a separate field rather than folded
             in since the two rule kinds are matched with different semantics.
+        interactive: ``False`` while :attr:`top_agent` is an agent declared
+            ``interactive: false`` (:attr:`kodo.agents.TopAgent.interactive`) —
+            a session started by ``agent.run`` that takes no further input.
+            Derived from the agent, never persisted on its own, so a resumed
+            session re-derives it from its stored ``top_agent``. The server
+            refuses ``prompt.submit``/``agent.set``/``mode.set`` while it is
+            ``False``, and kodo-vsix replaces the composer with a read-only
+            strip (doc/WS_PROTOCOL.md §5.1, §7.4h).
         awaiting_first_chunk: ``True`` from the moment an ``llm.turn_start``
             is sent until the first ``ThinkingDelta``/``TokenDelta``/
             ``ToolCallArgDelta`` of that call arrives (or the stream ends
@@ -142,6 +150,7 @@ class SessionState:
     # brand-new session and the resume path fills it from the store.
     top_agent: str = ""
     effective_top_agent: str = ""
+    interactive: bool = True
     edit_control: str = "smart"
     command_control: str = "smart"
     thinking_level: str = ""
@@ -172,6 +181,7 @@ class SessionState:
             "effective_autonomous": self.effective_autonomous,
             "top_agent": self.top_agent,
             "effective_top_agent": self.effective_top_agent,
+            "interactive": self.interactive,
             "edit_control": self.edit_control,
             "command_control": self.command_control,
             "thinking_level": self.thinking_level,

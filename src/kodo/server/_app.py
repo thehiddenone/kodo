@@ -130,6 +130,7 @@ from kodo.transport import (
     EVT_LLAMACPP_INSTALL_PROGRESS,
     EVT_LOCAL_LLM_REGISTRY_STATE,
     EVT_LOCAL_LLM_UPDATES_AVAILABLE,
+    MSG_AGENT_RUN,
     MSG_AGENT_SET,
     MSG_AGENTS_DELETE,
     MSG_AGENTS_INSTALL,
@@ -160,12 +161,12 @@ from kodo.transport import (
     MSG_LLAMACPP_UPDATE,
     MSG_LLAMACPP_VERSION_INFO,
     MSG_LOCAL_LLM_ADD_FILE,
-    MSG_LOCAL_LLM_ADD_HUGGINGFACE,
     MSG_LOCAL_LLM_ADD_PROFILE,
     MSG_LOCAL_LLM_ADD_SERVER_URL,
     MSG_LOCAL_LLM_CHECK_UPDATES,
     MSG_LOCAL_LLM_INSTALL,
     MSG_LOCAL_LLM_PAUSE,
+    MSG_LOCAL_LLM_REGISTRY_GET,
     MSG_LOCAL_LLM_REMOVE,
     MSG_LOCAL_LLM_REMOVE_PROFILE,
     MSG_LOCAL_LLM_RESUME,
@@ -1370,9 +1371,32 @@ async def _handle_skills_install_local(req: Request) -> None:
 # ------------------------------------------------------------------
 
 
+async def _refuse_if_locked(req: Request, session: Session) -> bool:
+    """Reply ``session_locked`` when *session* runs a non-interactive agent.
+
+    Such a session was started by ``agent.run`` and takes no further input
+    (doc/WS_PROTOCOL.md §7.4h); its ``interactive`` flag is re-derived from the
+    stored agent on resume, so the lock outlives a reload.
+
+    Returns:
+        bool: ``True`` when the request was refused (the caller stops there).
+    """
+    if session.engine.session.interactive:
+        return False
+    await req.reply(
+        {
+            "type": "error",
+            "code": "session_locked",
+            "message": "This session runs a non-interactive agent and takes no further input.",
+            "recoverable": True,
+        }
+    )
+    return True
+
+
 async def _handle_prompt(req: Request) -> None:
     session = await _require_session(req)
-    if session is None:
+    if session is None or await _refuse_if_locked(req, session):
         return
     text = str(req.env.payload.get("text", "")).strip()
     if not text:
@@ -1392,7 +1416,7 @@ async def _handle_prompt(req: Request) -> None:
 
 async def _handle_mode(req: Request) -> None:
     session = await _require_session(req)
-    if session is None:
+    if session is None or await _refuse_if_locked(req, session):
         return
     await session.engine.handle_mode_set(bool(req.env.payload.get("autonomous", False)))
     await req.reply({"type": "mode.accepted"})
@@ -1451,10 +1475,49 @@ def _make_top_agents_list_handler(registry: AgentRegistry) -> HandlerFn:
 
 async def _handle_agent_set(req: Request) -> None:
     session = await _require_session(req)
+    if session is None or await _refuse_if_locked(req, session):
+        return
+    name = str(req.env.payload.get("name", ""))
+    registry = req.manager.registry
+    if not registry.is_interactive(registry.resolve_top_agent(name)):
+        await req.reply(
+            {
+                "type": "error",
+                "code": "agent_run_only",
+                "message": f"{name!r} takes no input from a user; start it with agent.run.",
+                "recoverable": True,
+            }
+        )
+        return
+    await session.engine.handle_agent_set(name)
+    await req.reply({"type": "agent.accepted"})
+
+
+async def _handle_agent_run(req: Request) -> None:
+    """``agent.run`` — start a brand-new session on a non-interactive agent (§7.4h)."""
+    session = await _require_session(req)
     if session is None:
         return
-    await session.engine.handle_agent_set(str(req.env.payload.get("name", "")))
-    await req.reply({"type": "agent.accepted"})
+    name = str(req.env.payload.get("name", ""))
+    text = str(req.env.payload.get("prompt", "")).strip()
+    if not text:
+        await req.reply(
+            {
+                "type": "error",
+                "code": "empty_prompt",
+                "message": "agent.run needs a prompt.",
+                "recoverable": True,
+            }
+        )
+        return
+    refusal = await session.engine.handle_agent_run(name, text, req.env.id)
+    if refusal is not None:
+        await req.reply(
+            {"type": "error", "code": "agent_run_refused", "message": refusal, "recoverable": True}
+        )
+        return
+    _log.info("Agent run started (session=%s, agent=%s): %r", session.id, name, text[:80])
+    await req.reply({"type": "agent.run.accepted"})
 
 
 async def _handle_edit_control(req: Request) -> None:
@@ -2343,6 +2406,11 @@ async def _handle_bedrock_models_refresh(req: Request) -> None:
     )
 
 
+async def _handle_local_llm_registry_get(req: Request) -> None:
+    """``local_llm.registry_get`` — re-read the registry (the Model Importer writes files)."""
+    await _send_registry_state(req)
+
+
 async def _send_registry_state(req: Request) -> None:
     await req.connection.send(
         Envelope.make_event(EVT_LOCAL_LLM_REGISTRY_STATE, _local_registry_payload())
@@ -2359,7 +2427,7 @@ async def _reply_local_llm_error(req: Request, message: str) -> None:
 
 def _parse_non_negative_int(raw: object) -> int:
     """Best-effort int parse for a numeric webview field — used for
-    ``context_window`` (add_huggingface/add_file). Anything unparseable,
+    ``context_window`` (add_file). Anything unparseable,
     missing, or falsy collapses to ``0`` ("unset"/"unknown")."""
     try:
         return int(cast(int, raw) or 0)
@@ -2379,29 +2447,6 @@ def _entry_base_args(payload: dict[str, object]) -> dict[str, str]:
     so an empty form still produces a working launch.
     """
     return parse_llama_args(payload.get("llama_args", {}))
-
-
-async def _handle_local_llm_add_huggingface(req: Request) -> None:
-    payload = req.env.payload
-    entry = LocalLLMEntry(
-        name=str(payload.get("name", "")).strip(),
-        kind="custom_hf",
-        description=str(payload.get("description", "")),
-        repo_id=str(payload.get("repo_id", "")).strip(),
-        filename=str(payload.get("filename", "")).strip(),
-        context_window=_parse_non_negative_int(payload.get("context_window", 0)),
-        base_llama_args=_entry_base_args(payload),
-    )
-    if not entry.name or not entry.repo_id or not entry.filename:
-        await _reply_local_llm_error(req, "name, repo_id, and filename are all required")
-        return
-    kodo_dir = kodo_user_dir()
-    try:
-        add_local_entry(kodo_dir, entry)
-    except ValueError as exc:
-        await _reply_local_llm_error(req, str(exc))
-        return
-    await _send_registry_state(req)
 
 
 async def _handle_local_llm_add_file(req: Request) -> None:
@@ -2923,6 +2968,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_PROMPT_SUBMIT, _handle_prompt)
     conn_registry.register_handler(MSG_MODE_SET, _handle_mode)
     conn_registry.register_handler(MSG_AGENT_SET, _handle_agent_set)
+    conn_registry.register_handler(MSG_AGENT_RUN, _handle_agent_run)
     conn_registry.register_handler(MSG_TOP_AGENTS_LIST, _make_top_agents_list_handler(registry))
     conn_registry.register_handler(MSG_EDIT_CONTROL_SET, _handle_edit_control)
     conn_registry.register_handler(MSG_COMMAND_CONTROL_SET, _handle_command_control)
@@ -2947,11 +2993,11 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_LOCAL_LLM_PAUSE, _handle_local_llm_pause)
     conn_registry.register_handler(MSG_LOCAL_LLM_UPDATE, _handle_local_llm_update)
     conn_registry.register_handler(MSG_LOCAL_LLM_CHECK_UPDATES, _handle_local_llm_check_updates)
+    conn_registry.register_handler(MSG_LOCAL_LLM_REGISTRY_GET, _handle_local_llm_registry_get)
     conn_registry.register_handler(MSG_OPENROUTER_MODELS_REFRESH, _handle_openrouter_models_refresh)
     conn_registry.register_handler(MSG_BEDROCK_MODELS_REFRESH, _handle_bedrock_models_refresh)
     conn_registry.register_handler(MSG_LOCAL_LLM_UNINSTALL, _handle_local_llm_uninstall)
     conn_registry.register_handler(MSG_LOCAL_LLM_REMOVE, _handle_local_llm_remove)
-    conn_registry.register_handler(MSG_LOCAL_LLM_ADD_HUGGINGFACE, _handle_local_llm_add_huggingface)
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_FILE, _handle_local_llm_add_file)
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_SERVER_URL, _handle_local_llm_add_server_url)
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_PROFILE, _handle_local_llm_add_profile)

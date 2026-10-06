@@ -47,17 +47,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
+    "MTP_HEAD_MIN_LLAMACPP_VERSION",
     "MTP_SIDECARS_FILENAME",
     "MTP_SIDECAR_MODEL_ID_PREFIX",
     "MtpSidecar",
     "load_mtp_sidecars_file",
     "mtp_sidecar_model_id",
+    "mtp_sidecars_to_json",
     "parse_mtp_sidecar_model_id",
+    "parse_mtp_sidecars",
     "quant_precision_bits",
 ]
 
 #: The reserved file name a family's heads live in. It never loads as an entry.
 MTP_SIDECARS_FILENAME = "mtp_sidecars.json"
+
+#: The first llama.cpp build that loads a standalone head with ``--model-draft``
+#: correctly: before ggml-org/llama.cpp#29761 the speculative init loaded the
+#: *target* model's path instead of the draft file. Every head needs at least it.
+MTP_HEAD_MIN_LLAMACPP_VERSION = 11330
 
 #: Download-record ids of heads start with this, so they can never collide with
 #: an entry name (catalog files and custom entries are refused a name that
@@ -184,10 +192,52 @@ def load_mtp_sidecars_file(path: Path) -> tuple[MtpSidecar, ...]:
         raw: object = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read: {exc}") from exc
+    return parse_mtp_sidecars(raw)
+
+
+def parse_mtp_sidecars(raw: object) -> tuple[MtpSidecar, ...]:
+    """Validate the parsed JSON body of an ``mtp_sidecars.json``.
+
+    Args:
+        raw: The decoded JSON value.
+
+    Returns:
+        tuple[MtpSidecar, ...]: The heads, most precise first. Empty for ``{}``.
+
+    Raises:
+        ValueError: If *raw* does not match the format in the module docstring.
+    """
     if not isinstance(raw, dict):
         raise ValueError("the file must contain a JSON object mapping head ids to heads")
     sidecars = [_sidecar_from_json(head_id, body) for head_id, body in raw.items()]
     return tuple(sorted(sidecars, key=_sort_key))
+
+
+def mtp_sidecars_to_json(sidecars: tuple[MtpSidecar, ...]) -> dict[str, object]:
+    """The ``mtp_sidecars.json`` body that :func:`parse_mtp_sidecars` reads back as *sidecars*.
+
+    Optional keys are written only when set, like the shipped files.
+
+    Args:
+        sidecars: The heads, in the order they should appear in the file.
+
+    Returns:
+        dict[str, object]: ``{head_id: {repo_id, filename, quant_type,
+        size_hint?, llamacpp_version?}}``.
+    """
+    body: dict[str, object] = {}
+    for sidecar in sidecars:
+        head: dict[str, object] = {
+            "repo_id": sidecar.repo_id,
+            "filename": sidecar.filename,
+            "quant_type": sidecar.quant_type,
+        }
+        if sidecar.size_hint:
+            head["size_hint"] = sidecar.size_hint
+        if sidecar.llamacpp_version:
+            head["llamacpp_version"] = sidecar.llamacpp_version
+        body[sidecar.id] = head
+    return body
 
 
 def mtp_sidecar_model_id(base_llm: str, sidecar_id: str) -> str:

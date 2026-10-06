@@ -53,6 +53,8 @@ from ._types import LocalLLMEntry
 
 __all__ = [
     "BUILTIN_CATALOG_DIR",
+    "builtin_catalog_entries",
+    "builtin_mtp_sidecars",
     "load_user_catalog",
     "load_user_mtp_sidecars",
     "mtp_sidecars_by_family",
@@ -111,6 +113,25 @@ def _load_builtin_mtp_sidecars() -> dict[str, tuple[MtpSidecar, ...]]:
 #: Shipped heads per family. Like :data:`_HARDCODED_LOCAL_MODELS`, a module
 #: attribute tests may monkeypatch.
 _BUILTIN_MTP_SIDECARS: dict[str, tuple[MtpSidecar, ...]] = _load_builtin_mtp_sidecars()
+
+
+def builtin_catalog_entries() -> tuple[LocalLLMEntry, ...]:
+    """Every shipped catalog entry, in display order, without any user replacement.
+
+    Returns:
+        tuple[LocalLLMEntry, ...]: The shipped entries as their files declare them.
+    """
+    return _HARDCODED_LOCAL_MODELS
+
+
+def builtin_mtp_sidecars() -> dict[str, tuple[MtpSidecar, ...]]:
+    """Every shipped family's MTP heads, without any user replacement.
+
+    Returns:
+        dict[str, tuple[MtpSidecar, ...]]: ``{base_llm: heads}``.
+    """
+    return dict(_BUILTIN_MTP_SIDECARS)
+
 
 #: User-catalog problems already logged, so a broken file is reported once per
 #: process rather than on every registry push.

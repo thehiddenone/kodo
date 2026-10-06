@@ -16,6 +16,7 @@ mixins in ``test_engine_stop.py``.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -30,7 +31,7 @@ from kodo.runtime._engine._events import EngineEmitters
 from kodo.runtime._engine._services import _EngineServices
 from kodo.runtime._engine._shared import _slugify_project_name, _unique_child_dir
 from kodo.runtime._session import SessionState
-from kodo.tools import RootPath
+from kodo.tools import LocalCatalogLike, RootPath
 
 # ---------------------------------------------------------------------------
 # _shared._slugify_project_name
@@ -104,7 +105,16 @@ def _make_services(rec: _Recorder) -> _EngineServices:
         add_security_path_rule=rec.make("add_security_path_rule"),
         has_workspace=lambda: True,
         root_paths=lambda: (),
+        local_catalog=lambda: _CATALOG,
     )
+
+
+#: Stands in for the engine's catalog service; the adapter only hands it back.
+_CATALOG = cast(LocalCatalogLike, object())
+
+
+def test_engine_services_local_catalog_returns_the_engine_service() -> None:
+    assert _make_services(_Recorder()).local_catalog() is _CATALOG
 
 
 @pytest.mark.asyncio
@@ -250,6 +260,7 @@ def test_engine_services_has_workspace_root_paths_are_live_reads() -> None:
         root_paths=lambda: (
             (RootPath(name="proj", path="/tmp/proj"),) if box["has_workspace"] else ()
         ),
+        local_catalog=lambda: _CATALOG,
     )
 
     assert services.has_workspace() is False

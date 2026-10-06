@@ -28,6 +28,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from kodo.toolspecs import (
+    ADD_LOCAL_LLM_QUANT,
     ASK_USER,
     CREATE_DIRECTORY,
     CREATE_FILE,
@@ -43,12 +44,15 @@ from kodo.toolspecs import (
     GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
     INTENT_KEY,
+    LIST_LOCAL_LLMS,
     MAX_ROUNDS_KEY,
     NO_PROJECT_ERROR,
     PLAN_STEP_FORWARD,
     QUERY_SEARCH_ENGINE,
     READ_ATTACHMENT,
     READ_FILE,
+    READ_GGUF_HEADER,
+    READ_HF_MODEL,
     READ_WEBPAGE,
     REMAINING_TIME,
     RETURN_RESULT,
@@ -56,6 +60,7 @@ from kodo.toolspecs import (
     RUN_COMMAND,
     RUN_SUBAGENT,
     SCAFFOLD_NEW_PROJECT,
+    SET_MTP_HEADS,
     TOOLCHAIN_BUILD,
     TOOLCHAIN_DEPS,
     UPDATE_WEB_SEARCH_STATE,
@@ -67,6 +72,7 @@ from kodo.toolspecs import (
     subagent_from_tool_name,
 )
 
+from ._add_local_llm_quant import AddLocalLlmQuantTool
 from ._ask_user import AskUserTool
 from ._context import (
     EngineServices,
@@ -90,11 +96,14 @@ from ._get_plan import GetPlanTool
 from ._get_root_paths import GetRootPathsTool
 from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
+from ._list_local_llms import ListLocalLlmsTool
 from ._paths import PathResolver
 from ._plan_step_forward import PlanStepForwardTool
 from ._query_search_engine import QuerySearchEngineTool
 from ._read_attachment import ReadAttachmentTool
 from ._read_file import ReadFileTool
+from ._read_gguf_header import ReadGgufHeaderTool
+from ._read_hf_model import ReadHfModelTool
 from ._read_webpage import ReadWebpageTool
 from ._remaining_time import RemainingTimeTool
 from ._return_result import ReturnResultTool
@@ -102,6 +111,7 @@ from ._rollback import RollbackTool
 from ._run_command import RunCommandTool
 from ._run_subagent import RunSubagentTool
 from ._scaffold_new_project import ScaffoldNewProjectTool
+from ._set_mtp_heads import SetMtpHeadsTool
 from ._tool import Tool
 from ._toolchain_build import ToolchainBuildTool
 from ._toolchain_deps import ToolchainDepsTool
@@ -125,6 +135,11 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (READ_FILE, ReadFileTool),
     (READ_ATTACHMENT, ReadAttachmentTool),
     (READ_WEBPAGE, ReadWebpageTool),
+    (LIST_LOCAL_LLMS, ListLocalLlmsTool),
+    (READ_HF_MODEL, ReadHfModelTool),
+    (READ_GGUF_HEADER, ReadGgufHeaderTool),
+    (ADD_LOCAL_LLM_QUANT, AddLocalLlmQuantTool),
+    (SET_MTP_HEADS, SetMtpHeadsTool),
     (QUERY_SEARCH_ENGINE, QuerySearchEngineTool),
     (ASK_USER, AskUserTool),
     (FILESYSTEM, FilesystemTool),

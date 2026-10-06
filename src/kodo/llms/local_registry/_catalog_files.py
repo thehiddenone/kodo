@@ -69,8 +69,10 @@ __all__ = [
     "CATALOG_ENTRY_KIND",
     "attach_mtp_sidecars",
     "catalog_sort_key",
+    "entry_to_catalog_json",
     "load_catalog_file",
     "offers_builtin_mtp",
+    "parse_catalog_entry",
     "scan_catalog_dir",
     "scan_mtp_sidecars",
     "validate_catalog_entry",
@@ -305,9 +307,73 @@ def load_catalog_file(path: Path) -> LocalLLMEntry:
         raw: object = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read: {exc}") from exc
-    entry = _entry_from_catalog_json(raw, base_llm=path.parent.name, name=path.stem)
+    return parse_catalog_entry(raw, base_llm=path.parent.name, name=path.stem)
+
+
+def parse_catalog_entry(raw: object, *, base_llm: str, name: str) -> LocalLLMEntry:
+    """Validate the parsed JSON body of a catalog file at ``<base_llm>/<name>.json``.
+
+    :func:`load_catalog_file` is this plus reading the file; a writer calls it
+    directly to refuse an invalid body before anything reaches the disk.
+
+    Args:
+        raw: The decoded JSON value.
+        base_llm: The family directory the file is (or would be) in.
+        name: The file's stem.
+
+    Returns:
+        LocalLLMEntry: The validated ``hardcoded_hf`` entry.
+
+    Raises:
+        ValueError: If *raw* does not match the format (see the module
+            docstring) or fails :func:`validate_catalog_entry`.
+    """
+    entry = _entry_from_catalog_json(raw, base_llm=base_llm, name=name)
     validate_catalog_entry(entry)
     return entry
+
+
+def entry_to_catalog_json(entry: LocalLLMEntry) -> dict[str, object]:
+    """The catalog-file body that :func:`parse_catalog_entry` reads back as *entry*.
+
+    Keys come out in the order every shipped file uses: the string fields, the
+    integer fields, ``mtp_supported``, ``knobs``, ``knob_defaults``, and
+    ``base_llama_args`` only when the entry adds to :data:`BASE_LLAMA_ARGS`.
+    ``name`` and ``base_llm`` are left out — they are the file's path.
+
+    Args:
+        entry: A catalog entry.
+
+    Returns:
+        dict[str, object]: The JSON body.
+
+    Raises:
+        ValueError: If *entry* cannot be expressed as a catalog file: it is not
+            a ``hardcoded_hf`` entry, it offers a knob that is not in
+            :data:`~._knobs_table.KNOBS_BY_ID`, or its ``base_llama_args`` drop
+            one of the shared base args (a file can only add to them).
+    """
+    if entry.kind != CATALOG_ENTRY_KIND:
+        raise ValueError(f"{entry.name}: only {CATALOG_ENTRY_KIND} entries live in catalog files")
+    for knob in entry.knobs:
+        if KNOBS_BY_ID.get(knob.id) != knob:
+            raise ValueError(f"{entry.name}: knob {knob.id!r} is not in the knob table")
+    dropped = sorted(BASE_LLAMA_ARGS.keys() - entry.base_llama_args.keys())
+    if dropped:
+        raise ValueError(f"{entry.name}: base_llama_args drops shared base arg(s) {dropped}")
+    body: dict[str, object] = {key: getattr(entry, key) for key in _STR_FIELDS}
+    body.update({key: getattr(entry, key) for key in _INT_FIELDS})
+    body["mtp_supported"] = entry.mtp_supported
+    body["knobs"] = [knob.id for knob in entry.knobs]
+    body["knob_defaults"] = dict(entry.knob_defaults)
+    extra_args = {
+        flag: value
+        for flag, value in entry.base_llama_args.items()
+        if BASE_LLAMA_ARGS.get(flag) != value
+    }
+    if extra_args:
+        body["base_llama_args"] = extra_args
+    return body
 
 
 def scan_catalog_dir(root: Path) -> tuple[list[LocalLLMEntry], list[str]]:

@@ -158,6 +158,10 @@ class DownloadError(LocalModelError):
     """Raised on a network/IO/consistency failure while transferring a file."""
 
 
+class GgufHeaderError(LocalModelError):
+    """Raised when a GGUF file's header cannot be fetched or parsed."""
+
+
 class DownloadPausedError(LocalModelError):
     """Internal control-flow signal raised to unwind out of a paused transfer.
 

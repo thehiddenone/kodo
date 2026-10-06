@@ -21,13 +21,15 @@ Add a new knob by defining it in its ``_knobs_*`` module and listing it in
 
 from __future__ import annotations
 
+import re
+
 from ._knobs import LlamaKnob
 from ._knobs_laguna import LAGUNA_CONTEXT_KNOB
 from ._knobs_mtp import MTP_SPEC_DECODE_KNOB
 from ._knobs_qwen import QWEN4EXP_CONTEXT_KNOB, QWEN_CONTEXT_KNOB, QWEN_MOE_CONTEXT_KNOB
 from ._knobs_shared import SHARED_KNOBS
 
-__all__ = ["KNOBS_BY_ID"]
+__all__ = ["KNOBS_BY_ID", "context_knob_architectures"]
 
 #: Shared knobs first, then the private per-family ones.
 _ALL_KNOBS: tuple[LlamaKnob, ...] = SHARED_KNOBS + (
@@ -50,3 +52,36 @@ def _index(knobs: tuple[LlamaKnob, ...]) -> dict[str, LlamaKnob]:
 
 #: ``{knob_id: knob}`` for every knob a catalog entry may list.
 KNOBS_BY_ID: dict[str, LlamaKnob] = _index(_ALL_KNOBS)
+
+
+_CONTEXT_OVERRIDE = re.compile(r"^(?P<arch>[A-Za-z0-9_.-]+)\.context_length=int:\d+$")
+
+
+def context_knob_architectures() -> dict[str, tuple[str, int]]:
+    """Which llama.cpp architecture each context-window knob in the table targets.
+
+    A YaRN context knob extends the context with ``--override-kv
+    <arch>.context_length=…``, which llama.cpp silently ignores when ``<arch>``
+    is not the GGUF's own ``general.architecture`` — so a knob only works for
+    models of the architecture it names. Read off the knobs' own options, so
+    a new context knob registers here by being added to the table.
+
+    Returns:
+        dict[str, tuple[str, int]]: ``{knob_id: (architecture, native_context)}``;
+        ``native_context`` is the knob's ``--yarn-orig-ctx``, ``0`` if no option
+        sets one.
+    """
+    found: dict[str, tuple[str, int]] = {}
+    for knob in _ALL_KNOBS:
+        arch = ""
+        native = 0
+        for option in knob.options:
+            match = _CONTEXT_OVERRIDE.match(option.llama_args.get("--override-kv", ""))
+            if match is not None:
+                arch = match.group("arch")
+            orig = option.llama_args.get("--yarn-orig-ctx", "")
+            if orig.isdigit():
+                native = int(orig)
+        if arch:
+            found[knob.id] = (arch, native)
+    return found

@@ -340,7 +340,8 @@ Pushed on connect (also embedded in `hello.ack`), and whenever a field below cha
   "command_control": "defensive" | "permissive" | "smart",
   "thinking_level": "unlimited" | "medium" | "" | "...",
   "awaiting_first_chunk": false,
-  "workspace_connected": true }
+  "workspace_connected": true,
+  "interactive": true }
 ```
 
 `phase` semantics:
@@ -391,6 +392,14 @@ The header toggles split into **two frozen** and **three never-frozen**:
 > payload itself.
 
 **Added 2026-07-23:** `workspace_connected` — whether this session's bound directories (if any) are hosted by the workspace currently open in this window, i.e. `WorkflowEngine._is_workspace_connected()` (§7.1b's disconnected/isolated-operation extension). Mode-agnostic (Guided and Problem Solver sessions both report it) and always `true` for a session that has never locked a directory. Recomputed — and this event re-pushed — on session start and on every `workspace.folders` push (§7.1b), so it tracks live connect/disconnect transitions within a turn, not just at session-open time. Drives kodo-vsix's reconnect-workspace button (webview footer, shown only while `false`).
+
+**Added 2026-10-05:** `interactive` — `false` while `top_agent` is an agent
+declared `interactive: false` (a session started by `agent.run`, §7.4h, such as
+the Model Importer's). Derived from the agent, not stored on its own, so a
+resumed or reloaded session reports it again from its stored `top_agent`. While
+it is `false` the server refuses `prompt.submit`, `agent.set` and `mode.set`
+with `session_locked`, and kodo-vsix replaces the composer with a read-only
+strip keeping only Stop and Delete.
 
 ### 5.2 `agent.started` / `agent.finished` — invocation boundaries
 
@@ -1376,7 +1385,9 @@ Response:
 { "type": "prompt.accepted" }
 ```
 
-An empty prompt is rejected with an `error` event (`code: "empty_prompt"`).
+An empty prompt is rejected with an `error` event (`code: "empty_prompt"`). A
+session started by `agent.run` refuses every prompt with `code:
+"session_locked"` (§7.4h).
 
 **Attached files (server-side).** The VS Code extension lets the user stage up to 9 text files alongside a prompt (the "+" button in the input footer). The **server** owns the attachment lifecycle — the client never reads file content into the prompt. On submit the host prepends a single machine-generated control line listing the staged absolute **paths**:
 
@@ -1514,7 +1525,9 @@ Response:
 { "type": "mode.accepted" }
 ```
 
-A `state` event with the updated `autonomous` field follows.
+A `state` event with the updated `autonomous` field follows. A session started
+by `agent.run` refuses it with `code: "session_locked"` (§7.4h) — its
+autonomous mode was set by the run and stays.
 
 ### 7.4 `agent.set` — choose the top-level agent
 
@@ -1526,7 +1539,7 @@ Selects which top-level agent drives the next prompt. Like `mode.set`, it applie
 
 `name` is an entry from `top_agents.list.ack`'s `agents` catalog (§7.4g), `""` to let the server pick its own default (what a brand-new session sends, since the catalog is no longer pushed unconditionally at connect), **or** a legacy workflow-mode value (`guided` / `problem_solving`) left in a session persisted before the rename — both resolve to the same agent. Anything else unrecognized falls back the same way, so a stale stored selection keeps working rather than failing the prompt.
 
-The accepted set is whatever top-level agents the server has registered; there is no fixed list of modes any more. A non-selectable agent (`selectable: false` in its config) is absent from the catalog but still accepted here — the only way to reach one.
+The accepted set is whatever top-level agents the server has registered; there is no fixed list of modes any more. A non-selectable agent (`selectable: false` in its config) is absent from the catalog but still accepted here — the only way to reach one — **unless** it is also `interactive: false`: such an agent is refused with `code: "agent_run_only"`, since `agent.run` (§7.4h) is the only way onto it. A session already started by `agent.run` refuses every `agent.set` with `code: "session_locked"`.
 
 Response:
 
@@ -1536,7 +1549,7 @@ Response:
 
 A `state` event follows, whose `top_agent` carries the **resolved** name — so a client that sent an alias sees the agent it actually got, not the value it typed.
 
-No shipped agent is non-selectable any more. The flag was built for `kodo_judge`, the scoring agent of the now-removed `kodo.validator` (it opened a second, judge session over a finished run, and had no meaning in an interactive one); it was removed with the validator, and a stored `kodo_judge` selection is now treated like any other unknown agent.
+The flag was built for `kodo_judge`, the scoring agent of the now-removed `kodo.validator` (it opened a second, judge session over a finished run, and had no meaning in an interactive one); it was removed with the validator, and a stored `kodo_judge` selection is now treated like any other unknown agent. **Update 2026-10-05:** the one shipped non-selectable agent is `kodo_model_importer`, which is also non-interactive (§7.4h).
 
 > Replaced `workflow.set {mode}` (removed, not deprecated — nothing accepts it). The old names live on only as read-time fallbacks for data already on disk: the `workflow_mode` key in a session's `transient.json` and the `entry_agent` tag on a `session.jsonl` line.
 
@@ -1696,6 +1709,45 @@ user-installed agent also disappears from the picker on the next open.
 when it sends an empty name — display-only for the client now, since the
 server resolves it on its own either way.
 
+### 7.4h `agent.run` — start a session on a non-interactive agent
+
+Session connection, **brand-new session only**. Starts the session on a
+top-level agent declared `interactive: false` (`selectable: false` too — the
+picker never offers one) with its one prompt, in one step: the server selects
+the agent, switches Autonomous mode on (nobody is there to answer a question or
+approve a call) and queues the prompt exactly as `prompt.submit` would.
+
+```json
+{ "type": "agent.run", "name": "kodo_model_importer", "prompt": "unsloth/Qwen3.8-27B-GGUF" }
+```
+
+A `state` event with `top_agent: <name>`, `autonomous: true` and
+`interactive: false` (§5.1) is pushed, then the response:
+
+```json
+{ "type": "agent.run.accepted" }
+```
+
+Refusals change nothing and answer an `error` response:
+
+| code | when |
+|---|---|
+| `empty_prompt` | `prompt` is blank |
+| `agent_run_refused` | `name` is unknown or names an interactive agent; or the session already has a conversation or a queued prompt — `agent.run` never converts a used session |
+
+**The lock.** From then on the session takes no input: `prompt.submit`,
+`agent.set` and `mode.set` answer `error` `session_locked`. Stop, delete and
+everything read-only still work. `interactive` is derived from the stored
+`top_agent` (`AgentRegistry.is_interactive`), so a reload, a resume from the
+session list or a server restart keeps the lock; there is no separate
+persisted flag to drift. The agent's turn runs and ends like any other —
+kodo-vsix notices the `phase` leaving `running` and sends
+`local_llm.registry_get` on the control connection (§7.6) so the Local LLMs
+list shows what the Model Importer wrote (doc/LLM_REGISTRY.md §4.0b).
+
+Only built-in agents may declare `interactive: false`; a user-installed one
+that does is demoted like any other broken agent (doc/USER_AGENTS.md).
+
 ### 7.5 `config.reload` — apply settings.json changes
 
 Tells the server to re-read `~/.kodo/etc/settings.json`. The primary use is model switching: the VSIX edits `mode`, `active_cloud_vendor`, and/or the `models` map and sends this message; the engine resolves the new active plugin on its next dispatch (settings are read fresh per call).
@@ -1842,9 +1894,7 @@ download record; nothing on the wire names a head.
 { "type": "local_llm.check_updates", "names": ["qwen36-27b", "gpt-oss-20b"] } // fire-and-forget ETag scan
 { "type": "local_llm.uninstall", "name": "qwen36-27b" } // free the downloaded GGUF, keep the entry (also "cancel")
 { "type": "local_llm.remove", "name": "my-model" }      // remove a custom entry (uninstalls first if needed)
-{ "type": "local_llm.add_huggingface", "name": "...", "description": "...",
-  "repo_id": "org/repo", "filename": "model.gguf",
-  "llama_args": {"--cache-type-k": "q8_0"}, "context_window": 262144 }
+{ "type": "local_llm.registry_get" }   // re-read the registry; replies local_llm.registry_state
 { "type": "local_llm.add_file", "name": "...", "description": "...", "path": "/abs/model.gguf",
   "llama_args": {"--cache-type-k": "q8_0"}, "context_window": 262144 }
 { "type": "local_llm.add_server_url", "name": "...", "description": "...", "url": "http://host:port" }
@@ -1864,7 +1914,19 @@ download record; nothing on the wire names a head.
 respectively; `latest_version` is `null` only when the GitHub Releases fetch
 failed, in which case `error` carries the reason.
 
-`add_huggingface`/`add_file`'s `llama_args` is stored as the new entry's
+`local_llm.registry_get` changes nothing: it answers with the
+`local_llm.registry_state` every mutation here replies with. It exists for
+changes made outside a `local_llm.*` message — the user catalog files the Model
+Importer agent writes from inside a *session* (doc/LLM_REGISTRY.md §4.0b),
+which push nothing to the control connection. kodo-vsix sends it when an
+`agent.run` session's turn ends (§7.4h).
+
+**Update 2026-10-05:** `local_llm.add_huggingface {name, description,
+repo_id, filename, llama_args?, context_window?}` — the hand-filled "add a
+GGUF from Hugging Face" form — was removed. kodo-vsix's button now starts the
+Model Importer with `agent.run`; existing `custom_hf` entries keep working.
+
+`add_file`'s `llama_args` is stored as the new entry's
 `base_llama_args` — the floor its Default profile's knobs layer on top of
 (doc/LLM_REGISTRY.md §4.6), merged over the shared base args so the entry
 still gets `--jinja` unless the form deliberately overrode it. A user-added
@@ -1897,7 +1959,7 @@ the *local registry entry* name in all five, never a profile's own name/id.
 `add_profile`/`update_profile`'s `llama_args_text` is the **raw multi-line
 textbox content** from the "Manage profiles" modal (one `--flag value` per
 line) — parsed server-side by `parse_llama_args_text`, unlike
-`add_huggingface`/`add_file` above, whose single-line `llama_args` is already
+`add_file` above, whose single-line `llama_args` is already
 a parsed dict by the time it reaches the wire (client-parsed). It carries the
 editor's argument-picker rows too: the picker and the raw box are two views of
 one string, not two fields. Flags kodo sets per launch

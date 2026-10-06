@@ -306,8 +306,11 @@ Command Control and Autonomous mode are ignored.
   - Global options `-C`, `--no-pager` and `-P` are allowed. `-c`,
     `--git-dir`, `--work-tree` and `--exec-path` are refused, as are
     `--output` and `--ext-diff` anywhere.
-- **Denied outright:** `scaffold_new_project` (the root is fixed) and
-  `disable_autonomous_mode` (no user to hand control to). Any tool without an
+- **Denied outright:** `scaffold_new_project` (the root is fixed),
+  `disable_autonomous_mode` (no user to hand control to), and the Model
+  Importer's two writers `add_local_llm_quant` / `set_mtp_heads` (they write
+  `~/.kodo/local_llms/`, outside the root). Its three readers
+  (`list_local_llms`, `read_hf_model`, `read_gguf_header`) are allowed. Any tool without an
   explicit policy is also denied: `test_every_dispatchable_tool_has_an_explicit_sandbox_policy`
   forces a decision whenever a tool is added.
 

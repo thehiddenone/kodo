@@ -376,6 +376,15 @@ def test_a_user_agent_cannot_claim_the_default(user_root: Path) -> None:
     registry = _registry(user_root)
     assert "default" in _broken(registry, "reviewer")
     assert registry.default_top_agent() == "kodo_problem_solver"
+    assert registry.knows_top_agent("reviewer") is False
+
+
+def test_a_user_agent_cannot_be_non_interactive(user_root: Path) -> None:
+    # agent.run starts only built-in agents; an installed one stays a normal agent.
+    _write_agent(user_root, "reviewer", config={"selectable": False, "interactive": False})
+    registry = _registry(user_root)
+    assert "interactive" in _broken(registry, "reviewer")
+    assert registry.knows_top_agent("reviewer") is False
 
 
 # ---------------------------------------------------------------------------

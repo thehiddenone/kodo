@@ -750,6 +750,7 @@ class AgentRegistry:
         surviving = tuple(cfg for cfg in scan.configs if cfg.name in self.__agents)
         self.__build_top_agents(agents_dir, surviving, problems)
         broken.extend(self.__demote_user_agents(problems))
+        self.__drop_demoted_top_agents()
         self.__broken = tuple(sorted(broken, key=lambda b: (not b.is_top_level, b.name)))
         if problems.any:
             # Whatever is left is attributed to a **built-in** agent: a bug in
@@ -972,6 +973,12 @@ class AgentRegistry:
                 continue
             by_value[top.name] = top.name
         for top in agents:
+            if not top.interactive and top.name in self.__user_names:
+                problems.add(
+                    top.name,
+                    'declares "interactive": false — only a built-in agent can be started '
+                    "through agent.run",
+                )
             if top.default and top.name in self.__user_names:
                 problems.add(
                     top.name,
@@ -991,6 +998,21 @@ class AgentRegistry:
         self.__top_agents = tuple(sorted(agents, key=lambda a: (a.rank, a.name)))
         self.__top_agent_by_value = by_value
         self.__declared_default = defaults[0] if defaults else ""
+
+    def __drop_demoted_top_agents(self) -> None:
+        """Remove top-level agents the last demotion took out of the agent table.
+
+        A user agent demoted by the top-agent pass itself (a claimed default, a
+        non-interactive config) is already gone from the agent table, but
+        :meth:`__build_top_agents` indexed it first — left there, ``agent.set``
+        would still select an agent that no longer loads.
+        """
+        self.__top_agents = tuple(top for top in self.__top_agents if top.name in self.__agents)
+        self.__top_agent_by_value = {
+            value: name
+            for value, name in self.__top_agent_by_value.items()
+            if name in self.__agents
+        }
 
     @property
     def broken_agents(self) -> tuple[BrokenAgent, ...]:
@@ -1103,6 +1125,19 @@ class AgentRegistry:
             str: The resolved agent name — always one that exists.
         """
         return self.__top_agent_by_value.get(value, self.default_top_agent())
+
+    def is_interactive(self, name: str) -> bool:
+        """Whether a session on top-level agent *name* takes the user's input.
+
+        Args:
+            name: A top-level agent name.
+
+        Returns:
+            bool: The agent's :attr:`~kodo.agents.TopAgent.interactive`;
+            ``True`` for a name no registered agent has, so an unknown or
+            uninstalled agent never locks a session.
+        """
+        return next((top.interactive for top in self.__top_agents if top.name == name), True)
 
     def knows_top_agent(self, value: str) -> bool:
         """Whether *value* names a registered top-level agent.

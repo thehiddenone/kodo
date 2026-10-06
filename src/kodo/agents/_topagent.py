@@ -102,6 +102,13 @@ class TopAgent:
             catalog the client renders.
         default: Whether an unrecognized selection falls back to this agent.
             Exactly one of a registry's top-level agents declares it.
+        interactive: ``False`` marks an agent that runs one engine-started
+            prompt and takes no further input: a session is started on it only
+            by the ``agent.run`` message, which also switches autonomous mode
+            on, and that session refuses every later prompt, agent switch and
+            mode change (doc/WS_PROTOCOL.md §7.4h). Such an agent must also be
+            ``selectable: false`` and not the ``default`` — the picker cannot
+            offer it — and only a built-in agent may declare it.
         notes: Engineer-facing rationale for why this entry looks the way it
             does — the prose a JSON file has nowhere else to put. **Never shown
             to a model or a user**: it reaches no schema, no prompt and no
@@ -115,13 +122,16 @@ class TopAgent:
     rank: int
     selectable: bool = True
     default: bool = False
+    interactive: bool = True
     notes: str = ""
 
 
 #: Extension of a top-level agent's config file. The glob that finds them.
 TOP_AGENT_SUFFIX = ".json"
 
-_KEYS = frozenset({"name", "notes", "label", "description", "rank", "selectable", "default"})
+_KEYS = frozenset(
+    {"name", "notes", "label", "description", "rank", "selectable", "default", "interactive"}
+)
 
 
 class TopAgentLoadError(Exception):
@@ -142,7 +152,8 @@ def load_top_agent(path: Path) -> TopAgent:
     Raises:
         TopAgentLoadError: The file is not valid JSON, is not a JSON object,
             holds an unknown key, declares a value of the wrong type, has a
-            ``name`` that disagrees with the filename, or omits a required key.
+            ``name`` that disagrees with the filename, omits a required key, or
+            declares ``interactive: false`` on a selectable or default agent.
     """
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -185,6 +196,15 @@ def load_top_agent(path: Path) -> TopAgent:
     if not isinstance(default, bool):
         raise TopAgentLoadError(f"{path}: 'default' must be true or false, got {default!r}")
 
+    interactive = raw.get("interactive", True)
+    if not isinstance(interactive, bool):
+        raise TopAgentLoadError(f"{path}: 'interactive' must be true or false, got {interactive!r}")
+    if not interactive and (selectable or default):
+        raise TopAgentLoadError(
+            f"{path}: an agent with 'interactive': false must also be 'selectable': false "
+            "and not the 'default' — a session reaches it only through agent.run"
+        )
+
     return TopAgent(
         name=name,
         label=label,
@@ -192,6 +212,7 @@ def load_top_agent(path: Path) -> TopAgent:
         rank=rank,
         selectable=selectable,
         default=default,
+        interactive=interactive,
         notes=notes,
     )
 

@@ -15,6 +15,7 @@ See [[feedback-tools-layer]]: ``kodo.tools`` may import only T0/T1/T2.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -29,6 +30,7 @@ __all__ = [
     "EditReviewLike",
     "EngineServices",
     "GateLike",
+    "LocalCatalogLike",
     "PermissionLike",
     "PermissionPartLike",
     "RootPath",
@@ -380,6 +382,40 @@ class SessionLike(Protocol):
     edit_control: str
 
 
+class LocalCatalogLike(Protocol):
+    """Structural shape of the Model Importer's catalog service.
+
+    Backs the five importer tools (``list_local_llms``, ``read_hf_model``,
+    ``read_gguf_header``, ``add_local_llm_quant``, ``set_mtp_heads``). The
+    concrete service (``kodo.llms.model_import.LocalCatalogService``) sits above
+    ``kodo.tools`` in the import graph, so the engine hands it over through
+    :meth:`EngineServices.local_catalog`. Every method returns a
+    JSON-serialisable dict and raises :class:`ValueError` — with a message
+    written for the calling agent — for any request it refuses or cannot
+    complete; the tools turn that into ``{"error": ...}``.
+    """
+
+    async def list_catalog(self) -> dict[str, object]:
+        """Every served catalog family, and the context knobs a quant may name."""
+        ...
+
+    async def model_info(self, repo_id: str) -> dict[str, object]:
+        """One Hugging Face repo's card, license and GGUF files."""
+        ...
+
+    async def gguf_header(self, repo_id: str, filename: str) -> dict[str, object]:
+        """One GGUF file's header metadata."""
+        ...
+
+    async def add_quant(self, fields: Mapping[str, object]) -> dict[str, object]:
+        """Write one quant into the user catalog, verified against its GGUF header."""
+        ...
+
+    async def set_mtp_heads(self, base_llm: str, heads: Sequence[object]) -> dict[str, object]:
+        """Add standalone MTP heads to a family's ``mtp_sidecars.json``."""
+        ...
+
+
 class EngineServices(Protocol):
     """Structural shape of every engine-side operation a tool can trigger.
 
@@ -622,6 +658,14 @@ class EngineServices(Protocol):
         :meth:`add_security_rule` for a ``kind="path"`` part's ``rule_offer``.
         Same scope/no-op semantics; ``executable``/``path`` are exactly the
         server's own offered shape, never re-derived from the wire.
+        """
+        ...
+
+    def local_catalog(self) -> LocalCatalogLike:
+        """The session's Model Importer catalog service (:class:`LocalCatalogLike`).
+
+        One instance per engine, created on first use, so the headers and repo
+        snapshots it caches are shared by every importer tool call in the session.
         """
         ...
 

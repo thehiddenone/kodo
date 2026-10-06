@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from kodo.tools import RootPath
+from kodo.tools import LocalCatalogLike, RootPath
 
 
 class _EngineServices:
@@ -37,6 +37,7 @@ class _EngineServices:
         add_security_path_rule: Callable[[str, str, str], Awaitable[None]],
         has_workspace: Callable[[], bool],
         root_paths: Callable[[], tuple[RootPath, ...]],
+        local_catalog: Callable[[], LocalCatalogLike],
     ) -> None:
         self.__run_subagent = run_subagent
         self.__run_dependency_manager = run_dependency_manager
@@ -52,6 +53,7 @@ class _EngineServices:
         self.__add_security_path_rule = add_security_path_rule
         self.__has_workspace = has_workspace
         self.__root_paths = root_paths
+        self.__local_catalog = local_catalog
 
     async def run_subagent(
         self,
@@ -135,3 +137,7 @@ class _EngineServices:
     def root_paths(self) -> tuple[RootPath, ...]:
         """Delegate to the engine's ``_root_paths``, read live."""
         return self.__root_paths()
+
+    def local_catalog(self) -> LocalCatalogLike:
+        """Delegate to the engine's lazily created Model Importer catalog service."""
+        return self.__local_catalog()
