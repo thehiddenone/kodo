@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 import httpx
 import huggingface_hub
+import huggingface_hub.constants
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
@@ -259,3 +260,117 @@ async def test_gguf_header_reads_through_the_range_reader(
     monkeypatch.setattr(huggingface_hub, "get_token", lambda: None)
     meta = await HuggingFaceHub().gguf_header("acme/repo", "m.gguf")
     assert meta.architecture == "laguna"
+
+
+# --- HuggingFaceHub.search ----------------------------------------------------
+
+
+@dataclass
+class _Search:
+    """What the local ``/api/models`` serves, and what it was asked."""
+
+    body: object = field(default_factory=list)
+    status: int = 200
+    raw: bytes | None = None
+    queries: list[list[tuple[str, str]]] = field(default_factory=list)
+    auth: list[str] = field(default_factory=list)
+
+
+@pytest.fixture
+async def search_api(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[_Search, None]:
+    served = _Search()
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        served.queries.append(list(request.query.items()))
+        served.auth.append(request.headers.get("Authorization", ""))
+        if served.status != 200:
+            return web.Response(status=served.status)
+        if served.raw is not None:
+            return web.Response(body=served.raw, content_type="application/json")
+        return web.json_response(served.body)
+
+    app = web.Application()
+    app.router.add_get("/api/models", handler)
+    server = TestServer(app)
+    await server.start_server()
+    monkeypatch.setattr(huggingface_hub.constants, "ENDPOINT", f"http://127.0.0.1:{server.port}")
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: None)
+    yield served
+    await server.close()
+
+
+async def test_search_asks_for_gguf_repos_by_downloads(search_api: _Search) -> None:
+    await HuggingFaceHub().search("qwen 27b", 100)
+
+    query = search_api.queries[0]
+    assert ("search", "qwen 27b") in query
+    assert ("filter", "gguf") in query
+    assert ("sort", "downloads") in query
+    assert ("limit", "100") in query
+    expanded = {value for key, value in query if key == "expand[]"}
+    assert {"downloads", "likes", "tags", "gated", "lastModified"} <= expanded
+    assert search_api.auth == [""]
+
+
+async def test_search_maps_hits_and_skips_malformed_ones(search_api: _Search) -> None:
+    search_api.body = [
+        {
+            "id": "acme/Open-GGUF",
+            "downloads": 12,
+            "likes": 3,
+            "gated": False,
+            "lastModified": "2026-07-17T12:52:56.000Z",
+            "tags": ["gguf", "license:mit", 7],
+        },
+        {"id": "acme/Gated-GGUF", "gated": "manual", "downloads": True},
+        {"id": "no-owner"},
+        {"downloads": 5},
+        "not an object",
+    ]
+
+    hits = await HuggingFaceHub().search("acme", 10)
+
+    assert [h.repo_id for h in hits] == ["acme/Open-GGUF", "acme/Gated-GGUF"]
+    open_hit, gated_hit = hits
+    assert (open_hit.downloads, open_hit.likes, open_hit.gated) == (12, 3, False)
+    assert open_hit.last_modified == "2026-07-17T12:52:56.000Z"
+    assert open_hit.tags == ("gguf", "license:mit")
+    # A gating mode string means gated; a non-int count reads as zero.
+    assert (gated_hit.gated, gated_hit.downloads, gated_hit.last_modified) == (True, 0, "")
+
+
+async def test_search_sends_the_hub_token_when_there_is_one(
+    search_api: _Search, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: "hf_secret")
+
+    await HuggingFaceHub().search("acme", 10)
+
+    assert search_api.auth == ["Bearer hf_secret"]
+
+
+async def test_search_http_error_becomes_an_import_error(search_api: _Search) -> None:
+    search_api.status = 503
+
+    with pytest.raises(ModelImportError, match="HTTP 503"):
+        await HuggingFaceHub().search("acme", 10)
+
+
+@pytest.mark.parametrize("raw", [b"{not json", b'{"error": "nope"}'])
+async def test_search_unreadable_reply_becomes_an_import_error(
+    search_api: _Search, raw: bytes
+) -> None:
+    search_api.raw = raw
+
+    with pytest.raises(ModelImportError, match="Hugging Face search"):
+        await HuggingFaceHub().search("acme", 10)
+
+
+async def test_search_unreachable_hub_becomes_an_import_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(huggingface_hub.constants, "ENDPOINT", "http://127.0.0.1:9")
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: None)
+
+    with pytest.raises(ModelImportError, match="Hugging Face search failed"):
+        await HuggingFaceHub().search("acme", 10)

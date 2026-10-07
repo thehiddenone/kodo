@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -27,9 +28,13 @@ from kodo.llms.local_registry import (
     user_catalog_dir,
 )
 from kodo.llms.model_import import (
+    HF_KNOWN_PUBLISHERS,
+    HF_TOP_PUBLISHERS,
+    SEARCH_MIN_QUERY_LENGTH,
     LocalCatalogService,
     ModelImportError,
     RepoFile,
+    RepoSearchHit,
     RepoSnapshot,
     format_size_hint,
     guess_quant_type,
@@ -93,7 +98,7 @@ _FILES = {
 
 
 class _FakeHub:
-    """Serves canned snapshots and headers; counts header reads."""
+    """Serves canned snapshots, headers and search hits; counts reads."""
 
     def __init__(self) -> None:
         self.snapshots: dict[str, RepoSnapshot] = {_REPO: _snapshot(_REPO, _FILES)}
@@ -105,6 +110,15 @@ class _FakeHub:
             (_REPO, "MTP/mtp-Testmodel-7B-shared-Q8_0.gguf"): _meta(nextn=1, shared=True),
         }
         self.header_reads = 0
+        self.search_hits: tuple[RepoSearchHit, ...] = ()
+        self.search_error = ""
+        self.searches: list[tuple[str, int]] = []
+
+    async def search(self, query: str, limit: int) -> tuple[RepoSearchHit, ...]:
+        self.searches.append((query, limit))
+        if self.search_error:
+            raise ModelImportError(self.search_error)
+        return self.search_hits[:limit]
 
     async def snapshot(self, repo_id: str) -> RepoSnapshot:
         if repo_id not in self.snapshots:
@@ -609,3 +623,168 @@ def test_guess_quant_type_reads_the_trailing_token(path: str, quant: str) -> Non
 )
 def test_format_size_hint_matches_the_shipped_catalogs_style(size: int, hint: str) -> None:
     assert format_size_hint(size) == hint
+
+
+# --- search_repos: the settings dialog's search-as-you-type box --------------
+
+# One publisher per tier, read off the live lists so editing them cannot
+# silently change what these tests exercise.
+_TOP_AUTHOR = sorted(HF_TOP_PUBLISHERS)[0]
+_KNOWN_AUTHOR = sorted(HF_KNOWN_PUBLISHERS)[0]
+_OTHER_AUTHOR = "someone-else"
+assert _OTHER_AUTHOR.lower() not in {a.lower() for a in HF_TOP_PUBLISHERS | HF_KNOWN_PUBLISHERS}, (
+    "the 'other' fixture author must not be on either publisher list"
+)
+
+
+def _hit(
+    repo_id: str, downloads: int, *, tags: tuple[str, ...] = (), gated: bool = False
+) -> RepoSearchHit:
+    return RepoSearchHit(
+        repo_id=repo_id,
+        downloads=downloads,
+        likes=downloads // 1000,
+        gated=gated,
+        last_modified="2026-08-13T08:28:40.000Z",
+        tags=tags,
+    )
+
+
+def _rows(result: dict[str, object]) -> list[dict[str, object]]:
+    return cast("list[dict[str, object]]", result["results"])
+
+
+def _ids(result: dict[str, object]) -> list[object]:
+    return [row["repo_id"] for row in _rows(result)]
+
+
+async def test_search_ranks_top_then_known_then_others_each_by_downloads(
+    service: LocalCatalogService, hub: _FakeHub
+) -> None:
+    hub.search_hits = (
+        _hit(f"{_OTHER_AUTHOR}/Big-GGUF", 9_000_000),
+        _hit(f"{_KNOWN_AUTHOR}/Mid-GGUF", 5_000_000),
+        _hit(f"{_TOP_AUTHOR}/Small-GGUF", 10),
+        _hit(f"{_KNOWN_AUTHOR}/Low-GGUF", 1_000),
+        _hit(f"{_TOP_AUTHOR}/Large-GGUF", 2_000),
+        _hit(f"{_OTHER_AUTHOR}/Tiny-GGUF", 5),
+    )
+
+    result = await service.search_repos("gguf")
+
+    assert _ids(result) == [
+        f"{_TOP_AUTHOR}/Large-GGUF",
+        f"{_TOP_AUTHOR}/Small-GGUF",
+        f"{_KNOWN_AUTHOR}/Mid-GGUF",
+        f"{_KNOWN_AUTHOR}/Low-GGUF",
+        f"{_OTHER_AUTHOR}/Big-GGUF",
+        f"{_OTHER_AUTHOR}/Tiny-GGUF",
+    ]
+    tiers = [row["publisher_tier"] for row in _rows(result)]
+    assert tiers == ["top", "top", "known", "known", "other", "other"]
+
+
+async def test_search_matches_publishers_ignoring_case(
+    service: LocalCatalogService, hub: _FakeHub
+) -> None:
+    hub.search_hits = (
+        _hit(f"{_OTHER_AUTHOR}/A-GGUF", 100),
+        _hit(f"{_TOP_AUTHOR.swapcase()}/B-GGUF", 1),
+    )
+
+    result = await service.search_repos("gguf")
+
+    row = _rows(result)[0]
+    assert row["repo_id"] == f"{_TOP_AUTHOR.swapcase()}/B-GGUF"
+    assert row["publisher_tier"] == "top"
+    assert row["author"] == _TOP_AUTHOR.swapcase()
+
+
+async def test_search_cuts_to_twenty_after_ranking(
+    service: LocalCatalogService, hub: _FakeHub
+) -> None:
+    others = tuple(_hit(f"{_OTHER_AUTHOR}/M{i}-GGUF", 1_000_000 + i) for i in range(40))
+    hub.search_hits = (*others, _hit(f"{_TOP_AUTHOR}/Rare-GGUF", 1))
+
+    result = await service.search_repos("gguf")
+
+    ids = _ids(result)
+    assert len(ids) == 20
+    assert ids[0] == f"{_TOP_AUTHOR}/Rare-GGUF"
+
+
+async def test_search_row_carries_card_facts_from_tags(
+    service: LocalCatalogService, hub: _FakeHub
+) -> None:
+    hub.search_hits = (
+        _hit(
+            f"{_KNOWN_AUTHOR}/Thing-GGUF",
+            42_000,
+            gated=True,
+            tags=(
+                "gguf",
+                "base_model:quantized:acme/Thing",
+                "base_model:acme/Thing",
+                "license:apache-2.0",
+            ),
+        ),
+    )
+
+    result = await service.search_repos("thing")
+
+    assert result["results"] == [
+        {
+            "repo_id": f"{_KNOWN_AUTHOR}/Thing-GGUF",
+            "author": _KNOWN_AUTHOR,
+            "publisher_tier": "known",
+            "downloads": 42_000,
+            "likes": 42,
+            "gated": True,
+            "last_modified": "2026-08-13T08:28:40.000Z",
+            "base_model": "acme/Thing",
+            "license": "apache-2.0",
+            "in_catalog": False,
+        }
+    ]
+
+
+async def test_search_flags_repos_the_registry_already_serves(
+    tmp_path: Path, service: LocalCatalogService, hub: _FakeHub
+) -> None:
+    served = next(e.repo_id for e in get_local_registry(tmp_path).values() if e.repo_id)
+    hub.search_hits = (_hit(served.upper(), 10), _hit(f"{_OTHER_AUTHOR}/New-GGUF", 5))
+
+    result = await service.search_repos("gguf")
+
+    flags = {row["repo_id"]: row["in_catalog"] for row in _rows(result)}
+    assert flags == {served.upper(): True, f"{_OTHER_AUTHOR}/New-GGUF": False}
+
+
+async def test_search_trims_the_query_and_echoes_it_as_sent(
+    service: LocalCatalogService, hub: _FakeHub
+) -> None:
+    result = await service.search_repos("  qwen 27b ")
+
+    assert hub.searches and hub.searches[0][0] == "qwen 27b"
+    assert result["query"] == "  qwen 27b "
+
+
+async def test_search_skips_the_hub_for_a_too_short_query(
+    service: LocalCatalogService, hub: _FakeHub
+) -> None:
+    hub.search_hits = (_hit(f"{_TOP_AUTHOR}/X-GGUF", 1),)
+    short = " " + "q" * (SEARCH_MIN_QUERY_LENGTH - 1) + " "
+
+    result = await service.search_repos(short)
+
+    assert result == {"query": short, "results": []}
+    assert hub.searches == []
+
+
+async def test_search_passes_hub_failures_through(
+    service: LocalCatalogService, hub: _FakeHub
+) -> None:
+    hub.search_error = "Hugging Face search failed with HTTP 503"
+
+    with pytest.raises(ModelImportError, match="HTTP 503"):
+        await service.search_repos("qwen")

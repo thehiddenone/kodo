@@ -54,6 +54,7 @@ from kodo.llms.local_registry import (
 
 from ._errors import ModelImportError
 from ._hub import HubClient, HuggingFaceHub, RepoFile, RepoSnapshot
+from ._search import SEARCH_MIN_QUERY_LENGTH, rank_search_hits
 
 __all__ = ["LocalCatalogService", "format_size_hint", "guess_quant_type"]
 
@@ -65,6 +66,21 @@ _QUANT_TOKEN = re.compile(
 )
 _HEAD_KEYS = frozenset({"id", "repo_id", "filename", "quant_type"})
 _ENTRY_KIND = "hardcoded_hf"
+#: Hits a search asks the Hub for — enough that the top publishers' repos are
+#: still among them when a popular name is shared by hundreds of fine-tunes.
+_SEARCH_FETCH = 100
+#: Ranked hits a search returns.
+_SEARCH_RESULTS = 20
+
+
+def _tag_value(tags: Sequence[str], prefix: str) -> str:
+    """The first ``prefix:<value>`` tag's value, skipping ``prefix:<relation>:<id>``."""
+    for tag in tags:
+        if tag.startswith(prefix):
+            value = tag[len(prefix) :]
+            if ":" not in value:
+                return value
+    return ""
 
 
 def format_size_hint(size: int) -> str:
@@ -365,6 +381,54 @@ class LocalCatalogService:
                 for knob_id, (arch, native) in context_knob_architectures().items()
             ],
             "user_catalog_dir": str(user_catalog_dir(self.__kodo_dir)),
+        }
+
+    async def search_repos(self, query: str) -> dict[str, object]:
+        """Find GGUF repos for the "add a local LLM" search box.
+
+        Hits are ranked by publisher tier, then downloads
+        (:func:`rank_search_hits`). A query shorter than
+        :data:`SEARCH_MIN_QUERY_LENGTH` after trimming returns no results
+        without asking the Hub.
+
+        Args:
+            query (str): What the user has typed so far.
+
+        Returns:
+            dict[str, object]: ``query`` (as given) and ``results``: one dict per
+            repo with ``repo_id``, ``author``, ``publisher_tier``, ``downloads``,
+            ``likes``, ``gated``, ``last_modified``, ``base_model``, ``license``
+            and ``in_catalog`` (an entry the registry serves already uses the repo).
+
+        Raises:
+            ModelImportError: The Hub could not be searched.
+        """
+        text = query.strip()
+        if len(text) < SEARCH_MIN_QUERY_LENGTH:
+            return {"query": query, "results": []}
+        hits = await self.__hub.search(text, _SEARCH_FETCH)
+        served = {
+            entry.repo_id.lower()
+            for entry in get_local_registry(self.__kodo_dir).values()
+            if entry.repo_id
+        }
+        return {
+            "query": query,
+            "results": [
+                {
+                    "repo_id": ranked.hit.repo_id,
+                    "author": ranked.author,
+                    "publisher_tier": ranked.tier,
+                    "downloads": ranked.hit.downloads,
+                    "likes": ranked.hit.likes,
+                    "gated": ranked.hit.gated,
+                    "last_modified": ranked.hit.last_modified,
+                    "base_model": _tag_value(ranked.hit.tags, "base_model:"),
+                    "license": _tag_value(ranked.hit.tags, "license:"),
+                    "in_catalog": ranked.hit.repo_id.lower() in served,
+                }
+                for ranked in rank_search_hits(hits, _SEARCH_RESULTS)
+            ],
         }
 
     async def model_info(self, repo_id: str) -> dict[str, object]:

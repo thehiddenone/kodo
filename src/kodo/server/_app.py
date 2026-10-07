@@ -94,6 +94,7 @@ from kodo.llms.llamacpp import (
     update_llamacpp,
 )
 from kodo.llms.local import LocalModelError
+from kodo.llms.model_import import LocalCatalogService, ModelImportError
 from kodo.project import (
     ProjectLayoutError,
     WorkspaceLayout,
@@ -164,6 +165,7 @@ from kodo.transport import (
     MSG_LOCAL_LLM_ADD_PROFILE,
     MSG_LOCAL_LLM_ADD_SERVER_URL,
     MSG_LOCAL_LLM_CHECK_UPDATES,
+    MSG_LOCAL_LLM_HF_SEARCH,
     MSG_LOCAL_LLM_INSTALL,
     MSG_LOCAL_LLM_PAUSE,
     MSG_LOCAL_LLM_REGISTRY_GET,
@@ -2411,6 +2413,30 @@ async def _handle_local_llm_registry_get(req: Request) -> None:
     await _send_registry_state(req)
 
 
+async def _handle_local_llm_hf_search(req: Request) -> None:
+    """``local_llm.hf_search`` — search Hugging Face for GGUF repos (MSG_LOCAL_LLM_HF_SEARCH).
+
+    Replies from a background task: the connection registry awaits handlers
+    one frame at a time, and a search fired on every pause in typing must not
+    queue the control connection's other messages behind a slow Hub. Searches
+    anonymously (or with the server's own ``HF_TOKEN``) — unlike a download it
+    never asks the extension for its token, which would add a round trip to
+    every keystroke for no gain: gated repos are listed without one.
+    """
+    raw_query = req.env.payload.get("query", "")
+    query = raw_query if isinstance(raw_query, str) else ""
+
+    async def run() -> None:
+        try:
+            found = await LocalCatalogService(kodo_user_dir()).search_repos(query)
+            payload: dict[str, object] = {**found, "error": ""}
+        except ModelImportError as exc:
+            payload = {"query": query, "results": [], "error": str(exc)}
+        await req.reply({"type": "local_llm.hf_search.ack", **payload})
+
+    asyncio.create_task(run())
+
+
 async def _send_registry_state(req: Request) -> None:
     await req.connection.send(
         Envelope.make_event(EVT_LOCAL_LLM_REGISTRY_STATE, _local_registry_payload())
@@ -2994,6 +3020,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_LOCAL_LLM_UPDATE, _handle_local_llm_update)
     conn_registry.register_handler(MSG_LOCAL_LLM_CHECK_UPDATES, _handle_local_llm_check_updates)
     conn_registry.register_handler(MSG_LOCAL_LLM_REGISTRY_GET, _handle_local_llm_registry_get)
+    conn_registry.register_handler(MSG_LOCAL_LLM_HF_SEARCH, _handle_local_llm_hf_search)
     conn_registry.register_handler(MSG_OPENROUTER_MODELS_REFRESH, _handle_openrouter_models_refresh)
     conn_registry.register_handler(MSG_BEDROCK_MODELS_REFRESH, _handle_bedrock_models_refresh)
     conn_registry.register_handler(MSG_LOCAL_LLM_UNINSTALL, _handle_local_llm_uninstall)

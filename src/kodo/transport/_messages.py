@@ -714,6 +714,23 @@ MSG_LOCAL_LLM_REMOVE = "local_llm.remove"
 # own; kodo-vsix sends it when such a session's turn ends.
 MSG_LOCAL_LLM_REGISTRY_GET = "local_llm.registry_get"
 
+# Client → Server. Control connection. Search Hugging Face for GGUF repos —
+# backs the search-as-you-type box of kodo-vsix's "Add local LLM (GGUF) from
+# huggingface.com" dialog, whose chosen repo id goes to the Model Importer
+# (doc/LLM_REGISTRY.md §4.0c). Payload ``{query}``. Unlike the ``local_llm.*``
+# mutations above it replies to the request itself, never with
+# ``local_llm.registry_state``: ``local_llm.hf_search.ack`` ``{query, results,
+# error}``. ``query`` is echoed as sent, so a client can drop a reply to a
+# query the user has typed past. ``results`` is at most 20 repos ranked top
+# publishers → known publishers → others, each tier by downloads
+# (kodo.llms.model_import.rank_search_hits), each ``{repo_id, author,
+# publisher_tier, downloads, likes, gated, last_modified, base_model, license,
+# in_catalog}``. A query under 2 characters (trimmed) replies ``results: []``
+# without reaching the Hub. A Hub failure replies ``results: []`` and a
+# non-empty ``error``. Answered from a background task, so a slow Hub never
+# holds up the other messages on the control connection.
+MSG_LOCAL_LLM_HF_SEARCH = "local_llm.hf_search"
+
 # Client → Server. Launch-configuration management (doc/LLM_REGISTRY.md §4.6).
 # A local registry entry runs under one of two things: its **Default profile**
 # — computed from the entry's base args plus its *knobs*, the hardcoded

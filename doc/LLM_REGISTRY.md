@@ -1285,7 +1285,8 @@ Qwen35-9B, Qwen36-*) publish no standalone heads and keep the checkbox.
 ### 4.0b The Model Importer agent — catalog files from a Hugging Face repo
 
 Since 2026-10-05, kodo-vsix's "Add local LLM (GGUF) from huggingface.com"
-asks for one GGUF repository id and opens a new session running the built-in
+asks for one GGUF repository id (found with the dialog's search box since
+2026-10-06, §4.0c) and opens a new session running the built-in
 `kodo_model_importer` agent on it. The agent adds one quant per precision tier
 to the **user** catalog (§4.0) — never the shipped one — plus the family's
 standalone MTP heads (§4.0a). The session is read-only: the agent is
@@ -1343,6 +1344,64 @@ the release that added the architecture. Reusing an existing family's
 whenever the base model matches. Deleting an imported file later is the
 purge trap of §4.1b: an installed GGUF whose entry is gone is deleted at the
 next start.
+
+### 4.0c Finding the repo — search-as-you-type in the import dialog
+
+Since 2026-10-06 the importer dialog's repository field is also a search box,
+so the user no longer has to know the exact `account/repo` id. A pause in
+typing (250 ms, at least 2 characters) sends `local_llm.hf_search {query}` on
+the control connection (WS_PROTOCOL.md §7.6m). The ranked matches are listed
+under the field; picking one fills it, and an id typed or pasted in full
+still works without searching. The agent is unchanged: it still receives one
+repo id.
+
+**Where the search runs.** On the server
+(`LocalCatalogService.search_repos` → `HubClient.search`), not in the
+extension: the settings webview's CSP forbids network access, and the server
+already owns Hugging Face access, its test seam and the catalog cross-check.
+`HuggingFaceHub.search` calls the Hub's `/api/models` listing directly with
+aiohttp (`filter=gguf`, `sort=downloads`, `expand[]=downloads,likes,tags,gated,lastModified`)
+under an 8-second timeout, rather than `huggingface_hub.list_models`, so a
+network failure is one aiohttp error type. A search uses whatever token
+`huggingface_hub` finds (`HF_TOKEN`) and never asks the extension for its
+stored one: that would add a round trip to every pause in typing, and gated
+repos are listed without a token anyway.
+
+**Ranking.** The Hub matches the query as a substring of the repo id (no
+fuzzy matching — a typo finds nothing) and sorts only by downloads, which
+puts fine-tunes and merges next to the originals. The service asks for the
+100 most-downloaded matches, splits them into three publisher tiers, and
+returns at most 20, tier by tier, each tier by downloads
+(`kodo.llms.model_import.rank_search_hits`). The cut is made after ranking,
+so a top-tier repo outranks any number of more-downloaded others. Publishers
+are matched on the repo owner, ignoring case, against two lists in code
+(`HF_TOP_PUBLISHERS`, `HF_KNOWN_PUBLISHERS` in `model_import/_search.py`).
+Changing a list is a code change:
+
+| tier | who | publishers |
+|---|---|---|
+| `top` | labs that train the models and publish their own GGUFs, plus llama.cpp's own conversions | Qwen, ornith-ai, ggml-org, google, mistralai, microsoft, ibm-granite, LiquidAI, nvidia, allenai, HuggingFaceTB, tiiuae, zai-org, poolside, NousResearch |
+| `known` | established quantizers that republish many labs' models | unsloth, bartowski, huihui-ai, lmstudio-community, mradermacher, MaziyarPanahi, QuantFactory, second-state |
+| `other` | everyone else | — |
+
+Some labs publish no GGUFs themselves (meta-llama, deepseek-ai, openai,
+moonshotai and MiniMaxAI each had 0 GGUF repos when the lists were drawn up),
+so their models reach the list only through repackagers.
+
+**Rows.** Each result carries `publisher_tier`, downloads, likes, `gated`,
+`last_modified`, and the `base_model:`/`license:` tag values. `in_catalog`
+is true when an entry the registry serves (shipped or user) already uses the
+repo. Such a repo stays selectable: the importer adds the quants that are
+missing and refuses the duplicates (§4.0b). kodo-vsix shows the rows as one
+flat list in this order, badged "Top publisher" / "Known publisher" /
+"In catalog" / "Gated".
+
+**Stale replies.** The server answers each search from its own background
+task (the connection registry awaits handlers one frame at a time, and a slow
+Hub must not hold up the control connection), so replies can arrive out of
+order. The server echoes `query`. kodo-vsix's bridge drops a reply that
+isn't for the newest query it sent, and the dialog adopts only a reply to a
+query sent since it opened.
 
 ### 4.1 Install / pause / resume / uninstall
 

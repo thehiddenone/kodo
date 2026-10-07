@@ -2594,6 +2594,47 @@ previous working set is still live and the session the user is in keeps working.
 
 ---
 
+### 7.6m `local_llm.hf_search` — search Hugging Face for GGUF repos
+
+Control connection only. Backs the search-as-you-type field of kodo-vsix's
+"Add local LLM (GGUF) from huggingface.com" dialog (doc/LLM_REGISTRY.md
+§4.0c). The repo id the user picks goes to the Model Importer via `agent.run`
+(§7.4h).
+
+```json
+{ "type": "local_llm.hf_search", "query": "qwen 27b" }
+```
+
+→ `local_llm.hf_search.ack`
+
+```json
+{ "query": "qwen 27b",
+  "results": [ { "repo_id": "unsloth/Qwen3.8-27B-GGUF", "author": "unsloth",
+                 "publisher_tier": "known", "downloads": 6566855, "likes": 4901,
+                 "gated": false, "last_modified": "2026-08-20T10:11:12.000Z",
+                 "base_model": "Qwen/Qwen3.8-27B", "license": "apache-2.0",
+                 "in_catalog": true } ],
+  "error": "" }
+```
+
+- Unlike the `local_llm.*` mutations of §7.6, it replies to the request
+  itself and never with `local_llm.registry_state`.
+- `query` is echoed exactly as sent, so a client can drop a reply to text the
+  user has typed past. Each search is answered from its own server task, so
+  replies can arrive out of order.
+- `results` holds at most 20 repos carrying the `gguf` tag. They are ordered
+  by `publisher_tier` (`"top"`, then `"known"`, then `"other"`), and by
+  downloads within each tier. `base_model`/`license` are the repo's
+  `base_model:`/`license:` tag values, `""` when it has none. `in_catalog`
+  means an entry the local registry serves already uses the repo.
+- A query shorter than 2 characters after trimming replies `results: []`
+  without reaching the Hub.
+- A Hub failure (unreachable, HTTP error, unreadable reply, 8-second timeout)
+  replies `results: []` with a non-empty `error`. The client shows the error
+  inline rather than as a toast.
+- The server never sends `hf_token.request` for a search; it uses its own
+  `HF_TOKEN`, if any.
+
 ### 7.7 ⟪planned⟫ — standalone rules management, credential push
 
 Persistent user-defined allow rules (FR-SEC-07) — generalized `(executable,

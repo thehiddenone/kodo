@@ -2140,3 +2140,89 @@ async def test_skills_install_local_does_not_scan_recursively(
 
     assert payload["ok"] is False
     assert "SKILL.md" in str(payload["error"])
+
+
+# ---------------------------------------------------------------------------
+# local_llm.hf_search — the "add a local LLM" dialog's repo search
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def hf_models_api(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[list[str], None]:
+    """A local stand-in for the Hub's ``/api/models``; yields the queries it saw."""
+    import huggingface_hub
+    import huggingface_hub.constants
+    from aiohttp import web
+
+    seen: list[str] = []
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        seen.append(request.query.get("search", ""))
+        if request.query.get("search") == "boom":
+            return web.Response(status=502)
+        return web.json_response(
+            [
+                {"id": "someone-else/Popular-GGUF", "downloads": 900, "tags": ["gguf"]},
+                {"id": "ggml-org/Original-GGUF", "downloads": 1, "tags": ["license:mit"]},
+            ]
+        )
+
+    app = web.Application()
+    app.router.add_get("/api/models", handler)
+    api = TestServer(app)
+    await api.start_server()
+    monkeypatch.setattr(huggingface_hub.constants, "ENDPOINT", f"http://127.0.0.1:{api.port}")
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: None)
+    yield seen
+    await api.close()
+
+
+async def test_hf_search_replies_with_ranked_results(
+    ws: aiohttp.ClientWebSocketResponse, hf_models_api: list[str]
+) -> None:
+    from kodo.llms.model_import import HF_TOP_PUBLISHERS
+
+    assert "ggml-org" in HF_TOP_PUBLISHERS, (
+        "this test's fake Hub reply assumes ggml-org is a top publisher; "
+        "update the test if that list ever changes"
+    )
+    await _control_hello(ws)
+    req = _make_request("local_llm.hf_search", query="original")
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+
+    assert resp.payload["type"] == "local_llm.hf_search.ack"
+    assert resp.payload["query"] == "original"
+    assert resp.payload["error"] == ""
+    results = cast("list[dict[str, object]]", resp.payload["results"])
+    assert [r["repo_id"] for r in results] == [
+        "ggml-org/Original-GGUF",
+        "someone-else/Popular-GGUF",
+    ]
+    assert results[0]["license"] == "mit"
+    assert hf_models_api == ["original"]
+
+
+async def test_hf_search_short_query_never_reaches_the_hub(
+    ws: aiohttp.ClientWebSocketResponse, hf_models_api: list[str]
+) -> None:
+    await _control_hello(ws)
+    req = _make_request("local_llm.hf_search", query="q")
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+
+    assert resp.payload["results"] == [] and resp.payload["error"] == ""
+    assert hf_models_api == []
+
+
+async def test_hf_search_hub_failure_replies_with_an_error(
+    ws: aiohttp.ClientWebSocketResponse, hf_models_api: list[str]
+) -> None:
+    await _control_hello(ws)
+    req = _make_request("local_llm.hf_search", query="boom")
+    await ws.send_str(req.to_json())
+    resp = await _recv_response(ws, req.id)
+
+    assert resp.payload["type"] == "local_llm.hf_search.ack"
+    assert resp.payload["results"] == []
+    assert "HTTP 502" in str(resp.payload["error"])

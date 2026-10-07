@@ -1,4 +1,4 @@
-"""What the importer reads from Hugging Face: a repo's card and files, and GGUF headers.
+"""What the importer reads from Hugging Face: repo search, a repo's card and files, GGUF headers.
 
 :class:`HubClient` is the seam between the import logic and the network —
 :class:`HuggingFaceHub` is the real one, tests pass a fake. Both answer in
@@ -10,23 +10,29 @@ from __future__ import annotations
 
 import asyncio
 import ssl
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 
 import aiohttp
 import certifi
 import huggingface_hub
+import huggingface_hub.constants
 from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
 
 from kodo.llms.local import GgufMetadata, LocalModelError, read_gguf_metadata
 
 from ._errors import ModelImportError
 
-__all__ = ["HubClient", "HuggingFaceHub", "RepoFile", "RepoSnapshot"]
+__all__ = ["HubClient", "HuggingFaceHub", "RepoFile", "RepoSearchHit", "RepoSnapshot"]
 
 #: Longest model card returned; a card past it is cut and flagged.
 _README_MAX_BYTES = 40_000
 _README_TIMEOUT = aiohttp.ClientTimeout(total=30)
+#: A search backs search-as-you-type, so it gives up well before the client does.
+_SEARCH_TIMEOUT = aiohttp.ClientTimeout(total=8)
+#: The fields a search asks the Hub to return for every hit.
+_SEARCH_EXPAND = ("downloads", "likes", "tags", "gated", "lastModified")
 _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
@@ -78,8 +84,44 @@ class RepoSnapshot:
     files: tuple[RepoFile, ...]
 
 
+@dataclass(frozen=True)
+class RepoSearchHit:
+    """One repository a Hub search matched.
+
+    Attributes:
+        repo_id: The repository id (``"unsloth/Qwen3.8-27B-GGUF"``).
+        downloads: The Hub's recent download count.
+        likes: The repo's likes.
+        gated: Whether downloading needs an accepted license and a token.
+        last_modified: ISO 8601 timestamp of the last commit, ``""`` if unknown.
+        tags: The repo's tags (``"base_model:…"``, ``"license:…"``, …).
+    """
+
+    repo_id: str
+    downloads: int
+    likes: int
+    gated: bool
+    last_modified: str
+    tags: tuple[str, ...]
+
+
 class HubClient(Protocol):
-    """Where repository snapshots and GGUF headers come from."""
+    """Where repository searches, snapshots and GGUF headers come from."""
+
+    async def search(self, query: str, limit: int) -> tuple[RepoSearchHit, ...]:
+        """Find GGUF repositories whose id contains *query*, most downloaded first.
+
+        Args:
+            query (str): Text to look for in repository ids.
+            limit (int): Most hits to return.
+
+        Returns:
+            tuple[RepoSearchHit, ...]: The hits, by downloads, descending.
+
+        Raises:
+            ModelImportError: The Hub could not be reached or refused the search.
+        """
+        ...
 
     async def snapshot(self, repo_id: str) -> RepoSnapshot:
         """Fetch one repository's metadata, card and file list.
@@ -131,13 +173,86 @@ def _card_list(card: object, key: str) -> tuple[str, ...]:
     return ()
 
 
+def _int_field(raw: Mapping[str, object], key: str) -> int:
+    value = raw.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _search_hit(raw: object) -> RepoSearchHit | None:
+    if not isinstance(raw, dict):
+        return None
+    fields = cast(dict[str, object], raw)
+    repo_id = fields.get("id")
+    if not isinstance(repo_id, str) or "/" not in repo_id:
+        return None
+    last_modified = fields.get("lastModified")
+    tags = fields.get("tags")
+    return RepoSearchHit(
+        repo_id=repo_id,
+        downloads=_int_field(fields, "downloads"),
+        likes=_int_field(fields, "likes"),
+        # ``false`` for an open repo, else the gating mode ("auto"/"manual").
+        gated=bool(fields.get("gated")),
+        last_modified=last_modified if isinstance(last_modified, str) else "",
+        tags=tuple(t for t in tags if isinstance(t, str)) if isinstance(tags, list) else (),
+    )
+
+
 class HuggingFaceHub:
     """:class:`HubClient` over the public Hugging Face Hub.
 
     Reads anonymously unless ``huggingface_hub`` finds a token of its own
     (``HF_TOKEN`` or a ``huggingface-cli login``), which is then used for the
-    card, the file list and the GGUF range requests alike.
+    search, the card, the file list and the GGUF range requests alike.
     """
+
+    async def search(self, query: str, limit: int) -> tuple[RepoSearchHit, ...]:
+        """Find GGUF repositories whose id contains *query*, most downloaded first.
+
+        Calls the Hub's ``/api/models`` listing directly (filtered to the
+        ``gguf`` tag) rather than ``huggingface_hub.list_models``, so a network
+        failure surfaces as one aiohttp error type under one short timeout.
+
+        Args:
+            query (str): Text to look for in repository ids.
+            limit (int): Most hits to return.
+
+        Returns:
+            tuple[RepoSearchHit, ...]: The hits, by downloads, descending.
+
+        Raises:
+            ModelImportError: The Hub could not be reached or refused the search.
+        """
+        token = huggingface_hub.get_token()
+        headers = {"authorization": f"Bearer {token}"} if token else {}
+        params: list[tuple[str, str]] = [
+            ("search", query),
+            ("filter", "gguf"),
+            ("sort", "downloads"),
+            ("direction", "-1"),
+            ("limit", str(limit)),
+            *(("expand[]", field) for field in _SEARCH_EXPAND),
+        ]
+        url = f"{huggingface_hub.constants.ENDPOINT}/api/models"
+        payload: object = None
+        try:
+            async with (
+                aiohttp.ClientSession(timeout=_SEARCH_TIMEOUT) as http,
+                http.get(url, params=params, headers=headers, ssl=_SSL_CONTEXT) as resp,
+            ):
+                status = resp.status
+                if status == 200:
+                    payload = await resp.json()
+        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+            raise ModelImportError(
+                f"Hugging Face search failed: {exc or type(exc).__name__}"
+            ) from exc
+        if status != 200:
+            raise ModelImportError(f"Hugging Face search failed with HTTP {status}")
+        if not isinstance(payload, list):
+            raise ModelImportError("Hugging Face search returned an unexpected response")
+        hits = (_search_hit(raw) for raw in cast(list[object], payload))
+        return tuple(hit for hit in hits if hit is not None)
 
     async def snapshot(self, repo_id: str) -> RepoSnapshot:
         """Fetch one repository's metadata, card and file list.
