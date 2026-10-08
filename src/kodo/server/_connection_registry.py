@@ -14,7 +14,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from aiohttp import WSMsgType, web
+from aiohttp import WSCloseCode, WSMsgType, web
 
 from kodo.common import Envelope
 from kodo.transport import Connection
@@ -22,13 +22,23 @@ from kodo.transport import Connection
 from ._session import Session
 from ._session_manager import SessionManager
 
-__all__ = ["ConnectionRegistry", "Request", "HandlerFn", "CONNECTION_REGISTRY_KEY"]
+__all__ = [
+    "ConnectionRegistry",
+    "Request",
+    "HandlerFn",
+    "CONNECTION_REGISTRY_KEY",
+    "SERVER_STATE_HEADER",
+]
 
 _log = logging.getLogger(__name__)
 
 # Delay between accepting a `server.shutdown` and actually stopping, so the
 # ack frame leaves the socket before the transport is closed under it.
 _SHUTDOWN_ACK_GRACE = 0.1
+
+# Response header on a refused upgrade, so a client can tell "this server is
+# going away — relaunch it" from an ordinary connection failure.
+SERVER_STATE_HEADER = "X-Kodo-Server-State"
 
 
 @dataclass
@@ -78,11 +88,20 @@ class ConnectionRegistry:
         self.__idle_grace = 0.0
         self.__idle_timer: asyncio.TimerHandle | None = None
         self.__gpu_release_cb: Callable[[], Awaitable[None]] | None = None
+        # Latched once a shutdown is committed: from then on new upgrades are
+        # refused and departures no longer re-arm the idle reap.
+        self.__stopping = False
+        self.__sockets: set[web.WebSocketResponse] = set()
 
     @property
     def manager(self) -> SessionManager:
         """The session manager this registry routes to."""
         return self.__manager
+
+    @property
+    def stopping(self) -> bool:
+        """``True`` once a shutdown is committed (see :meth:`begin_shutdown`)."""
+        return self.__stopping
 
     def register_handler(self, msg_type: str, fn: HandlerFn) -> None:
         """Register a handler for a client-request ``payload.type``."""
@@ -127,8 +146,39 @@ class ConnectionRegistry:
             _log.warning("server.shutdown requested (%s) but no stop callback is set", reason)
             return
         _log.info("server.shutdown requested (%s) — stopping the singleton server", reason)
-        self.__cancel_idle()
+        self.begin_shutdown()
         asyncio.get_event_loop().call_later(_SHUTDOWN_ACK_GRACE, self.__stop_cb)
+
+    def begin_shutdown(self) -> None:
+        """Commit to shutting down: refuse new connections from now on.
+
+        Every shutdown path calls this at its commit point — the idle self-reap
+        and :meth:`request_shutdown` do it themselves, and ``kodo.server``'s
+        stop callback does it for SIGTERM/SIGINT. Without it, a window
+        connecting in the gap between that commit and aiohttp closing the
+        listening socket would see a successful handshake and then be dropped
+        mid-``hello``. A refused upgrade gets HTTP 503 with
+        :data:`SERVER_STATE_HEADER` ``: stopping`` instead. Idempotent.
+        """
+        if not self.__stopping:
+            _log.info("Shutdown committed — refusing new WebSocket connections")
+        self.__stopping = True
+        self.__cancel_idle()
+
+    async def close_connections(self) -> None:
+        """Close every open WebSocket with 1001 (going away).
+
+        Wired into the app's ``on_shutdown``. aiohttp does not close WebSockets
+        on its own during ``runner.cleanup()``: it waits for each open handler
+        until its shutdown timeout (about a minute) before cancelling it. All
+        that time the dying process holds its port and PID, so neither a
+        relaunching window nor a successor server can take over. Closing them
+        here ends every handler at once and tells each window, with a clean
+        close code, that the server is going away.
+        """
+        self.begin_shutdown()
+        for ws in list(self.__sockets):
+            await ws.close(code=WSCloseCode.GOING_AWAY, message=b"kodo-server is shutting down")
 
     def set_gpu_release_hook(self, callback: Callable[[], Awaitable[None]]) -> None:
         """Free local-inference GPU memory as soon as the last window leaves.
@@ -145,35 +195,59 @@ class ConnectionRegistry:
         """
         self.__gpu_release_cb = callback
 
-    async def run_ws(self, request: web.Request) -> web.WebSocketResponse:
-        """Accept one WebSocket upgrade and process its frames until it closes."""
+    async def run_ws(self, request: web.Request) -> web.StreamResponse:
+        """Accept one WebSocket upgrade and process its frames until it closes.
+
+        Refused with HTTP 503 once a shutdown is committed (see
+        :meth:`begin_shutdown`).
+        """
+        if self.__stopping:
+            _log.info("Refusing a WebSocket from %s — the server is shutting down", request.remote)
+            return web.Response(
+                status=503,
+                text="kodo-server is shutting down",
+                headers={SERVER_STATE_HEADER: "stopping"},
+            )
         ws = web.WebSocketResponse(heartbeat=30.0)
-        await ws.prepare(request)
-        conn = Connection(ws)
+        # Counted before the handshake rather than after it: prepare() writes
+        # the 101 and then yields, and the idle reap must not be able to fire
+        # between a client seeing its socket open and this connection
+        # counting as present.
         self.__active += 1
         self.__cancel_idle()
-        _log.info("WebSocket connected from %s (conn=%s)", request.remote, conn.id[:8])
-
+        conn: Connection | None = None
         try:
+            await ws.prepare(request)
+            if self.__stopping:
+                # The shutdown was committed while this handshake was in
+                # flight, after close_connections() took its snapshot.
+                await ws.close(code=WSCloseCode.GOING_AWAY, message=b"kodo-server is shutting down")
+                return ws
+            conn = Connection(ws)
+            self.__sockets.add(ws)
+            _log.info("WebSocket connected from %s (conn=%s)", request.remote, conn.id[:8])
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     await self.__dispatch(conn, msg.data)
                 elif msg.type == WSMsgType.ERROR:
                     _log.error("WebSocket protocol error: %s", ws.exception())
         finally:
-            # No cancellation here: pending server-initiated requests belong
-            # to the session's SessionChannel now, not this Connection, so
-            # they outlive the socket (see kodo.transport._connection). Only
-            # genuine session teardown ends one, via its worker task being
-            # cancelled.
-            self.__manager.drop_connection(conn)
-            conn.cancel_response_futures()
+            self.__sockets.discard(ws)
+            if conn is not None:
+                # No cancellation here: pending server-initiated requests
+                # belong to the session's SessionChannel now, not this
+                # Connection, so they outlive the socket (see
+                # kodo.transport._connection). Only genuine session teardown
+                # ends one, via its worker task being cancelled.
+                self.__manager.drop_connection(conn)
+                conn.cancel_response_futures()
             self.__active -= 1
-            if self.__active <= 0:
+            if self.__active <= 0 and not self.__stopping:
                 self.__arm_idle()
                 if self.__gpu_release_cb is not None:
                     asyncio.create_task(self.__release_gpu_if_idle())
-            _log.info("WebSocket disconnected (conn=%s)", conn.id[:8])
+            if conn is not None:
+                _log.info("WebSocket disconnected (conn=%s)", conn.id[:8])
 
         return ws
 
@@ -204,6 +278,7 @@ class ConnectionRegistry:
             self.__arm_idle()
             return
         _log.info("No clients for %.0fs — self-reaping singleton server", self.__idle_grace)
+        self.begin_shutdown()
         self.__stop_cb()
 
     async def __release_gpu_if_idle(self) -> None:

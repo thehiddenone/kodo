@@ -38,10 +38,13 @@ def main(argv: list[str] | None = None) -> None:
 
     lifecycle = Lifecycle(config.port)
     lifecycle.check_and_write()
-
-    app = create_app(config)
-
-    asyncio.run(_serve(app, config, lifecycle))
+    try:
+        app = create_app(config)
+        asyncio.run(_serve(app, config, lifecycle))
+    finally:
+        # Normally already gone (``_serve`` removes it); this covers a startup
+        # that failed before serving, e.g. the port being taken.
+        lifecycle.remove()
 
 
 async def _serve(app: web.Application, config: Config, lifecycle: Lifecycle) -> None:
@@ -57,14 +60,28 @@ async def _serve(app: web.Application, config: Config, lifecycle: Lifecycle) -> 
 
     site = web.TCPSite(runner, host="127.0.0.1", port=config.port)
     await site.start()
+    lifecycle.mark_serving()
     _log.info("Listening on ws://127.0.0.1:%d/ws", config.port)
 
+    registry = app[CONNECTION_REGISTRY_KEY]
     stop_event = asyncio.Event()
-    lifecycle.install_signal_handlers(stop_event.set)
+
+    def _stop() -> None:
+        # The commit point of every shutdown path (idle self-reap,
+        # `server.shutdown`, SIGTERM/SIGINT). Refuse new windows and advertise
+        # "stopping" before teardown starts: teardown takes a while (both
+        # llama-servers and every engine stop), and a launcher reading the
+        # discovery file meanwhile must wait for this process to exit rather
+        # than attach to a server that is about to vanish.
+        registry.begin_shutdown()
+        lifecycle.mark_stopping()
+        stop_event.set()
+
+    lifecycle.install_signal_handlers(_stop)
 
     # Singleton self-reap: shut down once no window has been connected for the
     # idle grace period (the launcher relaunches on the next window).
-    app[CONNECTION_REGISTRY_KEY].set_idle_shutdown(stop_event.set, _IDLE_SHUTDOWN_SECONDS)
+    registry.set_idle_shutdown(_stop, _IDLE_SHUTDOWN_SECONDS)
 
     try:
         await stop_event.wait()

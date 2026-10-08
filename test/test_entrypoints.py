@@ -62,26 +62,38 @@ class _ServeLog:
     """What one ``kodo-server`` run did, as observed from its collaborators."""
 
     __configs: list[Config]
-    __discovery_while_serving: list[dict[str, int]]
+    __discovery_while_serving: list[dict[str, object]]
+    __discovery_during_cleanup: list[dict[str, object]]
     __idle_graces: list[float]
     __signal_callbacks: int
     __cleanups: int
+    __shutdown_commits: int
 
     def __init__(self) -> None:
         """Start with nothing observed."""
         self.__configs = []
         self.__discovery_while_serving = []
+        self.__discovery_during_cleanup = []
         self.__idle_graces = []
         self.__signal_callbacks = 0
         self.__cleanups = 0
+        self.__shutdown_commits = 0
 
     @property
     def configs(self) -> tuple[Config, ...]:
         return tuple(self.__configs)
 
     @property
-    def discovery_while_serving(self) -> tuple[dict[str, int], ...]:
+    def discovery_while_serving(self) -> tuple[dict[str, object], ...]:
         return tuple(self.__discovery_while_serving)
+
+    @property
+    def discovery_during_cleanup(self) -> tuple[dict[str, object], ...]:
+        return tuple(self.__discovery_during_cleanup)
+
+    @property
+    def shutdown_commits(self) -> int:
+        return self.__shutdown_commits
 
     @property
     def idle_graces(self) -> tuple[float, ...]:
@@ -110,8 +122,14 @@ class _ServeLog:
         self.__signal_callbacks += 1
 
     def saw_cleanup(self) -> None:
-        """Record the app's ``on_shutdown`` firing."""
+        """Record the app's ``on_shutdown`` firing, plus the discovery file's content then."""
         self.__cleanups += 1
+        discovery = Path.home() / ".kodo" / "kodo-server"
+        self.__discovery_during_cleanup.append(json.loads(discovery.read_text("ascii")))
+
+    def saw_shutdown_commit(self) -> None:
+        """Record the registry being told the shutdown is committed."""
+        self.__shutdown_commits += 1
 
 
 class _FakeConnectionRegistry:
@@ -136,6 +154,10 @@ class _FakeConnectionRegistry:
         self.__log.saw_idle_shutdown(grace_seconds)
         if self.__reap_at_once:
             asyncio.get_running_loop().call_soon(callback)
+
+    def begin_shutdown(self) -> None:
+        """Record the shutdown commit."""
+        self.__log.saw_shutdown_commit()
 
 
 def _install_server_fakes(
@@ -181,11 +203,15 @@ def test_server_serves_until_the_idle_reap_then_cleans_up(
     server_main.main(["--port", "0"])
 
     assert [c.port for c in log.configs] == [0]
-    assert log.discovery_while_serving == ({"pid": os.getpid(), "port": 0},)
+    assert log.discovery_while_serving == ({"pid": os.getpid(), "port": 0, "state": "serving"},)
     assert log.signal_callbacks == 1
     assert len(log.idle_graces) == 1
     assert log.idle_graces[0] > 0
+    assert log.shutdown_commits == 1
     assert log.cleanups == 1
+    # Teardown runs with the file already saying "stopping", so no launcher
+    # attaches to the server while it is going away.
+    assert log.discovery_during_cleanup == ({"pid": os.getpid(), "port": 0, "state": "stopping"},)
     assert not (home / ".kodo" / "kodo-server").exists()
 
 
@@ -194,8 +220,26 @@ def test_server_stops_on_a_shutdown_signal(home: Path, monkeypatch: pytest.Monke
 
     server_main.main(["--port", "0"])
 
-    assert log.discovery_while_serving == ({"pid": os.getpid(), "port": 0},)
+    assert log.discovery_while_serving == ({"pid": os.getpid(), "port": 0, "state": "serving"},)
+    assert log.shutdown_commits == 1
     assert log.cleanups == 1
+    assert log.discovery_during_cleanup == ({"pid": os.getpid(), "port": 0, "state": "stopping"},)
+    assert not (home / ".kodo" / "kodo-server").exists()
+
+
+def test_server_that_fails_to_start_releases_the_discovery_file(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A startup failure after the claim must not leave a file pointing at a dead server."""
+
+    def _broken_app(_config: Config) -> web.Application:
+        raise RuntimeError("app construction failed")
+
+    monkeypatch.setattr(server_main, "create_app", _broken_app)
+
+    with pytest.raises(RuntimeError, match="app construction failed"):
+        server_main.main(["--port", "0"])
+
     assert not (home / ".kodo" / "kodo-server").exists()
 
 

@@ -314,7 +314,9 @@ After `hello.ack` the client pushes the session's starting toggles to the server
 
 ### 4.2 Shutdown
 
-Either side may close the WebSocket. The server closes it on graceful shutdown (FR-SRV-07). The client closes it when the VS Code window closes. Neither side sends a protocol-level "goodbye" frame; closing the WS is sufficient.
+Either side may close the WebSocket. The server closes it on graceful shutdown (FR-SRV-07) with close code **1001 (going away)**: `ConnectionRegistry.close_connections` runs as the first `on_shutdown` hook (before that, aiohttp's cleanup waited about a minute on every open socket). The client closes it when the VS Code window closes. Neither side sends a protocol-level "goodbye" frame; closing the WS is sufficient.
+
+Once a shutdown is committed (idle self-reap, `server.shutdown`, or SIGTERM/SIGINT), the server refuses new upgrades with **HTTP 503** and the header `X-Kodo-Server-State: stopping`, and rewrites the discovery file's `state` to `"stopping"` before teardown starts (doc/STATE_AND_LIFECYCLE.md, attach-race update 2026-10-07). A client must treat either signal as "this server is going away — relaunch it", not as a broken environment. kodo-vsix probes the discovery file after every failed or dropped control connection (`decideAttach` / `connectFailureResponse` in `src/server-attach-policy.ts`).
 
 Closing the socket never stops the server — it is a singleton shared by every window and reaps itself on its own idle timeout. The one way a client can stop it on purpose is the `server.shutdown` command (§7.6g), which exists for a single job: getting the server off `~/.kodo/venv` so `py-kodo` can be upgraded in place.
 
@@ -2244,9 +2246,11 @@ the `py-kodo` installed in `~/.kodo/venv`. The server *is* the obstacle there
 locks on the very native-extension files uv must overwrite — so a
 "shut down only if idle" rule would mean an extension that can never update
 its own backend on the machines that need it most. Losing an in-flight turn
-once per extension update is the accepted cost; every other window's
-`WsClient` reconnects to the freshly launched server on its own, and sessions
-rehydrate through the ordinary reconnect path (§5.11).
+once per extension update is the accepted cost. Every other window's
+connection is closed with 1001 (§4.2), and its control client relaunches the
+server; that relaunch queues behind the upgrading window's environment lock,
+so it reuses the server the upgrading window spawned. Sessions rehydrate
+through the ordinary reconnect path (§5.11).
 
 Client-side sequencing, all inside `ServerLauncher.launch` (kodo-vsix
 `src/server-launcher.ts`), under a cross-window lock so simultaneously

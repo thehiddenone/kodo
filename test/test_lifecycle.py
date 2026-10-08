@@ -1,7 +1,7 @@
 """Behavior tests for kodo.server._lifecycle.Lifecycle.
 
 The singleton server advertises itself via the ``kodo-server`` discovery file
-(``~/.kodo/kodo-server``, JSON ``{pid, port}``).  Tests observe filesystem
+(``~/.kodo/kodo-server``, JSON ``{pid, port, state}``).  Tests observe filesystem
 side-effects only; the home dir is redirected to a temp path via the ``root``
 argument so the real ``~/.kodo`` is never touched.
 """
@@ -14,7 +14,10 @@ import json
 import os
 import signal
 import socket
+import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,8 +38,13 @@ def lifecycle(root: Path) -> Lifecycle:
     return Lifecycle(_FREE_PORT, root=root)
 
 
-def _read(path: Path) -> dict[str, int]:
+def _read(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="ascii"))
+
+
+def _write(lifecycle: Lifecycle, content: dict[str, object]) -> None:
+    lifecycle.discovery_path.parent.mkdir(parents=True, exist_ok=True)
+    lifecycle.discovery_path.write_text(json.dumps(content), encoding="ascii")
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +73,7 @@ def test_check_and_write_creates_discovery_file(lifecycle: Lifecycle) -> None:
 def test_check_and_write_records_pid_and_port(lifecycle: Lifecycle) -> None:
     lifecycle.check_and_write()
     data = _read(lifecycle.discovery_path)
-    assert data == {"pid": os.getpid(), "port": _FREE_PORT}
+    assert data == {"pid": os.getpid(), "port": _FREE_PORT, "state": "starting"}
 
 
 def test_check_and_write_creates_home_dir_if_absent(lifecycle: Lifecycle, root: Path) -> None:
@@ -192,7 +200,11 @@ def test_check_and_write_replaces_an_unparseable_file(lifecycle: Lifecycle, cont
 
     lifecycle.check_and_write()
 
-    assert _read(lifecycle.discovery_path) == {"pid": os.getpid(), "port": _FREE_PORT}
+    assert _read(lifecycle.discovery_path) == {
+        "pid": os.getpid(),
+        "port": _FREE_PORT,
+        "state": "starting",
+    }
 
 
 def test_check_and_write_exits_if_recorded_port_is_busy(root: Path) -> None:
@@ -317,3 +329,128 @@ async def test_install_signal_handlers_falls_back_when_loop_api_unavailable(
     assert callable(handler)
     handler(signal.SIGINT, None)
     assert called == [True]
+
+
+# ---------------------------------------------------------------------------
+# state transitions — mark_serving / mark_stopping
+# ---------------------------------------------------------------------------
+
+
+def test_mark_serving_then_stopping_advertises_each_state(lifecycle: Lifecycle) -> None:
+    lifecycle.check_and_write()
+
+    lifecycle.mark_serving()
+    assert _read(lifecycle.discovery_path) == {
+        "pid": os.getpid(),
+        "port": _FREE_PORT,
+        "state": "serving",
+    }
+
+    lifecycle.mark_stopping()
+    assert _read(lifecycle.discovery_path)["state"] == "stopping"
+
+
+def test_mark_stopping_leaves_no_temporary_file_behind(lifecycle: Lifecycle) -> None:
+    lifecycle.check_and_write()
+    lifecycle.mark_stopping()
+    assert [p.name for p in lifecycle.discovery_path.parent.iterdir()] == ["kodo-server"]
+
+
+def test_mark_state_does_not_touch_a_file_owned_by_another_process(lifecycle: Lifecycle) -> None:
+    other = {"pid": 1, "port": _FREE_PORT, "state": "serving"}
+    _write(lifecycle, other)
+
+    lifecycle.mark_serving()
+    lifecycle.mark_stopping()
+
+    assert _read(lifecycle.discovery_path) == other
+
+
+def test_mark_state_without_a_file_does_not_create_one(lifecycle: Lifecycle) -> None:
+    lifecycle.mark_stopping()
+    assert not lifecycle.discovery_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# check_and_write — state-aware liveness
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("state", ["starting", "serving"])
+def test_check_and_write_exits_when_a_live_server_holds_its_port(root: Path, state: str) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        busy_port = listener.getsockname()[1]
+        lifecycle = Lifecycle(_FREE_PORT, root=root)
+        _write(lifecycle, {"pid": os.getpid(), "port": busy_port, "state": state})
+        with pytest.raises(SystemExit):
+            lifecycle.check_and_write()
+
+
+def test_check_and_write_exits_for_a_live_starting_server_not_yet_listening(
+    lifecycle: Lifecycle,
+) -> None:
+    """A server that claimed the file but has not bound its port yet is alive."""
+    _write(lifecycle, {"pid": os.getpid(), "port": _FREE_PORT, "state": "starting"})
+    with pytest.raises(SystemExit):
+        lifecycle.check_and_write()
+
+
+def test_check_and_write_treats_serving_with_a_free_port_as_a_recycled_pid(
+    lifecycle: Lifecycle,
+) -> None:
+    """A serving server holds its port until it advertises stopping, so a live
+    PID behind a free port is some unrelated process that reused the PID."""
+    _write(lifecycle, {"pid": os.getpid(), "port": _FREE_PORT, "state": "serving"})
+
+    lifecycle.check_and_write()
+
+    assert _read(lifecycle.discovery_path)["state"] == "starting"
+
+
+def test_check_and_write_waits_for_a_stopping_server_to_exit(lifecycle: Lifecycle) -> None:
+    """A stopping predecessor is waited out, then the file is taken over."""
+    predecessor = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.6)"])
+    try:
+        _write(lifecycle, {"pid": predecessor.pid, "port": _FREE_PORT, "state": "stopping"})
+        # Reap the child as soon as it exits, so its PID stops existing (an
+        # unreaped zombie still answers the liveness probe).
+        reaper = threading.Thread(target=predecessor.wait)
+        reaper.start()
+        started = time.monotonic()
+
+        lifecycle.check_and_write()
+
+        assert time.monotonic() - started >= 0.3
+        assert _read(lifecycle.discovery_path) == {
+            "pid": os.getpid(),
+            "port": _FREE_PORT,
+            "state": "starting",
+        }
+        reaper.join()
+    finally:
+        predecessor.kill()
+        predecessor.wait()
+
+
+def test_check_and_write_gives_up_on_a_stopping_server_that_never_exits(root: Path) -> None:
+    lifecycle = Lifecycle(_FREE_PORT, root=root, handoff_timeout=0.3)
+    # This test process stands in for a predecessor stuck in its teardown.
+    stuck = {"pid": os.getpid(), "port": _FREE_PORT, "state": "stopping"}
+    _write(lifecycle, stuck)
+
+    with pytest.raises(SystemExit):
+        lifecycle.check_and_write()
+
+    assert _read(lifecycle.discovery_path) == stuck
+
+
+def test_check_and_write_replaces_a_stopping_file_whose_server_is_gone(
+    lifecycle: Lifecycle,
+) -> None:
+    _write(lifecycle, {"pid": 999999999, "port": _FREE_PORT, "state": "stopping"})
+
+    lifecycle.check_and_write()
+
+    assert _read(lifecycle.discovery_path)["pid"] == os.getpid()

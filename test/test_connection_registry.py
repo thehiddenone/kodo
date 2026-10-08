@@ -8,7 +8,9 @@ owns any pending-future state at all (see kodo.transport._connection and
 doc/SECURITY.md §7 / WS_PROTOCOL.md §8).
 
 Also covers `request_shutdown` — the client-requested stop backing the
-`server.shutdown` command (WS_PROTOCOL.md §7.6g).
+`server.shutdown` command (WS_PROTOCOL.md §7.6g) — and the shutdown latch
+(`begin_shutdown` / `close_connections`) that keeps windows from attaching to a
+server that is going away.
 
 Uses a duck-typed fake manager/session rather than a real SessionManager —
 ConnectionRegistry only ever calls `manager.session_for_connection(conn.id)`
@@ -25,11 +27,11 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
-from aiohttp import web
+from aiohttp import WSCloseCode, WSMsgType, WSServerHandshakeError, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kodo.common import Envelope
-from kodo.server import ConnectionRegistry, Request
+from kodo.server import SERVER_STATE_HEADER, ConnectionRegistry, Request
 from kodo.transport import Connection
 
 
@@ -454,3 +456,95 @@ async def test_protocol_error_drops_the_connection() -> None:
         await _wait_until(lambda: bool(manager.dropped))
 
     assert len(manager.dropped) == 1
+
+
+# ---------------------------------------------------------------------------
+# Shutdown latch — begin_shutdown / close_connections
+# ---------------------------------------------------------------------------
+
+
+async def _assert_refused_as_stopping(client: TestClient) -> None:
+    with pytest.raises(WSServerHandshakeError) as excinfo:
+        await client.ws_connect("/ws")
+    assert excinfo.value.status == 503
+    assert excinfo.value.headers is not None
+    assert excinfo.value.headers.get(SERVER_STATE_HEADER) == "stopping"
+
+
+@pytest.mark.asyncio
+async def test_new_connections_are_refused_once_shutdown_is_committed() -> None:
+    registry = ConnectionRegistry(_LiveManager())  # type: ignore[arg-type]
+    assert registry.stopping is False
+
+    async with _serve(registry) as client:
+        registry.begin_shutdown()
+        assert registry.stopping is True
+        await _assert_refused_as_stopping(client)
+
+
+@pytest.mark.asyncio
+async def test_request_shutdown_refuses_new_connections_before_it_stops() -> None:
+    """Between the ack and the actual stop, a newcomer must not get a socket
+    that is about to be torn down under it."""
+    stopped: list[bool] = []
+    registry = ConnectionRegistry(_LiveManager())  # type: ignore[arg-type]
+
+    async with _serve(registry) as client:
+        registry.set_idle_shutdown(lambda: stopped.append(True), 3600.0)
+        registry.request_shutdown("upgrade")
+        await _assert_refused_as_stopping(client)
+        assert stopped == []
+
+
+@pytest.mark.asyncio
+async def test_idle_reap_refuses_connections_arriving_after_it_fired() -> None:
+    stopped: list[bool] = []
+    registry = ConnectionRegistry(_LiveManager())  # type: ignore[arg-type]
+
+    async with _serve(registry) as client:
+        registry.set_idle_shutdown(lambda: stopped.append(True), 0.01)
+        await _wait_until(lambda: bool(stopped))
+        await _assert_refused_as_stopping(client)
+
+
+@pytest.mark.asyncio
+async def test_close_connections_closes_open_sockets_as_going_away() -> None:
+    manager = _LiveManager()
+    registry = ConnectionRegistry(manager)  # type: ignore[arg-type]
+
+    async with _serve(registry) as client, client.ws_connect("/ws") as ws:
+        await ws.send_str(Envelope(kind="request", payload={"type": "x"}).to_json())
+        await _recv(ws)  # the connection is registered server-side
+
+        await asyncio.wait_for(registry.close_connections(), _TIMEOUT)
+
+        msg = await ws.receive(timeout=_TIMEOUT)
+        assert msg.type == WSMsgType.CLOSE
+        assert ws.close_code == WSCloseCode.GOING_AWAY
+        await _wait_until(lambda: bool(manager.dropped))
+        assert registry.stopping is True
+
+
+@pytest.mark.asyncio
+async def test_a_window_leaving_a_stopping_server_does_not_rearm_the_reap() -> None:
+    """Once the shutdown is committed, the last window leaving must not start
+    a second, independent stop."""
+    stopped: list[bool] = []
+    released: list[bool] = []
+    registry = ConnectionRegistry(_LiveManager())  # type: ignore[arg-type]
+
+    async def _release() -> None:
+        released.append(True)
+
+    registry.set_gpu_release_hook(_release)
+
+    async with _serve(registry) as client:
+        registry.set_idle_shutdown(lambda: stopped.append(True), 0.02)
+        async with client.ws_connect("/ws") as ws:
+            await ws.send_str(Envelope(kind="request", payload={"type": "x"}).to_json())
+            await _recv(ws)
+            registry.begin_shutdown()
+        await asyncio.sleep(0.1)  # several grace periods
+
+    assert stopped == []
+    assert released == []

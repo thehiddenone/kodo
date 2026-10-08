@@ -2882,6 +2882,10 @@ async def _start_background(app: web.Application) -> None:
     )
 
 
+async def _close_connections(app: web.Application) -> None:
+    await app[CONNECTION_REGISTRY_KEY].close_connections()
+
+
 async def _stop_background(app: web.Application) -> None:
     server = LlamaServer.get_active_llama_server()
     if server is not None and server.is_running:
@@ -2896,7 +2900,7 @@ async def _release_llama_gpu() -> None:
         await server.stop()
 
 
-async def _ws_endpoint(request: web.Request) -> web.WebSocketResponse:
+async def _ws_endpoint(request: web.Request) -> web.StreamResponse:
     return await request.app[CONNECTION_REGISTRY_KEY].run_ws(request)
 
 
@@ -3051,6 +3055,9 @@ def create_app(config: Config) -> web.Application:
     app.on_startup.append(
         _start_background_headless if sandbox_root is not None else _start_background
     )
+    # Sockets first: until every window's socket is closed, aiohttp's cleanup
+    # waits on its handler (ConnectionRegistry.close_connections says why).
+    app.on_shutdown.append(_close_connections)
     app.on_shutdown.append(_stop_background)
 
     _log.info("Kōdo server %s — home=%s port=%d", _SERVER_VERSION, layout.kodo_dir, config.port)

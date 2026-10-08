@@ -5,7 +5,8 @@
 > **Singleton lifecycle update (2026-06-21).** The server is a machine-wide
 > **singleton** rooted at the global `~/.kodo` (the per-workspace `.kodo-workspace`
 > is gone; sessions/logs/settings live under `~/.kodo`). It advertises itself via
-> the `~/.kodo/kodo-server` **discovery file** (`{pid, port}`). On start it
+> the `~/.kodo/kodo-server` **discovery file** (`{pid, port}`; since 2026-10-07
+> also `state` — see the attach-race update below). On start it
 > `sys.exit(1)` if an existing file's **PID is alive OR its port is busy**,
 > otherwise it deletes the stale file and claims it. The VS Code launcher mirrors
 > this: it reuses a live server (port busy / pid alive) and only spawns when the
@@ -37,6 +38,45 @@
 > means an extension that never manages to update its backend. Windows whose
 > server vanished under them reconnect to the freshly launched one via the
 > normal reconnect path.
+>
+> **Attach-race hardening (2026-10-07).** Closing VS Code and reopening it
+> within the ~5 s idle grace used to end in a needless `~/.kodo/venv` rebuild:
+> the launcher's TCP probe found the old server alive, decided to reuse it,
+> and the server self-reaped before the control WebSocket connected. Nothing
+> then relaunched it, so the client burned its 10 × 2 s reconnect budget and
+> the only remedy left was the rebuild, which "worked" because it relaunched.
+> The fix spans both repos:
+>
+> - **Discovery `state`** — `"starting"` (claimed with an exclusive create,
+>   port not bound yet) → `"serving"` (after bind) → `"stopping"` (written at
+>   the shutdown commit, *before* teardown). `kodo.server.__main__._serve`
+>   routes every stop path (idle reap, `server.shutdown`, SIGTERM/SIGINT)
+>   through one callback that calls `ConnectionRegistry.begin_shutdown()`,
+>   then `Lifecycle.mark_stopping()`, then sets the stop event.
+> - **Server start-up handoff** — `Lifecycle.check_and_write` waits up to
+>   `handoff_timeout` (30 s) for a `"stopping"` predecessor to exit instead of
+>   `sys.exit(1)`. `"serving"` with a free port means the PID was recycled, so
+>   the file is stale. A file with no `state` (an older server) is judged by
+>   PID/port as before.
+> - **Refuse during stop** — after `begin_shutdown()`, `run_ws` answers new
+>   upgrades with HTTP 503 and `X-Kodo-Server-State: stopping`. A connection
+>   is counted *before* `ws.prepare()`, so the reap cannot fire between a
+>   client seeing "open" and the server counting it.
+> - **Close sockets on shutdown** — `ConnectionRegistry.close_connections`
+>   (first `on_shutdown` hook) closes every socket with 1001 (going away).
+>   Without it, aiohttp's `runner.cleanup()` waited about a minute (its
+>   shutdown timeout) on each open WebSocket handler, holding the port and
+>   PID. That was long enough to defeat the vsix upgrade path's 20 s + 5 s
+>   exit wait.
+> - **Client (kodo-vsix `server-attach-policy.ts`)** — `decideAttach` mirrors
+>   the rules above: reuse, `await-exit` for `"stopping"`, or spawn. A reused
+>   server is connected to immediately (the 1.5 s delay only applies after a
+>   spawn). If the control connection fails because a server the window *had*
+>   (connected to, or decided to reuse) is gone, the window relaunches it for
+>   free. A genuine start failure escalates: retry after 3 s, then rebuild the
+>   venv, then show the error dialog. Once a `WsClient` has connected it never
+>   gives up (backoff capped at 10 s), and session tabs are kicked to
+>   reconnect whenever the control connection opens.
 
 This document covers how Kodo represents, persists, and recovers state across cold starts, interruptions, and normal operation. It assumes the file-native model from [CLAUDE.md](../CLAUDE.md) — sub-agents read and write the project's **real files** directly via `filesystem`/`edit_file`/`create_file`/`create_directory`/`read_file`; a per-file, append-only `.jsonl` evolution log (`kodo.guided_state`) tracks each document's revision/review history, with status always derived from the last line.
 

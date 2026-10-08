@@ -2226,3 +2226,25 @@ async def test_hf_search_hub_failure_replies_with_an_error(
     assert resp.payload["type"] == "local_llm.hf_search.ack"
     assert resp.payload["results"] == []
     assert "HTTP 502" in str(resp.payload["error"])
+
+
+async def test_closing_the_server_with_a_window_connected_is_prompt() -> None:
+    """Teardown closes open windows' sockets itself (1001, going away) instead
+    of waiting out aiohttp's shutdown timeout — the dying server would
+    otherwise hold its port and PID for about a minute, blocking any relaunch."""
+    srv = TestServer(create_app(Config()))
+    await srv.start_server()
+    http = aiohttp.ClientSession()
+    try:
+        conn = await http.ws_connect(f"http://127.0.0.1:{srv.port}/ws")
+        await _hello(conn)
+
+        await asyncio.wait_for(srv.close(), 10.0)
+
+        msg = await conn.receive(timeout=_RECV_TIMEOUT)
+        while msg.type == aiohttp.WSMsgType.TEXT:  # events queued before the close
+            msg = await conn.receive(timeout=_RECV_TIMEOUT)
+        assert msg.type == aiohttp.WSMsgType.CLOSE
+        assert conn.close_code == aiohttp.WSCloseCode.GOING_AWAY
+    finally:
+        await http.close()
