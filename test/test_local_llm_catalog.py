@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import sys
 from collections.abc import Callable
@@ -389,14 +388,72 @@ def test_a_custom_entry_cannot_take_a_user_catalog_name(tmp_path: Path) -> None:
         )
 
 
-def test_a_user_catalog_entry_is_removed_by_deleting_its_file_not_via_the_api(
+_HEADS = {"q8_0": {"repo_id": "acme/heads", "filename": "mtp.gguf", "quant_type": "Q8_0"}}
+
+
+def test_removing_a_user_only_entry_deletes_its_file_heads_and_family_directory(
     tmp_path: Path,
 ) -> None:
-    _user_only_entry(tmp_path)
+    path = _user_only_entry(tmp_path)
+    _write(path.parent / MTP_SIDECARS_FILENAME, _HEADS)
+    set_knobs(tmp_path, "my-model", {"temperature": "low"})
 
-    with pytest.raises(ValueError, match=re.escape(str(user_catalog_dir(tmp_path)))):
-        remove_local_entry(tmp_path, "my-model")
-    assert "my-model" in get_local_registry(tmp_path)
+    remove_local_entry(tmp_path, "my-model")
+
+    assert "my-model" not in get_local_registry(tmp_path)
+    assert not path.parent.exists()
+    assert prune_unknown_model_state(tmp_path) == ()  # its state went with it
+
+
+def test_removing_one_of_two_user_entries_keeps_the_family_and_its_heads(tmp_path: Path) -> None:
+    path = _user_only_entry(tmp_path)
+    _user_only_entry(tmp_path, name="my-other-model")
+    heads = _write(path.parent / MTP_SIDECARS_FILENAME, _HEADS)
+
+    remove_local_entry(tmp_path, "my-model")
+
+    assert not path.exists()
+    assert heads.is_file()
+    assert "my-other-model" in get_local_registry(tmp_path)
+
+
+def test_removing_the_last_user_entry_keeps_a_family_directory_holding_other_files(
+    tmp_path: Path,
+) -> None:
+    path = _user_only_entry(tmp_path)
+    readme = path.parent / "README.md"
+    readme.write_text("notes", encoding="utf-8")
+
+    remove_local_entry(tmp_path, "my-model")
+
+    assert not path.exists()
+    assert readme.is_file()
+
+
+def test_removing_a_user_override_reverts_to_the_shipped_entry_and_its_defaults(
+    tmp_path: Path,
+) -> None:
+    shipped = get_local_registry(tmp_path)[_SAMPLE_FILE.stem]
+    path = _copy_to_user_catalog(tmp_path, _SAMPLE_FILE)
+    _write(path, {**_read(path), "description": "my edit"})
+    heads = _write(path.parent / MTP_SIDECARS_FILENAME, _HEADS)
+    default_selections = get_knob_selections(tmp_path, shipped)
+    set_knobs(tmp_path, shipped.name, {"temperature": "low"})
+
+    remove_local_entry(tmp_path, shipped.name)
+
+    assert not path.exists()
+    # The family still has shipped entries, so the user head list is theirs now.
+    assert heads.is_file()
+    heads.unlink()
+    assert get_local_registry(tmp_path)[shipped.name] == shipped
+    assert get_knob_selections(tmp_path, shipped) == default_selections
+
+
+def test_a_shipped_entry_without_a_user_override_cannot_be_removed(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="built-in"):
+        remove_local_entry(tmp_path, _SAMPLE_FILE.stem)
+    assert _SAMPLE_FILE.stem in get_local_registry(tmp_path)
 
 
 # ---------------------------------------------------------------------------

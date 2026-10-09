@@ -1,5 +1,8 @@
 """Writing the user catalog: one entry file, or one family's ``mtp_sidecars.json``.
 
+Also the one way an entry file leaves it again,
+:func:`delete_user_catalog_entry`.
+
 Everything the loader reads (:mod:`._catalog_files`, :mod:`._mtp_sidecars`)
 can also be written, so a tool can add a model without a hand-edited file.
 Both writers validate the body with the loader's own parser *before* touching
@@ -16,12 +19,13 @@ since two user files with one stem make the scan load neither.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 from pathlib import Path
 
-from ._catalog import user_catalog_dir
+from ._catalog import builtin_catalog_entries, user_catalog_dir
 from ._catalog_files import entry_to_catalog_json, parse_catalog_entry
 from ._mtp_sidecars import (
     MTP_SIDECARS_FILENAME,
@@ -34,6 +38,7 @@ from ._types import LocalLLMEntry
 __all__ = [
     "BASE_LLM_PATTERN",
     "ENTRY_NAME_PATTERN",
+    "delete_user_catalog_entry",
     "user_catalog_entry_path",
     "write_user_catalog_entry",
     "write_user_mtp_sidecars",
@@ -145,4 +150,44 @@ def write_user_mtp_sidecars(
     parse_mtp_sidecars(body)
     path = user_catalog_dir(kodo_dir) / base_llm / MTP_SIDECARS_FILENAME
     _write_json_atomically(path, body)
+    return path
+
+
+def delete_user_catalog_entry(kodo_dir: Path, name: str) -> Path:
+    """Delete the user catalog file defining *name*, and its family's leftovers.
+
+    When that was the last entry of a family no shipped entry belongs to, the
+    family's ``mtp_sidecars.json`` goes too (heads with no quant to draft for),
+    and so does the family directory if nothing else is left in it. A family
+    that still has a shipped entry keeps its user ``mtp_sidecars.json`` — it
+    is that shipped family's head list now.
+
+    Deleting a file does not touch any download; the caller uninstalls first
+    (or after), or the startup purge deletes the GGUF of the now-unknown name.
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        name: The entry name (file stem).
+
+    Returns:
+        Path: The file deleted.
+
+    Raises:
+        ValueError: If no user catalog file is named *name*.
+    """
+    path = user_catalog_entry_path(kodo_dir, name)
+    if path is None:
+        raise ValueError(f"the user catalog has no entry named {name!r}")
+    path.unlink()
+    family = path.parent
+    entries_left = any(
+        p.suffix == ".json" and p.name != MTP_SIDECARS_FILENAME and not p.name.startswith(".")
+        for p in family.iterdir()
+    )
+    shipped_family = any(e.base_llm == family.name for e in builtin_catalog_entries())
+    if not entries_left and not shipped_family:
+        (family / MTP_SIDECARS_FILENAME).unlink(missing_ok=True)
+        # A README or other user file still there keeps the directory.
+        with contextlib.suppress(OSError):
+            family.rmdir()
     return path

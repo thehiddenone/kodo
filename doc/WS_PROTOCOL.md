@@ -17,9 +17,11 @@ share; everything else is internal.
 > - **Every client→server frame except `hello` MUST carry `payload.session_id`.**
 >   The server routes the frame to that session; an unknown id replies with an
 >   `error` (`code:"unknown_session"`).
-> - **`hello`** carries `{client, version, window_id, session_id?}`. With no
+> - **`hello`** carries `{client, version, window_id, session_id?, greet?}`. With no
 >   `session_id` the server mints a new session; with one it resumes that session
->   (load from disk + crash-resume). `hello.ack` returns the assigned
+>   (load from disk + crash-resume). `greet: false` (new session only) skips the
+>   opening greeting (§5.9i) — sent for a session the client is about to start
+>   with `agent.run` (§7.4h). `hello.ack` returns the assigned
 >   `session_id`. If the requested session is already held by another live
 >   window, `hello.ack` carries `error:"session_in_use"` and the client opens a
 >   fresh session. (`workspace_root` was removed from `hello.ack`.)
@@ -308,7 +310,7 @@ A brand-new session always starts on its active model's family-default `thinking
 
 Immediately after the ack the server **also pushes** a `state` event (§5.1) and, if the resumed session has history, a `session.history` event (§5.11). The redundant `state` keeps first-connect and reconnect on identical client logic.
 
-For a brand-new session only, `hello` also kicks off a background task that writes and pushes the session's opening greeting — see `session.greeting` (§5.9i). Fire-and-forget: it is not part of the ack and never delays it.
+For a brand-new session only, `hello` also kicks off a background task that writes and pushes the session's opening greeting — see `session.greeting` (§5.9i). Fire-and-forget: it is not part of the ack and never delays it. A `hello` carrying `greet: false` skips it; kodo-vsix sends that for a session it is about to start with `agent.run` (§7.4h), since nobody chats with a non-interactive agent.
 
 After `hello.ack` the client pushes the session's starting toggles to the server: a brand-new session sends `agent.set` (§7.4) with an empty name — letting the server resolve `resolve_top_agent`'s own default rather than the client tracking one — plus `edit_control.set`/`command_control.set`, while a resumed one adopts the persisted values carried in the ack's own `state` and re-sends only the Edit/Command pair (kodo-vsix `session/mode-toggle-controller.ts`, `applyNewSessionDefaults` / `applyResumedState`). There is no project-level `.kodo/settings.json` in this path — the workflow is per-session state in the session's own `transient.json`, not a project preference.
 
@@ -805,7 +807,7 @@ Same shape as §5.9g, one event per mid-stream tool-call-argument detector (doc/
 
 ### 5.9i `session.greeting` — a brand-new session's opening greeting
 
-Fired once per brand-new session (never for a resumed one), from a background task (`runtime._engine._greeting.SessionGreeter`) kicked off the moment `hello` creates the session (§4.1) — never awaited, so it cannot delay `hello.ack` or anything else in the handshake. Replaces kodo-vsix's own previously-hardcoded empty-state placeholder ("Hello there. I'm Kodo. Ready to build something awesome.").
+Fired once per brand-new session (never for a resumed one, nor for one whose `hello` carried `greet: false` — a session about to be started by `agent.run`, §7.4h), from a background task (`runtime._engine._greeting.SessionGreeter`) kicked off the moment `hello` creates the session (§4.1) — never awaited, so it cannot delay `hello.ack` or anything else in the handshake. Replaces kodo-vsix's own previously-hardcoded empty-state placeholder ("Hello there. I'm Kodo. Ready to build something awesome.").
 
 ```json
 { "type": "session.greeting", "text": "<kodo>Hello! Ready to help you build something today — think of it like tuning an orchestra before the first note.</kodo>" }
@@ -875,7 +877,8 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
 
 ```json
 { "type": "local_llm.registry_state",
-  "local_registry": [ { "name": "...", "kind": "...", "installed": true,
+  "local_registry": [ { "name": "...", "kind": "...", "user_catalog": false,
+                         "installed": true,
                          "installed_path": "/abs/path/model.gguf" | null,
                          "base_llm": "...", "quant_author": "...", "quant_type": "...",
                          "size_hint": "...", "gpu_tip": "...", "mac_tip": "...",
@@ -946,7 +949,7 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                         "valid_values": null } ] }
 ```
 
-Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. Does **not** carry download progress (see above) — that's read off disk, not this event. `thinking_families` is keyed by `base_llm` (only entries that support a thinking-tier control appear) and is the single source the client uses to decide which control (if any) to render and what tiers/default to offer — see doc/LLM_REGISTRY.md §4.5/§4.5a. The *current* tier selection is **not** in this payload and is **not** read off settings.json any more — thinking is a per-session server-tracked value (`state.thinking_level`, §5.1, doc/SESSIONS.md), not a global one keyed by `base_llm`. The **cloud-vendor entries** (`"anthropic"`, `"openai"`, `"meta"`, `"google"`, `"alibaba"`, `"deepseek"`, `"kimi"`, `"openrouter"`, `"bedrock"`) are not derived from any local registry entry above — they are static, always-present keys, one per vendor, each carrying that vendor's own API effort vocabulary (the tier lists genuinely differ per vendor: Google has no `max`, DeepSeek/Kimi have no `medium`, Alibaba jumps `medium` → `xhigh`). Clients must treat both the family set and the tier sets as **open** and read them from this payload rather than hardcoding either.
+Carries the full merged registry (hardcoded + custom) so the webview can just replace its whole card list rather than patching it. `user_catalog` is `true` for an entry a file in `~/.kodo/local_llms/` defines (always `kind: "hardcoded_hf"`; an override of a shipped entry counts) and `false` for everything else — kodo-vsix labels the first *user-installed* and the remaining `hardcoded_hf` entries *built-in*, and only `user_catalog` entries can be passed to `local_llm.remove` besides `custom_*` ones (doc/LLM_REGISTRY.md §4.0). Does **not** carry download progress (see above) — that's read off disk, not this event. `thinking_families` is keyed by `base_llm` (only entries that support a thinking-tier control appear) and is the single source the client uses to decide which control (if any) to render and what tiers/default to offer — see doc/LLM_REGISTRY.md §4.5/§4.5a. The *current* tier selection is **not** in this payload and is **not** read off settings.json any more — thinking is a per-session server-tracked value (`state.thinking_level`, §5.1, doc/SESSIONS.md), not a global one keyed by `base_llm`. The **cloud-vendor entries** (`"anthropic"`, `"openai"`, `"meta"`, `"google"`, `"alibaba"`, `"deepseek"`, `"kimi"`, `"openrouter"`, `"bedrock"`) are not derived from any local registry entry above — they are static, always-present keys, one per vendor, each carrying that vendor's own API effort vocabulary (the tier lists genuinely differ per vendor: Google has no `max`, DeepSeek/Kimi have no `medium`, Alibaba jumps `medium` → `xhigh`). Clients must treat both the family set and the tier sets as **open** and read them from this payload rather than hardcoding either.
 
 Each entry's launch configuration is, unlike thinking level, a **global**
 per-entry selection — not session-scoped — since it changes actual
@@ -1737,6 +1740,11 @@ Refusals change nothing and answer an `error` response:
 | `empty_prompt` | `prompt` is blank |
 | `agent_run_refused` | `name` is unknown or names an interactive agent; or the session already has a conversation or a queued prompt — `agent.run` never converts a used session |
 
+**No greeting.** The client opens the session with `hello` `greet: false`
+(§4.1), so it gets no `session.greeting` (§5.9i). As a backstop for a client
+that did not, an accepted `agent.run` also drops a greeting still being
+written; one already emitted stays.
+
 **The lock.** From then on the session takes no input: `prompt.submit`,
 `agent.set` and `mode.set` answer `error` `session_locked`. Stop, delete and
 everything read-only still work. `interactive` is derived from the stored
@@ -1895,7 +1903,7 @@ download record; nothing on the wire names a head.
 { "type": "local_llm.update", "name": "qwen36-27b" }    // re-fetch: uninstall, then the same install path
 { "type": "local_llm.check_updates", "names": ["qwen36-27b", "gpt-oss-20b"] } // fire-and-forget ETag scan
 { "type": "local_llm.uninstall", "name": "qwen36-27b" } // free the downloaded GGUF, keep the entry (also "cancel")
-{ "type": "local_llm.remove", "name": "my-model" }      // remove a custom entry (uninstalls first if needed)
+{ "type": "local_llm.remove", "name": "my-model" }      // remove a custom or user_catalog entry, and its download
 { "type": "local_llm.registry_get" }   // re-read the registry; replies local_llm.registry_state
 { "type": "local_llm.add_file", "name": "...", "description": "...", "path": "/abs/model.gguf",
   "llama_args": {"--cache-type-k": "q8_0"}, "context_window": 262144 }

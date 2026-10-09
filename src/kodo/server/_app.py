@@ -73,6 +73,7 @@ from kodo.llms import (
     set_knobs,
     set_llama_server_override_path,
     update_profile,
+    user_catalog_entry_names,
 )
 from kodo.llms.llamacpp import (
     LlamaInstall,
@@ -325,7 +326,9 @@ async def _handle_session_hello(
             await req.reply({"type": "hello.ack", "error": "session_in_use"})
             return
     else:
-        session = await req.manager.create(window_id)
+        # `greet: false` — the client is about to `agent.run` this session
+        # (doc/WS_PROTOCOL.md §4.1), so it gets no opening greeting.
+        session = await req.manager.create(window_id, greet=payload.get("greet") is not False)
 
     await req.manager.bind_connection(session, req.connection)
 
@@ -491,10 +494,15 @@ def _local_registry_payload() -> dict[str, object]:
     """
     kodo_dir = kodo_user_dir()
     registry = get_local_registry(kodo_dir)
+    user_catalog = user_catalog_entry_names(kodo_dir)
     local_payload = [
         {
             "name": e.name,
             "kind": e.kind,
+            # Defined by a file in ~/.kodo/local_llms/ (a hardcoded_hf entry
+            # either way) — kodo-vsix's user-installed vs built-in label, and
+            # whether local_llm.remove accepts the name.
+            "user_catalog": e.name in user_catalog,
             "description": e.description,
             "repo_id": e.repo_id,
             "filename": e.filename,
@@ -2520,23 +2528,32 @@ async def _handle_local_llm_add_server_url(req: Request) -> None:
 
 
 async def _handle_local_llm_remove(req: Request) -> None:
+    """Remove a user's entry (MSG_LOCAL_LLM_REMOVE), and its download if it has one.
+
+    The entry goes first: ``remove_local_entry`` is what refuses a shipped
+    entry, so a refused name never loses its download. Only then is the GGUF
+    freed and the family's MTP heads re-judged — after the entry, because a
+    deleted user catalog file can take its family's ``mtp_sidecars.json`` with
+    it, which is what makes those heads stale. A user file that overrode a
+    shipped entry reverts to that entry, not installed.
+    """
     name = str(req.env.payload.get("name", "")).strip()
     kodo_dir = kodo_user_dir()
     try:
         entry = get_local_registry(kodo_dir).get(name)
         is_downloadable = entry is not None and entry.kind in ("hardcoded_hf", "custom_hf")
-        manager = get_local_model_manager(kodo_dir)
-        # get_record (not get_model_path) so a *partial* download record isn't
-        # orphaned in manager-state.json when its registry entry disappears —
-        # get_model_path is None for anything not yet fully installed.
-        if is_downloadable and manager.get_record(name) is not None:
-            await asyncio.to_thread(manager.uninstall, name)
-            _log.info("Uninstalled model %r", name)
-            await asyncio.to_thread(prune_mtp_sidecars, kodo_dir)
         remove_local_entry(kodo_dir, name)
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
         return
+    manager = get_local_model_manager(kodo_dir)
+    # get_record (not get_model_path) so a *partial* download record isn't
+    # orphaned in manager-state.json when its registry entry disappears —
+    # get_model_path is None for anything not yet fully installed.
+    if is_downloadable and manager.get_record(name) is not None:
+        await asyncio.to_thread(manager.uninstall, name)
+        _log.info("Uninstalled model %r", name)
+    await asyncio.to_thread(prune_mtp_sidecars, kodo_dir)
     await _send_registry_state(req)
 
 

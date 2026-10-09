@@ -1150,6 +1150,28 @@ entries follow in the order they were added. kodo-vsix renders — and groups
 by `base_llm` — in exactly the order the server sends, so a user-only family
 slots in alphabetically among the shipped ones.
 
+**Where an entry came from is on the wire.** Each `registry_state` entry
+carries `user_catalog` (WS_PROTOCOL.md §5.12a): `true` exactly when a valid
+user file defines it (`user_catalog_entry_names`) — override or user-only
+alike, since a user file always wins. kodo-vsix labels those cards
+**user-installed** and every other `hardcoded_hf` card **built-in**; `custom_*`
+cards get neither label.
+
+**Removing a user entry** is `local_llm.remove` (§4.1), the same message that
+removes a `custom_*` one; kodo-vsix's **Remove LLM** button sends it, after a
+modal confirmation, on every `user_catalog` card, installed or not.
+`remove_local_entry` deletes the file (`delete_user_catalog_entry`) and drops
+the name's profiles, active profile and knob selections, so an override
+reverts to the shipped entry *with its own defaults*. When the file was the
+last entry of a family no shipped entry belongs to, the family's user
+`mtp_sidecars.json` goes too, and so does the directory unless other files (a
+`README.md`) are still in it; a family with a shipped entry keeps its user
+`mtp_sidecars.json`, which is that family's head list now (§4.0a). A shipped
+entry no user file overrides is refused. Deleting the file by hand still
+works, but leaves the download for the startup purge (§4.1b) — or, for an
+override, to the shipped entry, which then shows the user file's GGUF as
+installed if repo and filename match.
+
 **Adding a shipped model** is adding its file under `catalog/<base_llm>/` (and
 the family's `README.md` for a new family). A new private knob is defined in
 its own `_knobs_<family>.py` and registered in `_knobs_table._ALL_KNOBS`.
@@ -1299,7 +1321,15 @@ quants appear under "Available local LLM quants" when the session's turn ends
 the minimum llama.cpp build and the prose fields; its prompt
 (`agents/agent_kodo_model_importer.md`) fixes each choice with a stated rule —
 tier order `UD-Q<n>_K_XL` > `Q<n>_K_M` > `Q<n>_0` > …, memory = size + 8 GB
-rounded to a Mac tier, tip templates. Everything factual is the service's
+rounded to a Mac tier, tip templates. Attribution is fixed the same way: the
+prompt's repo owner is the **packager** — every entry's `quant_author`, its
+`name` prefix and the `by …` of its `description` — never the GGUF header's
+`general.quantized_by`, which names whose *recipe* was run (huihui-ai ships
+Unsloth `UD-` quants whose headers say `Unsloth`). A derivative (abliterated,
+fine-tuned) joins its original model's family but carries a `variant` token,
+read off the repo name, in `name` and `description`
+(`huihui-ai-qwen38-27b-abliterated-ud-q4-k-xl`), so it never reads like the
+shipped entries beside it. Everything factual is the service's
 (`kodo.llms.model_import.LocalCatalogService`), so a wrong claim cannot reach
 a file:
 
@@ -1438,11 +1468,16 @@ background transfer actually finishes (success or failure), so the
   action — pauses first, then deletes the partial files. Then deletes the
   family's MTP heads if no other quant of the family has a download record
   (§4.0a).
-- **Remove** (`local_llm.remove {name}`) — deregisters a custom entry from
-  `local-llm-registry.json`; if it has *any* download record (finished or
-  partial — checked via `get_record`, not just "fully installed"), uninstalls
-  first to avoid an orphaned partial GGUF. Rejected for `hardcoded_hf`
-  entries.
+- **Remove** (`local_llm.remove {name}`) — removes a user's entry: deregisters
+  a custom entry from `local-llm-registry.json`, or deletes the user catalog
+  file of a `user_catalog` entry (§4.0 — an override reverts to the shipped
+  entry). Rejected — before anything is touched, download included — for a
+  shipped entry no user file overrides. Then, if the name has *any* download
+  record (finished or partial — checked via `get_record`, not just "fully
+  installed"), uninstalls it to avoid an orphaned partial GGUF, and re-judges
+  the MTP heads (`prune_mtp_sidecars`). The entry goes first because it is
+  the check that can refuse, and because a deleted family `mtp_sidecars.json`
+  is what makes that family's downloaded heads stale.
 
 The manager also supports split-GGUF multi-file downloads, mmproj companion
 files, and per-call HF tokens. Split-GGUF downloads and per-call HF tokens

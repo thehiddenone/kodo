@@ -31,6 +31,7 @@ from pathlib import Path
 
 from . import _catalog
 from ._catalog_files import attach_mtp_sidecars, catalog_sort_key
+from ._catalog_write import delete_user_catalog_entry
 from ._io import (
     _CUSTOM_KINDS,
     _all_active_profiles,
@@ -165,37 +166,41 @@ def add_local_entry(kodo_dir: Path, entry: LocalLLMEntry) -> None:
 
 
 def remove_local_entry(kodo_dir: Path, name: str) -> None:
-    """Remove a custom entry from the external collection.
+    """Remove a user's entry: a user catalog file, or a custom one.
+
+    A name defined by a user catalog file (``~/.kodo/local_llms/``) has that
+    file deleted (:func:`~._catalog_write.delete_user_catalog_entry`); when the
+    file overrode a shipped entry of the same name, the shipped entry is
+    served again. Any other name must be a ``custom_*`` entry and is dropped
+    from the external collection.
 
     Does not touch any downloaded GGUF file on disk — callers that want to
-    free disk space should uninstall first via
+    free disk space should uninstall via
     :func:`kodo.llms.llamacpp.get_local_model_manager`'s ``uninstall`` method
-    before removing. Also drops every profile, active-profile selection and
+    as well. Also drops every profile, active-profile selection and
     knob selection stored for *name* — they would otherwise be permanently
-    orphaned (nothing else ever cleans them up, and a future custom entry
-    added under the same name would silently inherit them).
+    orphaned (nothing else ever cleans them up, and a future entry
+    added under the same name would silently inherit them; a reverted shipped
+    entry starts from its own defaults).
 
     Args:
         kodo_dir: User-level ``~/.kodo`` directory.
         name: Entry name to remove.
 
     Raises:
-        ValueError: If *name* is a catalog entry (shipped, or a user catalog
-            file — delete that file instead) or does not exist.
+        ValueError: If *name* is a shipped entry no user file overrides, or
+            does not exist.
     """
-    if any(e.name == name for e in _catalog._HARDCODED_LOCAL_MODELS):
+    if name in _catalog.user_catalog_entry_names(kodo_dir):
+        delete_user_catalog_entry(kodo_dir, name)
+    elif any(e.name == name for e in _catalog._HARDCODED_LOCAL_MODELS):
         raise ValueError(f"{name!r} is a built-in local LLM and cannot be removed")
-    user_entries, _ = _catalog.load_user_catalog(kodo_dir)
-    if any(e.name == name for e in user_entries):
-        raise ValueError(
-            f"{name!r} is defined by a file in {_catalog.user_catalog_dir(kodo_dir)} — "
-            "delete that file to remove it"
-        )
-    external, override = _load_external(kodo_dir)
-    remaining = [e for e in external if e.name != name]
-    if len(remaining) == len(external):
-        raise ValueError(f"No custom local LLM named {name!r}")
-    _save_external(kodo_dir, remaining, override)
+    else:
+        external, override = _load_external(kodo_dir)
+        remaining = [e for e in external if e.name != name]
+        if len(remaining) == len(external):
+            raise ValueError(f"No custom local LLM named {name!r}")
+        _save_external(kodo_dir, remaining, override)
 
     data = _load_raw(kodo_dir)
     all_profiles = _all_profiles(data)

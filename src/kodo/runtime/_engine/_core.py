@@ -387,7 +387,7 @@ class WorkflowEngine(
     # Session lifecycle
     # ------------------------------------------------------------------
 
-    async def start(self, session_id: str, resumed: bool) -> None:
+    async def start(self, session_id: str, resumed: bool, *, greet: bool = True) -> None:
         """Attach the given session and start the worker.
 
         The session id + resumed flag are supplied by the ``SessionManager``
@@ -396,11 +396,16 @@ class WorkflowEngine(
         ``handle_workspace_folders`` (the ``workspace.folders`` push) and
         ``scaffold_new_project``, exactly like Problem Solver. A brand-new
         session also kicks off ``_greeter.start()`` (fire-and-forget, never
-        awaited) to write and push the session's opening greeting.
+        awaited) to write and push the session's opening greeting, unless
+        *greet* is ``False``.
 
         Args:
             session_id (str): Session identifier to attach.
             resumed (bool): ``True`` if an existing session dir was found.
+            greet (bool): ``False`` skips a brand-new session's opening
+                greeting — ``hello``'s ``greet: false``, sent for a session
+                the client is about to start with ``agent.run``. Ignored for
+                a resumed session, which is never greeted.
         """
         self._orch_session_id = session_id
         self._clear_llm_request_logs()
@@ -468,9 +473,11 @@ class WorkflowEngine(
             self._session.thinking_level = self._thinking_level_for_model(base_llm, prefer=None)
             self._transient.update(thinking_level=self._session.thinking_level)
             # Opening greeting (doc/WS_PROTOCOL.md `session.greeting`) — only
-            # for a genuinely brand-new session, never a resumed one.
+            # for a genuinely brand-new session, never a resumed one, and not
+            # for one the client will start with `agent.run` (`greet=False`).
             # Fire-and-forget: never awaited, must not delay `hello.ack`.
-            self._greeter.start()
+            if greet:
+                self._greeter.start()
 
         # Best-effort initial snapshot for the very first `hello.ack` — no
         # `workspace.folders` push has landed yet this connection, so a
@@ -711,6 +718,10 @@ class WorkflowEngine(
             return f"{name!r} is not an agent that agent.run can start"
         if self._main_messages or self._prompt_queued:
             return "agent.run can only start a brand-new session"
+        # Nobody chats with a non-interactive agent, so its session has no
+        # opening greeting; `hello`'s `greet: false` normally prevents one,
+        # this drops one still being written for a client that didn't send it.
+        self._greeter.cancel()
         self._session.top_agent = name
         self._session.interactive = False
         self._session.autonomous = True

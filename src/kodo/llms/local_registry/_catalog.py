@@ -59,6 +59,7 @@ __all__ = [
     "load_user_mtp_sidecars",
     "mtp_sidecars_by_family",
     "user_catalog_dir",
+    "user_catalog_entry_names",
 ]
 
 _log = logging.getLogger(__name__)
@@ -153,6 +154,23 @@ def load_user_catalog(kodo_dir: Path) -> tuple[list[LocalLLMEntry], list[str]]:
     entries, errors = scan_catalog_dir(user_catalog_dir(kodo_dir))
     _report_user_catalog_errors(errors)
     return entries, errors
+
+
+def user_catalog_entry_names(kodo_dir: Path) -> frozenset[str]:
+    """The names of every entry a valid :func:`user_catalog_dir` file defines.
+
+    A user file always wins over a shipped entry of the same name, so these
+    are exactly the served catalog entries that came from the user — the ones
+    kodo-vsix labels *user-installed* and lets the user remove.
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+
+    Returns:
+        frozenset[str]: Entry names; files that fail to load are not included.
+    """
+    entries, _ = load_user_catalog(kodo_dir)
+    return frozenset(entry.name for entry in entries)
 
 
 def _report_user_catalog_errors(errors: list[str]) -> None:

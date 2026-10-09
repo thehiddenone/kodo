@@ -116,14 +116,16 @@ class SessionManager:
     # Open / create
     # ------------------------------------------------------------------
 
-    async def create(self, window_id: str) -> Session:
+    async def create(self, window_id: str, *, greet: bool = True) -> Session:
         """Mint a brand-new session owned by *window_id*.
 
         Args:
             window_id: Stable id of the requesting VS Code window.
+            greet: ``False`` skips the session's opening greeting (``hello``'s
+                ``greet: false``).
         """
         session_id = self.__mint_id()
-        session = await self.__build(session_id, resumed=False)
+        session = await self.__build(session_id, resumed=False, greet=greet)
         self.__owner_window[session_id] = window_id
         _log.info("Session created: %s (window=%s)", session_id, window_id[:8])
         return session
@@ -393,7 +395,7 @@ class SessionManager:
             suffix += 1
         return candidate
 
-    async def __build(self, session_id: str, *, resumed: bool) -> Session:
+    async def __build(self, session_id: str, *, resumed: bool, greet: bool = True) -> Session:
         channel = SessionChannel(Outbox())
         transient = TransientStore(self.__layout.kodo_dir)
         gate = GateOrchestrator(channel, transient)
@@ -411,7 +413,7 @@ class SessionManager:
             session_workspace=session_workspace,
             sandbox_root=self.__sandbox_root,
         )
-        await engine.start(session_id, resumed)
+        await engine.start(session_id, resumed, greet=greet)
         session = Session(
             id=session_id,
             channel=channel,

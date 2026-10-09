@@ -6,7 +6,9 @@ awesome.") with a short, varied greeting written by
 :func:`kodo.titling.generate_greeting` — the same dedicated Qwen3-0.6B
 llama-server :mod:`._titling` uses, a different (input-free, randomly themed)
 prompt. Fired once, fire-and-forget, from :meth:`WorkflowEngine.start`'s
-brand-new-session branch — never for a resumed session. If the titler isn't
+brand-new-session branch — never for a resumed session, nor for one whose
+``hello`` asked for no greeting (``greet: false``: a session the client is
+about to start with ``agent.run``, which nobody chats with). If the titler isn't
 up (not installed, still starting, download in progress, ...) or the
 completion call fails, falls back to a fixed default line rather than
 leaving the session's feed empty. Either way the emitted (and persisted) text
@@ -59,6 +61,18 @@ class SessionGreeter:
             return
         _log.info("SessionGreeter.start: scheduling greeting generation")
         self._task = asyncio.create_task(self._generate_and_emit())
+
+    def cancel(self) -> None:
+        """Drop a greeting still being generated, so it is never emitted.
+
+        Called when ``agent.run`` turns the session non-interactive — a
+        backstop for a client whose ``hello`` did not send ``greet: false``.
+        A greeting already emitted stays as it is; a no-op when none is in
+        flight.
+        """
+        if self._task is not None and not self._task.done():
+            _log.info("SessionGreeter.cancel: dropping the in-flight greeting")
+            self._task.cancel()
 
     async def _generate_and_emit(self) -> None:
         try:

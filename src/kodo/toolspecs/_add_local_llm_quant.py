@@ -57,9 +57,15 @@ ADD_LOCAL_LLM_QUANT: ToolSpec = ToolSpec(
             "quant_type": {**_STR, "description": "As the quantizer spells it, e.g. `UD-Q4_K_XL`."},
             "description": {
                 **_STR,
-                "description": "One line: `<Model name> <quant_type> by <quant_author>`.",
+                "description": "One line: `<Model name> <variant> <quant_type> by "
+                "<quant_author>`, `<variant>` (e.g. `abliterated`) left out for a plain "
+                "requant.",
             },
-            "quant_author": {**_STR, "description": "Who made the quant, e.g. `Unsloth`."},
+            "quant_author": {
+                **_STR,
+                "description": "The GGUF repository's owner — the account the files come "
+                "from (e.g. `huihui-ai`), not the header's `general.quantized_by`.",
+            },
             "llm_author": {**_STR, "description": "Who made the model, e.g. `Alibaba Cloud`."},
             "license_name": {**_STR, "description": "License display name."},
             "license_url": {**_STR, "description": "License URL, or empty."},

@@ -25,7 +25,7 @@ from kodo.llms import CLOUD_THINKING_FAMILIES
 from kodo.project import SessionWorkspace, WorkspaceLayout
 from kodo.runtime import WorkflowEngine
 from kodo.runtime._checkpoints import CheckpointState
-from kodo.runtime._engine import _core
+from kodo.runtime._engine import _core, _greeting
 from kodo.runtime._gates import ApprovalResponse, ConfirmFolderResponse
 from kodo.state import TransientStore
 from kodo.workproducts import WorkProduct
@@ -220,6 +220,70 @@ async def test_start_fresh_session_spawns_worker(tmp_path: Path) -> None:
         assert engine._main_messages == []
     finally:
         await _cancel_worker(engine)
+
+
+def _greetings(sink: _FakeSink) -> list[object]:
+    return [e for e in sink.sent if getattr(e, "payload", {}).get("type") == "session.greeting"]
+
+
+async def _settle() -> None:
+    """Let fire-and-forget tasks (the greeter) run to completion."""
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+async def test_start_fresh_session_greets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _gen() -> str:
+        return "Hi there."
+
+    monkeypatch.setattr(_greeting, "generate_greeting", _gen)
+    engine, _t, sink, _g = _make_engine(tmp_path)
+    try:
+        await engine.start("session-1", resumed=False)
+        await _settle()
+        assert len(_greetings(sink)) == 1
+    finally:
+        await _cancel_worker(engine)
+
+
+async def test_start_fresh_session_without_greet_sends_no_greeting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _gen() -> str:
+        return "Hi there."
+
+    monkeypatch.setattr(_greeting, "generate_greeting", _gen)
+    engine, transient, sink, _g = _make_engine(tmp_path)
+    try:
+        await engine.start("session-1", resumed=False, greet=False)
+        await _settle()
+        assert _greetings(sink) == []
+        assert not any(ln.get("type") == "greeting" for ln in transient.read_session_lines())
+    finally:
+        await _cancel_worker(engine)
+
+
+async def test_agent_run_drops_a_greeting_still_being_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = asyncio.Event()
+
+    async def _slow_gen() -> str:
+        await release.wait()
+        return "Hi there."
+
+    monkeypatch.setattr(_greeting, "generate_greeting", _slow_gen)
+    run_only = next(a.name for a in _REAL_REGISTRY.top_agents() if not a.interactive)
+    engine, _t, sink, _g = _make_engine(tmp_path)
+    await engine.start("session-1", resumed=False)
+    # No worker: the queued prompt must not actually run against the fakes.
+    await _cancel_worker(engine)
+
+    assert await engine.handle_agent_run(run_only, "acme/Model-GGUF", "req-1") is None
+    release.set()
+    await _settle()
+
+    assert _greetings(sink) == []
 
 
 async def test_start_resumed_session_restores_prefs_and_messages(tmp_path: Path) -> None:

@@ -695,8 +695,12 @@ MSG_BEDROCK_MODELS_REFRESH = "bedrock.models.refresh"
 #   local_llm.add_server_url  {name, description, url}
 #   local_llm.uninstall       {name} — frees the downloaded GGUF, keeps the entry
 #                                       (also the "cancel a download" action)
-#   local_llm.remove          {name} — removes a custom entry (hardcoded ones
-#                                       are rejected); uninstalls first if needed
+#   local_llm.remove          {name} — removes a custom entry, or deletes the
+#                                       user catalog file (~/.kodo/local_llms/)
+#                                       of a ``user_catalog`` entry — an
+#                                       override reverts to the shipped entry;
+#                                       uninstalls too if needed (a shipped
+#                                       entry is rejected, its download kept)
 MSG_LOCAL_LLM_ADD_FILE = "local_llm.add_file"
 MSG_LOCAL_LLM_ADD_SERVER_URL = "local_llm.add_server_url"
 MSG_LOCAL_LLM_UNINSTALL = "local_llm.uninstall"

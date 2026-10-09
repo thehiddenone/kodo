@@ -110,6 +110,7 @@ from .local_registry import (
     stale_mtp_sidecar_model_ids,
     strip_reserved_llama_args,
     update_profile,
+    user_catalog_entry_names,
     validate_knobs,
 )
 
@@ -217,5 +218,6 @@ __all__ = [
     "strip_kodo_callouts",
     "strip_reserved_llama_args",
     "update_profile",
+    "user_catalog_entry_names",
     "validate_knobs",
 ]

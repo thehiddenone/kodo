@@ -93,11 +93,13 @@ from ._catalog import (
     builtin_mtp_sidecars,
     load_user_mtp_sidecars,
     user_catalog_dir,
+    user_catalog_entry_names,
 )
 from ._catalog_files import entry_to_catalog_json, parse_catalog_entry
 from ._catalog_write import (
     BASE_LLM_PATTERN,
     ENTRY_NAME_PATTERN,
+    delete_user_catalog_entry,
     user_catalog_entry_path,
     write_user_catalog_entry,
     write_user_mtp_sidecars,
@@ -197,6 +199,7 @@ __all__ = [
     "builtin_mtp_sidecars",
     "clear_llama_server_override_path",
     "context_knob_architectures",
+    "delete_user_catalog_entry",
     "entry_to_catalog_json",
     "get_active_profile",
     "get_knob_selections",
@@ -233,6 +236,7 @@ __all__ = [
     "strip_reserved_llama_args",
     "update_profile",
     "user_catalog_dir",
+    "user_catalog_entry_names",
     "user_catalog_entry_path",
     "validate_knobs",
     "write_user_catalog_entry",

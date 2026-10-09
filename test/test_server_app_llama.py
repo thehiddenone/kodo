@@ -26,7 +26,12 @@ from kodo.common import Envelope
 from kodo.llms import DEFAULT_BEDROCK_REGION, LocalLLMEntry
 from kodo.llms.llamacpp import LlamaInstall, LlamaServer, LlamaServerConfig, RunningServer
 from kodo.llms.local import LocalModelError, LocalModelManager, ModelRecord
-from kodo.llms.local_registry import add_local_entry
+from kodo.llms.local_registry import (
+    BUILTIN_CATALOG_DIR,
+    MTP_SIDECARS_FILENAME,
+    add_local_entry,
+    user_catalog_dir,
+)
 from kodo.project import kodo_user_dir
 from kodo.server import Config, create_app
 from kodo.titling import DEFAULT_HOUSEKEEPER_LLM_ID, HOUSEKEEPER_LLM_OPTIONS
@@ -748,6 +753,91 @@ async def test_remove_of_an_unknown_entry_is_an_error(
     error = await _event(ws)
     assert error["type"] == "error"
     assert "ghost" in str(error["message"])
+
+
+#: Two shipped catalog files: one to override, one to leave alone.
+_SHIPPED_FILE, _OTHER_SHIPPED_FILE = sorted(
+    p for p in BUILTIN_CATALOG_DIR.glob("*/*.json") if p.name != MTP_SIDECARS_FILENAME
+)[:2]
+
+
+def _write_user_catalog_file(base_llm: str, name: str, body: dict[str, object]) -> Path:
+    path = user_catalog_dir(kodo_user_dir()) / base_llm / f"{name}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(body), encoding="utf-8")
+    return path
+
+
+def _shipped_body() -> dict[str, object]:
+    return cast("dict[str, object]", json.loads(_SHIPPED_FILE.read_text(encoding="utf-8")))
+
+
+async def test_registry_marks_exactly_the_entries_user_catalog_files_define(
+    ws: aiohttp.ClientWebSocketResponse, tmp_path: Path
+) -> None:
+    _write_user_catalog_file("My-Family", "my-model", _shipped_body())
+    _write_user_catalog_file(
+        _SHIPPED_FILE.parent.name, _SHIPPED_FILE.stem, {**_shipped_body(), "description": "mine"}
+    )
+    payload = await _add_file(ws, tmp_path / "a.gguf")
+
+    assert _entry(payload, "my-model")["user_catalog"] is True
+    assert _entry(payload, _SHIPPED_FILE.stem)["user_catalog"] is True  # an override
+    assert _entry(payload, _OTHER_SHIPPED_FILE.stem)["user_catalog"] is False
+    assert _entry(payload, "file-model")["user_catalog"] is False  # custom_*, not a file
+
+
+async def test_remove_of_a_user_catalog_entry_deletes_its_file_and_its_download(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    uninstalled: list[str] = []
+    record = ModelRecord(model_id="my-model", repo_id="acme/x", revision="main", commit_hash=None)
+    monkeypatch.setattr(LocalModelManager, "get_record", lambda _self, name: record)
+    monkeypatch.setattr(LocalModelManager, "uninstall", lambda _self, n: uninstalled.append(n))
+    path = _write_user_catalog_file("My-Family", "my-model", _shipped_body())
+
+    await _send(ws, "local_llm.remove", name="my-model")
+
+    assert "my-model" not in _names(await _event(ws))
+    assert not path.exists()
+    assert uninstalled == ["my-model"]
+
+
+async def test_remove_of_a_user_override_reverts_to_the_shipped_entry_not_installed(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    uninstalled: list[str] = []
+    name = _SHIPPED_FILE.stem
+    record = ModelRecord(model_id=name, repo_id="acme/x", revision="main", commit_hash=None)
+    monkeypatch.setattr(LocalModelManager, "get_record", lambda _self, n: record)
+    monkeypatch.setattr(LocalModelManager, "uninstall", lambda _self, n: uninstalled.append(n))
+    _write_user_catalog_file(
+        _SHIPPED_FILE.parent.name, name, {**_shipped_body(), "description": "mine"}
+    )
+
+    await _send(ws, "local_llm.remove", name=name)
+
+    entry = _entry(await _event(ws), name)
+    assert entry["user_catalog"] is False
+    assert entry["description"] == _shipped_body()["description"]
+    assert uninstalled == [name]
+
+
+async def test_remove_of_a_shipped_entry_is_an_error_and_keeps_its_download(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    uninstalled: list[str] = []
+    name = _SHIPPED_FILE.stem
+    record = ModelRecord(model_id=name, repo_id="acme/x", revision="main", commit_hash=None)
+    monkeypatch.setattr(LocalModelManager, "get_record", lambda _self, n: record)
+    monkeypatch.setattr(LocalModelManager, "uninstall", lambda _self, n: uninstalled.append(n))
+
+    await _send(ws, "local_llm.remove", name=name)
+
+    error = await _event(ws)
+    assert error["type"] == "error"
+    assert "built-in" in str(error["message"])
+    assert uninstalled == []
 
 
 # ---------------------------------------------------------------------------
