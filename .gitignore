@@ -1,5 +1,6 @@
 .trash/
-.claude/
+.claude/*
+!.claude/skills/
 .kodo/
 uv.lock
 .DS_Store

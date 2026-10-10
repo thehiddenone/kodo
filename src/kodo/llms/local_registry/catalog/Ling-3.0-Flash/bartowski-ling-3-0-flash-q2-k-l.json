@@ -1,0 +1,28 @@
+{
+  "description": "Ling 3.0 Flash Q2_K_L by bartowski",
+  "repo_id": "bartowski/Ling-3.0-flash-GGUF",
+  "filename": "Ling-3.0-flash-Q2_K_L.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q2_K_L",
+  "size_hint": "46.3 GB",
+  "llm_author": "inclusionAI",
+  "license_name": "MIT License",
+  "license_url": "https://opensource.org/license/mit",
+  "gpu_tip": "~49GB total at 128K context — the smallest build here, for when nothing larger fits. An 8GB GPU (e.g. RTX 4060) plus a 48GB DDR5 kit covers it via llama.cpp's expert offloading.",
+  "mac_tip": "Needs ~49GB — fits a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max) comfortably; too much for 48GB.",
+  "context_window": 262144,
+  "llamacpp_version": 11063,
+  "min_memory": 56,
+  "memory": 64,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {}
+}

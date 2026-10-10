@@ -1,0 +1,28 @@
+{
+  "description": "Ling 3.0 Flash Q8_0 by bartowski",
+  "repo_id": "bartowski/Ling-3.0-flash-GGUF",
+  "filename": "Ling-3.0-flash-Q8_0/Ling-3.0-flash-Q8_0-00001-of-00004.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q8_0",
+  "size_hint": "135.6 GB",
+  "llm_author": "inclusionAI",
+  "license_name": "MIT License",
+  "license_url": "https://opensource.org/license/mit",
+  "gpu_tip": "~139GB total at 128K context. A 16GB GPU (e.g. RTX 4080) runs the attention and shared-expert layers at full speed while llama.cpp's expert offloading puts the routed experts in a 192GB DDR5 kit.",
+  "mac_tip": "Too big for any MacBook Pro (128GB max) — a 256GB Mac Studio (M3 Ultra) runs it comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 11063,
+  "min_memory": 192,
+  "memory": 192,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {}
+}
