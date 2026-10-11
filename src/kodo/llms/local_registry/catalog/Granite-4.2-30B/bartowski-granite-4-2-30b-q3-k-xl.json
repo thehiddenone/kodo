@@ -1,0 +1,30 @@
+{
+  "description": "Granite 4.2 30B Q3_K_XL by bartowski",
+  "repo_id": "bartowski/granite-4.2-30b-GGUF",
+  "filename": "granite-4.2-30b-Q3_K_XL.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q3_K_XL",
+  "size_hint": "15.7 GB",
+  "llm_author": "IBM",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~36GB total at 128K context. Lower quality than the Q4 rung but usable, with embedding and output weights kept at Q8_0. An 8GB GPU (e.g. RTX 5060) plus ~32GB of DDR5 system RAM covers it via llama.cpp's layer offloading. The ~18GB KV cache doesn't shrink with the weights, so the KV cache knob's q4_0 option saves more than dropping another rung.",
+  "mac_tip": "Needs ~36GB — fits a 48GB MacBook Pro comfortably; a 36GB M4 Max or M5 Max is tight.",
+  "context_window": 131072,
+  "llamacpp_version": 11063,
+  "min_memory": 36,
+  "memory": 48,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {
+    "temperature": "t10",
+    "nucleus-sampling": "p095"
+  }
+}

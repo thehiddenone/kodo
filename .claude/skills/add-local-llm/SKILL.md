@@ -100,6 +100,17 @@ Apply guide §4 field by field. Two things specific to this procedure:
 Find the `llamacpp_version` with `llamacpp_first_release.py` on the fix PRs
 or commits you identified (guide §4, the four checks).
 
+For check 2 (which chat parser the template gets, and what was fixed in it
+since the quantizer's build), a blobless clone in the scratchpad is faster
+than the API and has no rate limit:
+`git clone --filter=blob:none https://github.com/ggml-org/llama.cpp`. Then
+read `common_chat_template_detect_params_init` in `common/chat.cpp` to see
+which dedicated parser the template's source matches (null means the
+autoparser). Run `git log <quant build>..HEAD -- common/chat.cpp
+common/chat-peg-parser.cpp common/peg-parser.cpp common/parsers/<parser>.cpp`,
+and use `git tag --contains <sha> | grep '^b' | sort -V | head -1` to get each
+fix's first build.
+
 ## 4a. MTP heads
 
 Only when step 3 settled on shipping heads. Write

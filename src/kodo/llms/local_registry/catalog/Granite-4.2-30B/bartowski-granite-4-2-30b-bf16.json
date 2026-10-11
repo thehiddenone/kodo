@@ -1,0 +1,31 @@
+{
+  "description": "Granite 4.2 30B BF16 by bartowski",
+  "repo_id": "bartowski/granite-4.2-30b-GGUF",
+  "filename": "granite-4.2-30b-bf16/granite-4.2-30b-bf16-00001-of-00002.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "BF16",
+  "size_hint": "58.6 GB",
+  "llm_author": "IBM",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~95GB total at 128K context — the full-precision build, and with all 64 of Granite's layers on full attention the f16 KV cache alone is ~34GB at that length. It is a dense model, so every layer that spills to system RAM costs real speed: a 24GB GPU (e.g. RTX 4090) plus a 96GB DDR5 kit runs it via llama.cpp's layer offloading, but slowly. The quantized builds below are the practical choice.",
+  "mac_tip": "Needs ~95GB — fits a 128GB MacBook Pro (M4 Max or M5 Max) comfortably; a 96GB config is right at the limit.",
+  "context_window": 131072,
+  "llamacpp_version": 11063,
+  "min_memory": 96,
+  "memory": 128,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {
+    "kv-cache": "f16",
+    "temperature": "t10",
+    "nucleus-sampling": "p095"
+  }
+}

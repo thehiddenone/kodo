@@ -1,0 +1,30 @@
+{
+  "description": "Granite 4.2 30B Q6_K by bartowski",
+  "repo_id": "bartowski/granite-4.2-30b-GGUF",
+  "filename": "granite-4.2-30b-Q6_K.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q6_K",
+  "size_hint": "24.5 GB",
+  "llm_author": "IBM",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~44GB total at 128K context. A 16GB GPU (e.g. RTX 4070 Ti Super) plus a 32GB DDR5 kit is enough, with llama.cpp's layer offloading filling in the gap.",
+  "mac_tip": "Needs ~44GB — fits a 64GB MacBook Pro comfortably; a 48GB config is tight.",
+  "context_window": 131072,
+  "llamacpp_version": 11063,
+  "min_memory": 48,
+  "memory": 64,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {
+    "temperature": "t10",
+    "nucleus-sampling": "p095"
+  }
+}

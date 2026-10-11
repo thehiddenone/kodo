@@ -100,9 +100,12 @@ Settle these with the person making the change. Don't pick them silently:
   Every listed head downloads automatically alongside the family's first
   installed quant, so each one costs every user of the family disk and
   bandwidth (Qwen38-Flash-Next's three heads total 14.7 GB). Quote sizes.
+- **Whether to ship the card's sampling recommendation** as
+  `knob_defaults`, when the card gives one (§4, `knob_defaults`). Quote the
+  card's exact wording and whether the GGUF header's `general.sampling.*`
+  keys agree.
 - **Anything the facts leave open**: a model with no clear thinking
-  mechanism, a choice between quant repos, or sampling defaults that differ
-  from house precedent (§4, `knob_defaults`).
+  mechanism, or a choice between quant repos.
 
 Record each decision and its reason in the family README.
 
@@ -133,11 +136,15 @@ message.
     attached only when the registry is served (§4a). Never write a
     `spec-decoding-mtp-head:…` id into an entry file.
 - **`knob_defaults`**: `{"kv-cache": "f16"}` for F16/BF16 weights, `{}`
-  otherwise ([LLM_REGISTRY.md](LLM_REGISTRY.md) §4.6a). No family ships
-  sampling defaults, even when its card recommends some. Ling-3.0-Flash's card
-  asks for temperature 0.6 / top_p 0.95 / top_k 20 and it still uses the
-  shared defaults. Note the card's recommendation in the README instead of
-  silently diverging from precedent.
+  otherwise ([LLM_REGISTRY.md](LLM_REGISTRY.md) §4.6a), plus sampling
+  defaults only when the maintainer chose to ship the card's (§3). Both
+  outcomes have precedent. Ling-3.0-Flash's card asks for temperature 0.6 /
+  top_p 0.95 / top_k 20 and it keeps the shared defaults. Granite-4.2-30B's
+  card insists on temperature 1.0 / top_p 0.95 for every task, and it ships
+  `{"temperature": "t10", "nucleus-sampling": "p095"}`. Map the card's values
+  onto existing knob options; if a value has no matching option, say so
+  instead of adding one silently. Record the choice and the card's wording
+  in the README either way.
 - **`llamacpp_version`**: the oldest llama.cpp build that runs the model
   **correctly for an agent**. This is often newer than the build the quants
   were made with. Check all four:
