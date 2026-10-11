@@ -8,9 +8,13 @@ Prints the repo's card metadata (license, base_model, quantized_by, gated),
 the base model's (license, tags, gated), then one row per quant:
 decimal-GB size as the HF file listing shows it (the catalog's ``size_hint``
 convention), shard count, and the filename to put in a catalog entry (the
-first shard for a split GGUF). ``mmproj-*`` projectors, imatrix files and
-standalone MTP heads are listed separately — they are never quants.
-Set HF_TOKEN for gated repos.
+first shard for a split GGUF). ``mmproj-*`` projectors and imatrix files
+are listed separately, and so are standalone MTP heads (any file under an
+``MTP/`` folder, or named ``mtp-*``/``mtp_*``, wherever it sits) — none of
+them are quants. Heads whose name says ``shared`` are flagged: they borrow
+the target model's tensors and can't be used (confirm with
+``gguf_header.py --tensors``; the name is only a hint). Set HF_TOKEN for
+gated repos.
 """
 
 from __future__ import annotations
@@ -23,6 +27,11 @@ import urllib.request
 from collections import defaultdict
 
 _SHARD = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
+
+
+def _is_mtp_head(path: str) -> bool:
+    parts = path.lower().split("/")
+    return "mtp" in parts[:-1] or parts[-1].startswith(("mtp-", "mtp_"))
 
 
 def _get(url: str) -> object:
@@ -67,12 +76,17 @@ def main() -> None:
     sizes: dict[str, int] = defaultdict(int)
     shards: dict[str, list[str]] = defaultdict(list)
     other: list[str] = []
+    heads: list[str] = []
     for item in tree:
         path = item.get("path", "")
         if item.get("type") != "file" or not path.endswith(".gguf"):
             continue
         base_name = path.rsplit("/", 1)[-1].lower()
-        if base_name.startswith("mmproj") or "imatrix" in base_name or path.lower().startswith("mtp/"):
+        if _is_mtp_head(path):
+            flag = "  [shared: unusable]" if "shared" in base_name else ""
+            heads.append(f"{path}  {item.get('size', 0) / 1e9:.2f} GB{flag}")
+            continue
+        if base_name.startswith("mmproj") or "imatrix" in base_name:
             other.append(f"{path}  {item.get('size', 0) / 1e9:.2f} GB")
             continue
         key = _SHARD.sub("", path)
@@ -83,8 +97,12 @@ def main() -> None:
     for key in sorted(sizes, key=lambda k: -sizes[k]):
         files = sorted(shards[key])
         print(f"{key:70} {sizes[key] / 1e9:8.2f} {len(files):6}  {files[0]}")
+    if heads:
+        print("\nstandalone MTP heads (never quants; candidates for mtp_sidecars.json):")
+        for line in heads:
+            print("  " + line)
     if other:
-        print("\nnot quants (projectors / imatrix / MTP heads):")
+        print("\nnot quants (projectors / imatrix):")
         for line in other:
             print("  " + line)
 

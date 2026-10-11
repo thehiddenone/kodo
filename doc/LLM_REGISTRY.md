@@ -1175,6 +1175,9 @@ installed if repo and filename match.
 **Adding a shipped model** is adding its file under `catalog/<base_llm>/` (and
 the family's `README.md` for a new family). A new private knob is defined in
 its own `_knobs_<family>.py` and registered in `_knobs_table._ALL_KNOBS`.
+The procedure for deriving each field from the GGUF, choosing the llama.cpp
+pin, and the traps earlier families hit, is
+[ADDING_A_LOCAL_LLM.md](ADDING_A_LOCAL_LLM.md).
 
 ### 4.0a MTP sidecar heads — `mtp_sidecars.json`
 
@@ -1712,6 +1715,27 @@ by a new `showAllLocalLlmQuants: boolean` field on `UiSettings`
 `KodoSettingsMessage` round trip, no new WS message. Toggling it re-filters
 the `base_llm` grouping live; a group left with zero visible entries is
 omitted entirely rather than shown with a "(0)" count.
+
+**Text filter boxes.** The "Available local LLM quants" list and the
+collapsible "Installed" group above it each have their own filter box. Both
+are UI-only: the query is Preact component state in `LocalLlmsSection.tsx`,
+never sent to the host, never persisted in `UiSettings`, and reset whenever
+the settings panel is reopened. A filter is inactive (everything shown)
+until it holds at least 3 characters after trimming
+(`LLM_FILTER_MIN_CHARS`); once active, `matchesLlmFilter` in
+`localLlmUtils.ts` keeps an entry when the query is a case-insensitive
+substring of its displayed quant name (`description`, falling back to
+`name`, exactly as the card title does), its `repo_id`, **or** its
+`base_llm` (the group title). A `base_llm` hit keeps every quant of that
+family, so "Gemma4" keeps all quants of both `Gemma4-26B-A4B` and
+`Gemma4-31B`. In the
+available list the text filter applies on top of the RAM/VRAM filter above
+and groups with no match are omitted. Surviving groups keep their
+collapsed/expanded state (collapsed by default) and stay togglable while
+filtering; each group header reads "(matched of total)", e.g. "(3 of 7)",
+where total is the group's size under the RAM/VRAM filter alone, or just
+"(7)" when every entry matched. The "Installed" header's count follows the
+same rule.
 
 **Pre-launch confirmation gate.** Unlike this section's older text below
 might suggest, these two entry-level warnings are no longer purely

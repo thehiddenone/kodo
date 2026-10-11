@@ -115,7 +115,7 @@ The list below describes what's implemented, not a review score of how well each
 
 **Visual Studio Code extension** — streamed agent output, file diffs in VS Code's native diff editor, approval and permission prompts, cumulative cost, checkpoint controls, and a Local Inference Settings panel for browsing, downloading, and managing local models — all without leaving the IDE.
 
-**Narrow extension surfaces** — LLM providers are plugins (Anthropic, OpenAI, Meta, Google, Alibaba, DeepSeek, Kimi, OpenRouter, AWS Bedrock, and llama.cpp today); agents and language toolchains are markdown-defined sub-agents, so adding a role or an ecosystem is meant to be a prompt plus a schema, not an engine change. See [`doc/ADDING_A_SUBAGENT.md`](doc/ADDING_A_SUBAGENT.md).
+**Narrow extension surfaces** — LLM providers are plugins (Anthropic, OpenAI, Meta, Google, Alibaba, DeepSeek, Kimi, OpenRouter, AWS Bedrock, and llama.cpp today); agents and language toolchains are markdown-defined sub-agents, so adding a role or an ecosystem is meant to be a prompt plus a schema, not an engine change. See [`doc/ADDING_A_SUBAGENT.md`](doc/ADDING_A_SUBAGENT.md). Shipping a new built-in local model is a catalog file per quant, not code — see [`doc/ADDING_A_LOCAL_LLM.md`](doc/ADDING_A_LOCAL_LLM.md).
 
 ## Building the project
 

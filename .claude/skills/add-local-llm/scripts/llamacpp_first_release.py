@@ -22,7 +22,9 @@ _API = "https://api.github.com/repos/ggml-org/llama.cpp"
 
 
 def _get(path: str) -> object:
-    req = urllib.request.Request(_API + path, headers={"User-Agent": "kodo-skill", "Accept": "application/vnd.github+json"})
+    req = urllib.request.Request(
+        _API + path, headers={"User-Agent": "kodo-skill", "Accept": "application/vnd.github+json"}
+    )
     token = os.environ.get("GITHUB_TOKEN")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
@@ -35,7 +37,9 @@ def _resolve(arg: str) -> tuple[str, str]:
         pr = _get(f"/pulls/{arg.lstrip('#')}")
         assert isinstance(pr, dict)
         if not pr.get("merged_at"):
-            sys.exit(f"PR #{arg} is not merged (state={pr.get('state')}) — look for the PR that superseded it")
+            sys.exit(
+                f"PR #{arg} is not merged (state={pr.get('state')}) — look for the PR that superseded it"
+            )
         return str(pr["merge_commit_sha"]), str(pr["merged_at"])
     commit = _get(f"/commits/{arg}")
     assert isinstance(commit, dict)

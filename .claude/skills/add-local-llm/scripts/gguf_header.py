@@ -5,7 +5,7 @@ Stdlib only on purpose: it must keep working when kodo's own GGUF reader
 (``kodo.llms.local.read_gguf_metadata``) changes or truncates long strings.
 
 Usage:
-    gguf_header.py <repo_id> <filename-in-repo> [--template OUT.jinja] [--max-array N]
+    gguf_header.py <repo_id> <filename-in-repo> [--template OUT.jinja] [--max-array N] [--tensors]
 
 For a split GGUF pass the first shard (``...-00001-of-0000N.gguf``) — it holds
 the metadata. Set HF_TOKEN for gated repos.
@@ -15,6 +15,11 @@ Prints every scalar key (strings cut at 300 chars), every array key as
 --max-array (default 512), which is what exposes per-layer facts such as
 ``<arch>.attention.head_count_kv`` — and, with --template, writes the full
 ``tokenizer.chat_template`` to a file.
+
+With --tensors it also lists every tensor (name, ggml type id, shape) and
+ends with a verdict on whether the file carries its own ``token_embd`` and
+``output`` tensors: the check for a standalone MTP head being self-contained
+rather than a ``shared-*`` head that borrows them from the running model.
 """
 
 from __future__ import annotations
@@ -49,7 +54,9 @@ class _NeedMore(Exception):
 
 def _fetch(repo: str, filename: str, end: int) -> bytes:
     url = f"https://huggingface.co/{repo}/resolve/main/{filename}"
-    req = urllib.request.Request(url, headers={"Range": f"bytes=0-{end - 1}", "User-Agent": "kodo-skill"})
+    req = urllib.request.Request(
+        url, headers={"Range": f"bytes=0-{end - 1}", "User-Agent": "kodo-skill"}
+    )
     token = os.environ.get("HF_TOKEN")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
@@ -77,18 +84,31 @@ class _Reader:
         return self.take(n).decode("utf-8", "replace")
 
 
-def _parse(buf: bytes) -> list[tuple[str, int, object]]:
+def _parse(
+    buf: bytes, tensors: list[tuple[str, int, list[int]]] | None = None
+) -> list[tuple[str, int, object]]:
     r = _Reader(buf)
     if r.take(4) != b"GGUF":
         sys.exit("not a GGUF file (bad magic) — is the filename right?")
     version = r.unpack("<I", 4)
     _tensor_count = r.unpack("<Q", 8)
     kv_count = int(r.unpack("<Q", 8))  # type: ignore[arg-type]
-    out: list[tuple[str, int, object]] = [("(gguf.version)", 4, version), ("(gguf.tensor_count)", 10, _tensor_count)]
+    out: list[tuple[str, int, object]] = [
+        ("(gguf.version)", 4, version),
+        ("(gguf.tensor_count)", 10, _tensor_count),
+    ]
     for _ in range(kv_count):
         key = r.string()
         vtype = int(r.unpack("<I", 4))  # type: ignore[arg-type]
         out.append((key, vtype, _value(r, vtype)))
+    if tensors is not None:
+        for _ in range(int(_tensor_count)):  # type: ignore[call-overload]
+            name = r.string()
+            n_dims = int(r.unpack("<I", 4))  # type: ignore[arg-type]
+            shape = [int(r.unpack("<Q", 8)) for _ in range(n_dims)]  # type: ignore[arg-type]
+            ggml_type = int(r.unpack("<I", 4))  # type: ignore[arg-type]
+            r.take(8)  # data offset
+            tensors.append((name, ggml_type, shape))
     return out
 
 
@@ -109,13 +129,19 @@ def main() -> None:
     ap.add_argument("filename")
     ap.add_argument("--template", help="write tokenizer.chat_template here")
     ap.add_argument("--max-array", type=int, default=512)
+    ap.add_argument(
+        "--tensors",
+        action="store_true",
+        help="also list tensors and judge MTP-head self-containment",
+    )
     args = ap.parse_args()
 
     window = 4 * 1024 * 1024
     while True:
         buf = _fetch(args.repo, args.filename, window)
+        tensors: list[tuple[str, int, list[int]]] | None = [] if args.tensors else None
         try:
-            kvs = _parse(buf)
+            kvs = _parse(buf, tensors)
             break
         except _NeedMore:
             if len(buf) < window or window >= _MAX_BYTES:
@@ -140,6 +166,20 @@ def main() -> None:
         else:
             text = repr(value) if not isinstance(value, str) else value
             print(f"{key} = {text[:300]}{'…' if len(text) > 300 else ''}")
+
+    if tensors is not None:
+        print(f"\ntensors ({len(tensors)}):")
+        for name, ggml_type, shape in tensors:
+            print(f"  {name}  type={ggml_type}  shape={shape}")
+        names = {name for name, _, _ in tensors}
+        has_embd = "token_embd.weight" in names
+        has_output = "output.weight" in names
+        verdict = (
+            "self-contained"
+            if has_embd and has_output
+            else "NOT self-contained (borrows from the target model)"
+        )
+        print(f"token_embd.weight: {has_embd}  output.weight: {has_output}  -> {verdict}")
 
 
 if __name__ == "__main__":
