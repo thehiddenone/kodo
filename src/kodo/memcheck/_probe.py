@@ -10,6 +10,7 @@ is allocated before llama-server starts listening.
 
 from __future__ import annotations
 
+import re
 import socket
 import subprocess
 import threading
@@ -23,6 +24,9 @@ __all__ = ["MemoryProbe", "ProbeError"]
 _STOP_GRACE_SECONDS = 10.0
 _PUMP_JOIN_SECONDS = 5.0
 _TAIL_LINES = 40
+_BYTES_PER_MIB = 1024 * 1024
+_SHARD_RE = re.compile(r"^(?P<stem>.+)-\d{5}-of-(?P<count>\d{5})\.gguf$")
+_DRAFT_MODEL_FLAGS = ("--model-draft", "-md", "--spec-draft-model")
 
 #: Flags the probe itself adds after the model's own launch flags (so they win).
 PROBE_ARGS: dict[str, str] = {"--fit": "off"}
@@ -91,7 +95,7 @@ class MemoryProbe:
             OSError: llama-server could not be started.
         """
         cmd = [*self.command, "--host", "127.0.0.1", "--port", str(_free_port())]
-        memory_log = LlamaMemoryLog()
+        memory_log = LlamaMemoryLog(mapped_limit_mib=self.__gguf_mib())
         tail: deque[str] = deque(maxlen=_TAIL_LINES)
         settled = threading.Event()
         proc = subprocess.Popen(
@@ -132,6 +136,27 @@ class MemoryProbe:
         raise ProbeError(
             f"llama-server exited (code {proc.returncode}) before loading the model:\n{output}"
         )
+
+    def __gguf_mib(self) -> float:
+        """Total size of every GGUF file the launch loads, in MiB."""
+        files = _gguf_files(self.__model_path)
+        for flag in _DRAFT_MODEL_FLAGS:
+            draft = self.__llama_args.get(flag)
+            if draft:
+                files.extend(_gguf_files(Path(draft)))
+        return sum(path.stat().st_size for path in files if path.is_file()) / _BYTES_PER_MIB
+
+
+def _gguf_files(path: Path) -> list[Path]:
+    """*path*, or every shard of the split GGUF whose first shard *path* is."""
+    match = _SHARD_RE.match(path.name)
+    if match is None:
+        return [path]
+    count = int(match.group("count"))
+    stem = match.group("stem")
+    return [
+        path.with_name(f"{stem}-{index:05d}-of-{count:05d}.gguf") for index in range(1, count + 1)
+    ]
 
 
 def _stop(proc: subprocess.Popen[str]) -> None:

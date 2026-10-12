@@ -9,6 +9,7 @@ an estimate derived from the GGUF header.
 ```
 kodo-memcheck ENTRY [-c|--ctx-size N] [--rope-scale F] [--yarn-orig-ctx N]
                     [-ctk|--cache-type-k T] [-ctv|--cache-type-v T] [--timeout S]
+                    [--dry-run]
 ```
 
 - `ENTRY` is a local-registry entry name, which names the LLM and the quant,
@@ -18,9 +19,44 @@ kodo-memcheck ENTRY [-c|--ctx-size N] [--rope-scale F] [--yarn-orig-ctx N]
 - **stderr** carries the launched command, a MiB breakdown (weights, KV and
   recurrent state, compute, output), the prompt-cache note and the GPU
   warning.
-- Exit code `0` means it measured; `1` means it failed (unknown or missing
-  model, llama.cpp not installed, llama-server exited before loading, or the
-  timeout ran out, 600 s by default).
+- Exit code `0` means it measured or projected; `1` means it failed (unknown
+  or missing model, llama.cpp not installed, llama-server exited before
+  loading, the timeout ran out, 600 s by default, or `--dry-run` got no
+  projection).
+
+## Models too large to load: the `llama-fit-params` projection
+
+Before loading anything, `kodo-memcheck` runs `llama-fit-params`, which
+ships next to `llama-server` in every llama.cpp build, with the same flags.
+That tool builds the model and context without allocating anything and
+reads only the GGUF metadata. An 80.4 GiB GGUF took 0.16 s, peaked at
+237 MiB of RAM and did no disk reads. Its first `memory breakdown` table is
+the projection for the flags as given; the later tables are its own attempts
+to move layers off the GPU, and they're ignored.
+
+- When the projected total is **more than this machine's physical RAM**, the
+  projection is reported instead of loading, and stderr says so.
+- With **`--dry-run`**, the projection is always reported and nothing is
+  loaded. It fails with exit `1` if the build has no `llama-fit-params` or it
+  prints no table.
+- Otherwise the model is loaded and measured as below. If `llama-fit-params`
+  is missing or fails, stderr notes it and the model is loaded without the
+  pre-check.
+
+`llama-fit-params` rejects server-only flags (`--jinja`,
+`--reasoning-format`, `--reasoning-budget`, `--alias`, `--cache-ram`) and the
+speculative-decoding ones (`--spec-type`, `--model-draft`). Each rejected flag
+is dropped and the run retried, and stderr lists what was left out. Dropping
+a speculative flag gets a warning, because the projection then has **no MTP
+draft context**: it can't model one, and the draft takes about 1 GB at 128K
+on Ornith 35B.
+
+Accuracy (b11552, M5 Max) against a real load with double-counted weights
+removed: +48 MiB on Nanbeige 3B at 32K, +29 MiB on K2 Horizon BF16 at 4K, and
++280 MiB (0.2%) at 256K. The KV cache and device compute match exactly, and
+the weights come from tensor sizes, so the projection never double-counts
+them. It overstates host compute buffers by about 2x, so it always errs a
+little high. There's no output-buffer row, so `output` reads 0.
 
 ## What gets launched
 
@@ -62,7 +98,15 @@ reserved for the worst-case batch.
 The sum of every `… buffer size = X MiB` line on every backend:
 
 - **weights**: `load_tensors: … model buffer size`, covering every shard and
-  any draft model.
+  any draft model. Buffers loaded with mmap (`*_Mapped`) are views of the
+  GGUF file's pages, and they can overlap. On Apple Silicon a model's Metal
+  buffers can span the whole file, including the token embedding that is
+  also reported as the `CPU_Mapped` buffer. For K2 Horizon 32B BF16 that's
+  2447.5 + 66337.5 MiB of buffers over a 66348.5 MiB file. Overlapping pages
+  are resident only once, so the mapped buffers count as at most the total
+  size of the GGUF files loaded (all shards of a split GGUF, plus a
+  `--model-draft` head). When this cap applies, a stderr note gives the
+  overlap. llama.cpp's own breakdown table counts the overlap twice.
 - **kv/state**: `KV buffer size` and `RS buffer size` (recurrent state) of
   every context.
 - **compute**: `compute buffer size` of every context. A context that is

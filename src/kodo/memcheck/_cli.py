@@ -4,6 +4,7 @@
 
     kodo-memcheck ENTRY [--ctx-size N] [--rope-scale F] [--yarn-orig-ctx N]
                         [--cache-type-k T] [--cache-type-v T] [--timeout S]
+                        [--dry-run]
 
 Loads ``ENTRY`` (a local-registry entry name, which names LLM + quant) in
 llama-server with the entry's *catalog-default* launch flags — its base args
@@ -12,6 +13,11 @@ profiles — with the command-line overrides layered on top. It reads the
 buffers llama-server allocated from its log, stops it, and prints the total
 to stdout as decimal GB with one decimal place, rounded up: the same unit as a
 catalog entry's ``min_memory``/``memory``. Details go to stderr.
+
+Before loading, it asks the build's ``llama-fit-params`` for a projection,
+which reads only the GGUF metadata. When the projection exceeds this machine's
+physical RAM, or with ``--dry-run``, the projection is reported instead of
+loading the model.
 
 The total is the sum of every buffer on every device, which is the memory the
 model needs only where devices share one memory pool: Apple Silicon, and
@@ -27,6 +33,8 @@ import shlex
 import sys
 from pathlib import Path
 
+import psutil  # type: ignore[import-untyped]
+
 from kodo.llms import (
     LocalLLMEntry,
     get_llama_server_override_path,
@@ -38,6 +46,7 @@ from kodo.project import kodo_user_dir
 
 from ._memory_log import LlamaMemoryLog, MemoryBreakdown
 from ._probe import MemoryProbe, ProbeError
+from ._projection import FitProjection, ProjectionError, find_fit_params
 
 __all__ = ["main"]
 
@@ -90,6 +99,12 @@ def _parser() -> argparse.ArgumentParser:
         default=_DEFAULT_TIMEOUT_SECONDS,
         help=f"Seconds to wait for the model to load (default {_DEFAULT_TIMEOUT_SECONDS:.0f}).",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report llama-fit-params' projection instead of loading the model. Also "
+        "used automatically when the projection exceeds this machine's RAM.",
+    )
     return parser
 
 
@@ -112,8 +127,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     llama_args = _launch_args(entry, args)
-    probe = MemoryProbe(executable, model_path, llama_args, timeout=args.timeout)
     print(f"model:   {entry.name}", file=sys.stderr)
+    try:
+        projected = _project(
+            executable, model_path, llama_args, timeout=args.timeout, required=args.dry_run
+        )
+    except _MemcheckError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if projected is not None and (args.dry_run or _exceeds_ram(projected[1])):
+        _report_projection(*projected)
+        return 0
+
+    probe = MemoryProbe(executable, model_path, llama_args, timeout=args.timeout)
     print(f"command: {shlex.join(probe.command)}", file=sys.stderr)
     try:
         memory_log = probe.run()
@@ -176,17 +202,106 @@ def _launch_args(entry: LocalLLMEntry, args: argparse.Namespace) -> dict[str, st
     return llama_args
 
 
+def _project(
+    executable: Path,
+    model_path: Path,
+    llama_args: dict[str, str],
+    *,
+    timeout: float,
+    required: bool,
+) -> tuple[FitProjection, MemoryBreakdown] | None:
+    """Run ``llama-fit-params``; ``None`` when it can't (only allowed if not *required*)."""
+    fit_params = find_fit_params(executable)
+    if fit_params is None:
+        if required:
+            raise _MemcheckError(f"--dry-run needs llama-fit-params next to {executable}.")
+        print(
+            "note: this llama.cpp build has no llama-fit-params, so the model is loaded "
+            "without checking first whether it fits this machine.",
+            file=sys.stderr,
+        )
+        return None
+    fit = FitProjection(fit_params, model_path, llama_args, timeout=timeout)
+    try:
+        return fit, fit.run()
+    except (ProjectionError, TimeoutError, OSError) as exc:
+        if required:
+            raise _MemcheckError(str(exc)) from exc
+        print(f"note: no projection ({exc}); loading the model.", file=sys.stderr)
+        return None
+
+
+def _exceeds_ram(projection: MemoryBreakdown) -> bool:
+    ram_mib = _physical_ram_mib()
+    if ram_mib is None or projection.total <= ram_mib:
+        return False
+    print(
+        f"note: the projected {_ceil_gb(projection.total):.1f} GB is more than this machine's "
+        f"{_ceil_gb(ram_mib):.1f} GB of RAM, so the model is not loaded.",
+        file=sys.stderr,
+    )
+    return True
+
+
+def _physical_ram_mib() -> float | None:
+    try:
+        return float(psutil.virtual_memory().total) / _BYTES_PER_MIB
+    except Exception:  # noqa: BLE001 — without a RAM figure, just load for real
+        return None
+
+
+def _report_projection(fit: FitProjection, projection: MemoryBreakdown) -> None:
+    print(
+        "projected by llama-fit-params; nothing was loaded. It reads only the GGUF "
+        "metadata and runs slightly high (it overstates host compute buffers).",
+        file=sys.stderr,
+    )
+    dropped = fit.dropped_flags
+    speculative = [flag for flag in dropped if _is_speculative_flag(flag)]
+    if speculative:
+        print(
+            f"warning: llama-fit-params can't project speculative decoding "
+            f"({', '.join(speculative)}), so an MTP draft context is not included.",
+            file=sys.stderr,
+        )
+    others = [flag for flag in dropped if not _is_speculative_flag(flag)]
+    if others:
+        print(
+            f"note: flags llama-fit-params doesn't accept were left out: {', '.join(others)}.",
+            file=sys.stderr,
+        )
+    memory_log = fit.memory_log
+    if memory_log is not None and memory_log.discrete_gpu:
+        _warn_discrete_gpu()
+    _print_breakdown(projection)
+    print(f"{_ceil_gb(projection.total):.1f}")
+
+
+def _is_speculative_flag(flag: str) -> bool:
+    return flag in ("-md", "--model-draft") or flag.startswith(("--spec", "--draft"))
+
+
+def _warn_discrete_gpu() -> None:
+    print(
+        "warning: llama.cpp placed buffers on a GPU that does not declare unified "
+        "memory. kodo-memcheck is meant for unified-memory machines (Apple Silicon, "
+        "APUs/NPUs); on a discrete GPU the total below mixes VRAM and system RAM and "
+        "is not a meaningful memory requirement.",
+        file=sys.stderr,
+    )
+
+
 def _report(memory_log: LlamaMemoryLog) -> None:
     breakdown = memory_log.breakdown
     if memory_log.discrete_gpu:
+        _warn_discrete_gpu()
+    _print_breakdown(breakdown)
+    if breakdown.mapped_overlap > 0:
         print(
-            "warning: llama-server placed buffers on a GPU that does not declare unified "
-            "memory. kodo-memcheck is meant for unified-memory machines (Apple Silicon, "
-            "APUs/NPUs); on a discrete GPU the total below mixes VRAM and system RAM and "
-            "is not a meaningful memory requirement.",
+            f"note: the mmap'd weight buffers overlap by {breakdown.mapped_overlap:.1f} MiB "
+            "(views of the same file pages); weights are counted as the GGUF files' size.",
             file=sys.stderr,
         )
-    _print_breakdown(breakdown)
     cache = memory_log.prompt_cache_mib
     if cache != 0:
         limit = "an unlimited amount" if cache < 0 else f"up to {cache} MiB"
