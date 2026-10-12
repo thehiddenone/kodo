@@ -110,6 +110,10 @@ def _tool_failure_envelope(tool_name: str, exc: BaseException) -> str:
 class TurnLoopMixin:
     """Drives top-level agent prompts and the shared LLM turn/tool loop."""
 
+    # Declared so the `= None` writes below don't let mypy infer a bare-None
+    # class attribute that conflicts with the EngineHost/_core declaration.
+    _turn_halt_notice: str | None
+
     # ------------------------------------------------------------------
     # Top-level agent LLM loop
     # ------------------------------------------------------------------
@@ -154,6 +158,9 @@ class TurnLoopMixin:
         # superseded and no-op instead of alarming about a turn the user
         # already moved past.
         self._top_agent_turn_seq += 1
+        # A halt belongs to the turn that raised it; never let one leak into the
+        # next (``_report_turn_halt`` normally clears it, this is the backstop).
+        self._turn_halt_notice = None
 
         agent = self._registry.get(agent_name, self._session.effective_autonomous)
         plugin, model_id, routing = await self._resolve_plugin(agent.capability)
@@ -229,7 +236,9 @@ class TurnLoopMixin:
             tool_dispatch=dispatcher.dispatch,
             stream_id=stream_id,
             agent_name=agent_name,
-            stop_after_tools=lambda: dispatcher.stop_requested,
+            stop_after_tools=lambda: (
+                dispatcher.stop_requested or self._turn_halt_notice is not None
+            ),
             persist=self._persist_main_messages(agent_name),
             flush_before_dispatch=True,
             track_context=True,
@@ -257,6 +266,7 @@ class TurnLoopMixin:
         self._session.awaiting_first_chunk = False
         await self._sink.send(Envelope.make_stream_end(stream_id))
         await self._emitters.emit_agent_finished(agent_name)
+        await self._report_turn_halt()
 
         if self._session.phase != "done":
             self._session.phase = "awaiting_user"
@@ -269,6 +279,27 @@ class TurnLoopMixin:
         self._subsession_crash_recovered = False
         await self._emitters.emit_state()
         await self._compactor.maybe_auto_compact()
+
+    async def _report_turn_halt(self: EngineHost) -> None:
+        """Tell the user why a top-level turn ended early, if it did.
+
+        Called once the agent loop has returned. When an engine-side operation
+        set :attr:`_turn_halt_notice` mid-turn (today only ``_attach_folder``,
+        on a window that never came back), every loop's ``stop_after_tools``
+        has already ended the turn after that tool round, with the agent's
+        history well-formed — the tool returned a real result. What is left is
+        the human: emit the notice as a persisted error card, so it is waiting
+        in the outbox for the reconnecting window and replays after a reload,
+        and clear the flag so the next turn starts clean. The session ends up
+        ``awaiting_user`` like any finished turn; the user continues by simply
+        writing again.
+        """
+        notice = self._turn_halt_notice
+        if notice is None:
+            return
+        self._turn_halt_notice = None
+        _log.warning("Top-level turn stopped early: %s", notice)
+        await self._emitters.emit_error(notice, recoverable=True)
 
     async def _store_attachments(
         self: EngineHost, paths: list[str]
@@ -876,6 +907,18 @@ class TurnLoopMixin:
         tool_results: list[dict[str, object]] = []
         for tool_use_id, raw_name, raw_input in calls:
             tool_name, tool_input = canonical_tool_call(raw_name, raw_input)
+            if self._turn_halt_notice is not None:
+                # An earlier call — in this batch, or in a sub-agent it spawned —
+                # halted the turn (see ``_turn_halt_notice``): the editor window
+                # is gone. ``stop_after_tools`` only fires once the batch is
+                # done, so without this a ``run_command`` batched after a lost
+                # ``scaffold_new_project`` would still run and park its
+                # permission prompt where nobody can see it. Never dispatched,
+                # so a stand-in result keeps the transcript well-formed.
+                tool_results.append(
+                    self._interrupted_tool_result(tool_use_id, tool_name, reason="halted")
+                )
+                continue
             try:
                 content = await self._dispatch_one_tool_call(
                     tool_use_id,

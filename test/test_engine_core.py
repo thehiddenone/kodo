@@ -2273,6 +2273,59 @@ async def test_create_project_reports_a_warning_when_the_client_never_attaches(
     assert "My Project" in engine._session_workspace.folders
 
 
+async def test_attach_timeout_stops_the_turn_and_tells_the_user(tmp_path: Path) -> None:
+    """No window answered at all — it reloaded and never re-joined, or was
+    closed. The tool still gets a normal result (the project is real), but the
+    agent is told the turn is ending, and the user gets one error card once the
+    top-level turn wraps up — not an agent left running with nobody watching."""
+    gate = _FakeGate(
+        confirm_folder=ConfirmFolderResponse(attached=False, error="timeout", timed_out=True)
+    )
+    engine, _t, sink, _g = _make_engine(tmp_path, gate=gate)
+    target = tmp_path / "existing"
+    target.mkdir()
+
+    result = await engine._init_project(str(target), wait_for_attach=True)
+
+    assert result["workspace_attached"] is False
+    warning = str(result["warning"])
+    assert "turn is being stopped" in warning
+    assert "Do NOT scaffold it again" in warning
+
+    sink.sent.clear()
+    await engine._report_turn_halt()
+    errors = [e for e in sink.sent if e.payload.get("type") == "error"]
+    assert len(errors) == 1
+    assert str(target) in str(errors[0].payload["message"])
+    assert errors[0].payload["recoverable"] is True
+
+    # One-shot: the next turn does not inherit it.
+    sink.sent.clear()
+    await engine._report_turn_halt()
+    assert [e for e in sink.sent if e.payload.get("type") == "error"] == []
+
+
+async def test_attach_refused_by_a_live_window_does_not_stop_the_turn(tmp_path: Path) -> None:
+    """A window that answered ``attached: false`` is alive and showing the
+    session, so its later prompts are visible — the agent carries on."""
+    gate = _FakeGate(
+        confirm_folder=ConfirmFolderResponse(
+            attached=False, error="VS Code rejected the workspace-folder change"
+        )
+    )
+    engine, _t, sink, _g = _make_engine(tmp_path, gate=gate)
+    target = tmp_path / "existing"
+    target.mkdir()
+
+    result = await engine._init_project(str(target), wait_for_attach=True)
+
+    assert result["workspace_attached"] is False
+    assert "turn is being stopped" not in str(result["warning"])
+    sink.sent.clear()
+    await engine._report_turn_halt()
+    assert [e for e in sink.sent if e.payload.get("type") == "error"] == []
+
+
 async def test_init_project_waits_for_client_confirmation_when_asked(tmp_path: Path) -> None:
     gate = _FakeGate()
     engine, _t, _s, _g = _make_engine(tmp_path, gate=gate)

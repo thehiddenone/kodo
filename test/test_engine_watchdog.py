@@ -229,6 +229,7 @@ def _watchdog_engine(
     engine._gate = _FakeGate(gate_answers)
     engine._queue = asyncio.Queue()
     engine._top_agent_turn_seq = 0
+    engine._turn_halt_notice = None
     engine._stuck_watchdog_task = None
     engine._stuck_streak = False
     engine._cycle_streak = False

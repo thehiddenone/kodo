@@ -787,6 +787,8 @@ async def test_fire_confirm_workspace_folder_reports_a_client_refusal() -> None:
     response = await task
     assert response.attached is False
     assert response.error == "VS Code refused the folder"
+    # A window that answered is alive — not the "nobody came back" case.
+    assert response.timed_out is False
 
 
 @pytest.mark.asyncio
@@ -800,6 +802,8 @@ async def test_fire_confirm_workspace_folder_times_out_and_discards_the_request(
 
     response = await gate.fire_confirm_workspace_folder("/x/proj", "proj", 0.01)
 
-    assert response == ConfirmFolderResponse(attached=False, reloaded=False, error="timeout")
+    assert response == ConfirmFolderResponse(
+        attached=False, reloaded=False, error="timeout", timed_out=True
+    )
     req_id = next(iter(state._captured))
     state.discard_response_future.assert_called_once_with(req_id)

@@ -170,11 +170,19 @@ class ConfirmFolderResponse:
         error: Why ``attached`` is False — ``'timeout'`` when the server gave
             up waiting, otherwise the client's own message. ``None`` on
             success.
+        timed_out: True when *no* client answered within the deadline — the
+            window never came back (e.g. it reloaded under a different window
+            id and never re-joined this session). Distinct from a client that
+            answered ``attached: false``: that window is alive and showing the
+            session, this one is not, so the engine stops the turn rather than
+            let the agent carry on with nobody watching (see
+            ``EngineCore._attach_folder``).
     """
 
     attached: bool
     reloaded: bool = False
     error: str | None = None
+    timed_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -617,7 +625,8 @@ class GateOrchestrator:
         is waiting on a human here, so a window that never comes back must not
         wedge the turn. On expiry the pending future is *discarded* (not just
         abandoned) so the request stops being replayed to every subsequent
-        reconnect.
+        reconnect — and the response says ``timed_out`` so the engine can stop
+        the turn instead of treating it like an ordinary refusal.
 
         Args:
             path: Absolute path of the scaffolded directory.
@@ -657,7 +666,7 @@ class GateOrchestrator:
                 req_id[:8],
                 path,
             )
-            return ConfirmFolderResponse(attached=False, error="timeout")
+            return ConfirmFolderResponse(attached=False, error="timeout", timed_out=True)
 
         attached = bool(response_payload.get("attached", False))
         reloaded = bool(response_payload.get("reloaded", False))

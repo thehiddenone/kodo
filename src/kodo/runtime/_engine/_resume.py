@@ -61,6 +61,7 @@ class ResumeMixin:
     # Declared so the writes in _resume_main_turn don't let mypy infer a
     # narrower class attribute conflicting with the EngineHost/_core one.
     _replay_subsessions: list[dict[str, object]] | None
+    _turn_halt_notice: str | None
 
     def _has_dangling_tool_use(self: EngineHost) -> bool:
         """True when the last persisted main message awaits tool results.
@@ -212,6 +213,7 @@ class ResumeMixin:
         # New top-level agent turn — see the matching note in _run_top_agent
         # (doc/STUCK_DETECTION.md).
         self._top_agent_turn_seq += 1
+        self._turn_halt_notice = None
 
         # Claim both markers now, unconditionally: whether or not their id
         # turns up among tool_uses below (it always should), this resume pass
@@ -280,42 +282,51 @@ class ResumeMixin:
         self._transient.append_message(results_msg.role, results_msg.content, top_agent=top_agent)
 
         stream_id = uuid.uuid4().hex
-        self._main_messages, _ = await self._run_agent_turn(
-            llm=plugin,
-            routing=routing,
-            model=model_id,
-            system_prompt=agent.system_prompt,
-            messages=self._main_messages,
-            tools=agent_tool_specs(self._registry, agent),
-            tool_dispatch=dispatcher.dispatch,
-            stream_id=stream_id,
-            agent_name=top_agent,
-            stop_after_tools=lambda: dispatcher.stop_requested,
-            persist=self._persist_main_messages(top_agent),
-            flush_before_dispatch=True,
-            track_context=True,
-            on_stall=self._make_stall_handler(
-                agent_name=top_agent, routing=routing, is_top_agent_turn=True
-            ),
-            on_tool_calls=self._make_progress_handler(is_top_agent_turn=True),
-            on_cyclic_thinking=self._make_cyclic_thinking_handler(
-                agent_name=top_agent, routing=routing, is_top_agent_turn=True
-            ),
-            on_think_in_tool_call=self._make_think_in_tool_call_handler(
-                agent_name=top_agent, is_top_agent_turn=True
-            ),
-            on_tool_call_cyclic=self._make_tool_call_cyclic_handler(
-                agent_name=top_agent, routing=routing, is_top_agent_turn=True
-            ),
-            on_repeated_tool_calls=self._make_repeated_tool_call_handler(
-                agent_name=top_agent, routing=routing, is_top_agent_turn=True
-            ),
-        )
+        # A re-dispatched call (e.g. a replayed spawn whose sub-agent lost the
+        # window in ``scaffold_new_project``) may already have halted the turn.
+        # ``stop_after_tools`` is only consulted *after* a tool round, so the
+        # loop below would still make one more LLM call — and run whatever
+        # tools it asked for — with nobody watching. Skip it outright instead.
+        if self._turn_halt_notice is None:
+            self._main_messages, _ = await self._run_agent_turn(
+                llm=plugin,
+                routing=routing,
+                model=model_id,
+                system_prompt=agent.system_prompt,
+                messages=self._main_messages,
+                tools=agent_tool_specs(self._registry, agent),
+                tool_dispatch=dispatcher.dispatch,
+                stream_id=stream_id,
+                agent_name=top_agent,
+                stop_after_tools=lambda: (
+                    dispatcher.stop_requested or self._turn_halt_notice is not None
+                ),
+                persist=self._persist_main_messages(top_agent),
+                flush_before_dispatch=True,
+                track_context=True,
+                on_stall=self._make_stall_handler(
+                    agent_name=top_agent, routing=routing, is_top_agent_turn=True
+                ),
+                on_tool_calls=self._make_progress_handler(is_top_agent_turn=True),
+                on_cyclic_thinking=self._make_cyclic_thinking_handler(
+                    agent_name=top_agent, routing=routing, is_top_agent_turn=True
+                ),
+                on_think_in_tool_call=self._make_think_in_tool_call_handler(
+                    agent_name=top_agent, is_top_agent_turn=True
+                ),
+                on_tool_call_cyclic=self._make_tool_call_cyclic_handler(
+                    agent_name=top_agent, routing=routing, is_top_agent_turn=True
+                ),
+                on_repeated_tool_calls=self._make_repeated_tool_call_handler(
+                    agent_name=top_agent, routing=routing, is_top_agent_turn=True
+                ),
+            )
         # Safety net for a final round with zero deltas — see the matching
         # comment in ``_turns.py``'s entry-turn caller.
         self._session.awaiting_first_chunk = False
         await self._sink.send(Envelope.make_stream_end(stream_id))
         await self._emitters.emit_agent_finished(top_agent)
+        await self._report_turn_halt()
         if self._session.phase != "done":
             self._session.phase = "awaiting_user"
         self._session.agent = None
@@ -337,23 +348,31 @@ class ResumeMixin:
 
         Args:
             reason: ``"restart"`` for a cold crash-resume (see
-                :meth:`_resume_main_turn`) or ``"stopped"`` for a live
-                user-initiated Stop (see :meth:`_persist_interrupted_turn`) —
-                selects the wording of the cause only.
+                :meth:`_resume_main_turn`), ``"stopped"`` for a live
+                user-initiated Stop (see :meth:`_persist_interrupted_turn`), or
+                ``"halted"`` for a call never dispatched because an earlier one
+                halted the turn (see ``_turn_halt_notice``) — selects the
+                wording of the cause only.
         """
-        cause = (
-            "the session was interrupted (server restart or window reload)"
-            if reason == "restart"
-            else "the user clicked Stop"
-        )
-        payload = {
-            "error": (
+        if reason == "halted":
+            message = (
+                f"The '{tool_name}' call was NOT run: the turn was stopped early (see "
+                "the earlier tool result) before it was reached. Re-issue it once the "
+                "user continues, if you still need it."
+            )
+        else:
+            cause = (
+                "the session was interrupted (server restart or window reload)"
+                if reason == "restart"
+                else "the user clicked Stop"
+            )
+            message = (
                 f"The '{tool_name}' call did not complete before {cause} and was "
                 "NOT re-executed to avoid duplicating side effects. Any changes it "
                 "may have started are reflected in the workspace; re-issue the "
                 "call if you still need it."
             )
-        }
+        payload = {"error": message}
         return {
             "type": "tool_result",
             "tool_use_id": tool_use_id,

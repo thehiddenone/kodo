@@ -185,14 +185,19 @@ class WorkflowEngine(
     _think_tag_streak: bool
     _tool_call_cycle_streak: bool
     _repeat_streak: bool
+    _turn_halt_notice: str | None
 
     #: Seconds ``scaffold_new_project`` waits for the client to confirm the new
     #: directory is really open in its workspace (see :meth:`_attach_folder`).
     #: Sized for the slow case this exists for — a VS Code extension-host
-    #: restart plus tab reconcile plus WebSocket reconnect — not for the common
-    #: one, which answers in milliseconds. A window that never comes back costs
-    #: the turn this much and no more.
-    WORKSPACE_ATTACH_TIMEOUT_S: float = 60.0
+    #: restart plus tab reconcile plus WebSocket reconnect, measured at ~1.6 s
+    #: on 2026-10-11 — not for the common one, which answers in milliseconds.
+    #: Was 60 s until then; cut to 15 s because a window that never comes back
+    #: costs the turn this much and then *ends* it (see
+    #: :attr:`_turn_halt_notice`), and a minute of apparent freeze before that
+    #: is far too long. kodo-vsix's ``FOLDER_CHANGE_TIMEOUT_MS`` must stay at
+    #: least 5 s below this.
+    WORKSPACE_ATTACH_TIMEOUT_S: float = 15.0
 
     def __init__(
         self,
@@ -290,6 +295,14 @@ class WorkflowEngine(
         # ``_run_top_agent`` on any turn that completes, so a repeating
         # environmental failure goes idle for the human instead of looping.
         self._subsession_crash_recovered = False
+        # Set mid-turn by an engine-side operation that has decided the turn
+        # must end after the current tool round — today only `_attach_folder`,
+        # when the window it was waiting on never came back. Read by every
+        # agent loop's ``stop_after_tools`` (top-level, sub-agent and resume),
+        # so a sub-agent that trips it unwinds its caller too; consumed — the
+        # user-facing notice emitted and the flag cleared — by
+        # ``TurnLoopMixin._report_turn_halt`` once the top-level turn is over.
+        self._turn_halt_notice = None
         # The security layer judging every tool call (doc/SECURITY.md) —
         # deterministic heuristic rules, no LLM involved.
         self._security = (
@@ -1546,11 +1559,22 @@ class WorkflowEngine(
           that needs it, because the request is replayed to the reconnected
           window (:meth:`~kodo.transport.SessionChannel.replay_pending_requests`).
 
-        A failed or timed-out confirmation is deliberately *not* an error: the
-        project exists on disk and is bound to this session regardless. The
-        caller surfaces it as ``workspace_attached=False`` plus a warning so
-        the agent knows the editor did not pick the directory up, rather than
-        concluding nothing was created and scaffolding a second one.
+        A failed confirmation is deliberately *not* an error: the project
+        exists on disk and is bound to this session regardless. The caller
+        surfaces it as ``workspace_attached=False`` plus a warning so the agent
+        knows the editor did not pick the directory up, rather than concluding
+        nothing was created and scaffolding a second one.
+
+        A *timed-out* confirmation additionally **stops the turn**. A window
+        that answered "no" is alive and showing this session, so the agent may
+        carry on. A window that never answered is not: it reloaded and never
+        re-joined (a reload under a different window id strands the session),
+        or it was closed. Letting the agent continue then means it works, and
+        parks any permission prompt it raises, where nobody can see it — which
+        reads to the user as a frozen session. So this sets
+        :attr:`_turn_halt_notice`; the tool still returns a well-formed result
+        (telling the agent the turn is ending), and the agent loop stops after
+        this tool round instead of calling the LLM again.
 
         Args:
             project_dir: The scaffolded directory.
@@ -1580,6 +1604,28 @@ class WorkflowEngine(
                 response.reloaded,
             )
             return True, None
+        if response.timed_out:
+            _log.warning(
+                "Workspace folder NOT attached: %s (label=%r) — no window answered in "
+                "%.0fs; stopping the turn",
+                project_dir,
+                label,
+                self.WORKSPACE_ATTACH_TIMEOUT_S,
+            )
+            self._turn_halt_notice = (
+                f"The project at {project_dir} was set up, but the editor window did not "
+                f"come back after adding it to the workspace (no answer in "
+                f"{self.WORKSPACE_ATTACH_TIMEOUT_S:.0f} s), so the turn was stopped rather "
+                "than let the agent continue without a window. Reload the window if this "
+                "session is not showing, then send a message to continue."
+            )
+            return False, (
+                f"The project was set up on disk at {project_dir} and is bound to this "
+                "session, but the editor window did not come back after adding it to the "
+                "workspace, so the user cannot see this session right now. This turn is "
+                "being stopped; do not call any more tools. When the user writes again, "
+                "continue from here. Do NOT scaffold it again."
+            )
         _log.warning(
             "Workspace folder NOT attached: %s (label=%r, error=%r)",
             project_dir,

@@ -270,6 +270,9 @@ class _FakeEmitters:
     async def emit_agent_finished(self, agent: str) -> None:
         self.calls.append(f"finished:{agent}")
 
+    async def emit_error(self, message: str, *, recoverable: bool) -> None:
+        self.calls.append(f"error:{message}")
+
 
 class _FakeCompactor:
     def __init__(self) -> None:
@@ -355,6 +358,7 @@ def _resumable_engine(
     engine._orch_session_id = "orch-1"
     engine._top_agent_turn_seq = 0
     engine._cycle_streak = False
+    engine._turn_halt_notice = None
     # _make_cyclic_thinking_handler (doc/STUCK_DETECTION.md §2.7) reads
     # settings/routing.residence eagerly at construction time (unlike
     # _make_stall_handler's lazy check); _run_agent_turn itself is faked out
@@ -439,6 +443,45 @@ async def test_resume_main_turn_redispatches_ask_user_and_finishes(tmp_path: Pat
     assert engine._session.agent is None
     assert engine._replay_subsessions is None
     assert any(env.kind == "stream_end" for env in sink.sent)
+
+
+@pytest.mark.asyncio
+async def test_resume_main_turn_skips_its_llm_round_when_a_redispatch_halted_the_turn(
+    tmp_path: Path,
+) -> None:
+    """A replayed spawn whose sub-agent lost the window (``scaffold_new_project``
+    timing out) halts the turn mid-resume. ``stop_after_tools`` is only read
+    after a tool round, so the resume must not start its LLM round at all —
+    that round would run with nobody watching — and the user gets the notice."""
+    tool_uses = [{"type": "tool_use", "id": "tu_1", "name": "ask_user", "input": {"q": "?"}}]
+    engine, _compactor, _sink, _dispatch_calls = _resumable_engine(
+        tool_uses=tool_uses,
+        session_lines=[{"role": "assistant", "content": "ok", "top_agent": "kodo_guide"}],
+        tmp_path=tmp_path,
+    )
+
+    async def _halting_dispatch(
+        calls, tool_dispatch, tool_desc, tool_logger, agent_name, recovered_ids=None
+    ):
+        engine._turn_halt_notice = "window never came back"
+        return [{"type": "tool_result", "tool_use_id": c[0], "content": "{}"} for c in calls]
+
+    engine._dispatch_tool_calls = _halting_dispatch
+    llm_rounds: list[object] = []
+
+    async def _run_agent_turn(**kwargs):
+        llm_rounds.append(kwargs)
+        return (engine._main_messages, [])
+
+    engine._run_agent_turn = _run_agent_turn
+
+    await engine._resume_main_turn()
+
+    assert llm_rounds == []
+    assert "error:window never came back" in engine._emitters.calls
+    assert engine._session.phase == "awaiting_user"
+    # The transcript is still well-formed: the dangling call got its result.
+    assert engine._main_messages[-1].role == "user"
 
 
 @pytest.mark.asyncio

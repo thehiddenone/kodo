@@ -207,6 +207,7 @@ def _base_engine(*, gateway: _FakeGateway | None = None) -> WorkflowEngine:
     engine._session = SessionState()
     engine._orch_session_id = "sess-1"
     engine._top_agent_turn_seq = 0
+    engine._turn_halt_notice = None
 
     def _llm_logs_dir() -> Path:
         return Path("/tmp/llm_logs")
@@ -765,6 +766,39 @@ async def test_dispatch_tool_calls_sends_prep_event_for_normal_tool(tmp_path: Pa
     assert results[0]["tool_use_id"] == "tu_1"
 
 
+async def test_dispatch_tool_calls_does_not_run_calls_batched_after_a_halt(
+    tmp_path: Path,
+) -> None:
+    """A ``run_command`` batched after a ``scaffold_new_project`` that lost the
+    window must not run: its permission prompt would wait on a window that is
+    gone. It still gets a result, so the transcript stays well-formed."""
+    engine = _base_engine()
+    dispatched: list[str] = []
+
+    async def tool_dispatch(name, tool_input, tool_use_id, recovered):
+        dispatched.append(name)
+        if name == "scaffold_new_project":
+            engine._turn_halt_notice = "window never came back"
+        return "{}"
+
+    results = await engine._dispatch_tool_calls(
+        [
+            ("tu_1", "scaffold_new_project", {"path": "/p"}),
+            ("tu_2", "run_command", {"command": "git status", "timeout": 10}),
+        ],
+        tool_dispatch,
+        {},
+        _tool_logger(tmp_path),
+        "kodo_problem_solver",
+    )
+
+    assert dispatched == ["scaffold_new_project"]
+    assert [r["tool_use_id"] for r in results] == ["tu_1", "tu_2"]
+    assert "was NOT run" in json.loads(str(results[1]["content"]))["error"]
+    prep_events = [e for e in engine._sink.sent if e.payload.get("type") == "agent.tool_call_prep"]
+    assert [e.payload["tool_name"] for e in prep_events] == ["scaffold_new_project"]
+
+
 async def test_dispatch_tool_calls_suppresses_prep_event_for_ask_user(tmp_path: Path) -> None:
     engine = _base_engine()
 
@@ -1295,6 +1329,47 @@ async def test_run_top_agent_persists_prompt_and_runs_turn() -> None:
     assert engine._emitters.finished == ["kodo_guide"]
     assert engine._compactor.auto_compact_calls == 1
     assert engine._compactor.noted == ["key-medium"]
+
+
+async def test_run_top_agent_ends_after_the_tool_round_that_halted_it() -> None:
+    """An engine-side halt (a scaffold whose window never came back) makes the
+    loop's ``stop_after_tools`` true, so no further LLM round runs; once the
+    turn is over the user gets the notice and the session is idle again."""
+    engine = _top_agent_engine()
+    seen: list[bool] = []
+
+    async def _run_agent_turn(**kwargs):
+        stop_after_tools = kwargs["stop_after_tools"]
+        seen.append(stop_after_tools())
+        # What `_attach_folder` does mid-tool on a timed-out confirmation.
+        engine._turn_halt_notice = "window never came back"
+        seen.append(stop_after_tools())
+        return (engine._main_messages, [])
+
+    engine._run_agent_turn = _run_agent_turn
+
+    await engine._run_top_agent("kodo_problem_solver", "open my project")
+
+    assert seen == [False, True]
+    assert engine._emitters.errors == [("window never came back", True)]
+    assert engine._session.phase == "awaiting_user"
+
+
+async def test_run_top_agent_does_not_inherit_a_stale_halt() -> None:
+    engine = _top_agent_engine()
+    engine._turn_halt_notice = "left over from an earlier turn"
+    seen: list[bool] = []
+
+    async def _run_agent_turn(**kwargs):
+        seen.append(kwargs["stop_after_tools"]())
+        return (engine._main_messages, [])
+
+    engine._run_agent_turn = _run_agent_turn
+
+    await engine._run_top_agent("kodo_problem_solver", "hello")
+
+    assert seen == [False]
+    assert engine._emitters.errors == []
 
 
 async def test_run_top_agent_phase_done_is_not_overridden() -> None:

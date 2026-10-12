@@ -341,10 +341,25 @@ Protocols**, also defined in `_context.py`:
   (the request is replayed to the reconnected window). It is skipped entirely —
   reported as attached — when there is no live matching window or the folder is
   already open, so a background agent never blocks. A confirmation that fails
-  or times out (`EngineCore.WORKSPACE_ATTACH_TIMEOUT_S`, 60s) yields
+  or times out (`EngineCore.WORKSPACE_ATTACH_TIMEOUT_S`, 15s) yields
   `workspace_attached: false` plus a `warning` in the tool result, never an
   error: the project exists on disk and is bound to the session either way, and
-  an agent told "error" would scaffold a second one.
+  an agent told "error" would scaffold a second one. A **timeout** (no window
+  answered at all) additionally **ends the turn** after that tool round: the
+  engine sets `_turn_halt_notice`: `_dispatch_tool_calls` stops dispatching
+  the rest of that batch (stand-in "was NOT run" results), every agent loop's
+  `stop_after_tools` reads it (so a sub-agent unwinds its caller too), a
+  cold-restart resume skips its LLM round, and `_report_turn_halt` emits
+  a persisted error card once the top-level turn is over. A client that
+  answered `attached: false` is a live window, so the agent carries on.
+
+  `path` must be **absolute**; a relative one is rejected by the tool, never
+  resolved. (2026-10-11: GPT OSS 20B sent `Users/dev/...` without the leading
+  `/`; the server resolved it against its own cwd `/`, sent the relative string
+  to the window, the extension armed window-id continuity under the hash of
+  that string while VS Code reported `/Users/dev/...` after the reload, and the
+  reloaded window never re-joined the session — the confirm timed out and the
+  agent ran on headless until a permission prompt hung with nobody to see it.)
 
 This is the dependency inversion that lets the tool layer sit *below* the engine
 while still calling back into it. `runtime` constructs the concrete objects and

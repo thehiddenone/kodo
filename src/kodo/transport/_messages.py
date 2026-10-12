@@ -949,7 +949,10 @@ SREQ_PROMPT_CHOOSE_PROJECT_FOLDER = "prompt.choose_project_folder"
 # reasoning as ``SREQ_PROMPT_CHOOSE_PROJECT_FOLDER``. The server also caps the
 # wait (``WORKSPACE_ATTACH_TIMEOUT_S``) and, on expiry, discards the pending
 # future so a window that never comes back cannot wedge the turn or leave a
-# request to be replayed forever.
+# request to be replayed forever — and *ends the turn* after that tool round,
+# since an agent left running with no window would park its next prompt where
+# nobody can see it. ``path`` is always absolute (the tool rejects a relative
+# one); the client still canonicalizes it before arming window-id continuity.
 SREQ_WORKSPACE_CONFIRM_FOLDER = "workspace.confirm_folder"
 
 # ---------------------------------------------------------------------------

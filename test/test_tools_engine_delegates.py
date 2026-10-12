@@ -335,6 +335,18 @@ async def test_scaffold_new_project_layout_error_is_reported(tmp_path: Path) -> 
     assert result == {"error": "not a directory"}
 
 
+@pytest.mark.parametrize("relative", ["Users/me/proj", "proj", "./proj", "~/proj"])
+async def test_scaffold_new_project_rejects_a_relative_path(tmp_path: Path, relative: str) -> None:
+    """Never resolved against anything — the server's cwd is an accident of how
+    it was launched, and the editor would be handed a path nobody named."""
+    services = _Services(tmp_path, project_result={"path": "/somewhere", "name": "proj"})
+    d = _make_dispatcher(tmp_path, services)
+    result = await _call(d, "scaffold_new_project", {"path": relative})
+    assert set(result) == {"error"}
+    assert "absolute" in str(result["error"])
+    assert relative in str(result["error"])
+
+
 async def test_scaffold_new_project_engine_error_result_is_forwarded(tmp_path: Path) -> None:
     services = _Services(tmp_path, project_result={"error": "user cancelled"})
     d = _make_dispatcher(tmp_path, services)

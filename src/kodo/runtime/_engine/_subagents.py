@@ -1785,7 +1785,11 @@ class SubagentMixin:
                 tool_dispatch=dispatcher.dispatch,
                 stream_id=stream_id,
                 agent_name=name,
-                stop_after_tools=lambda: dispatcher.stop_requested,
+                # A turn halt (see ``_turn_halt_notice``) ends this sub-agent
+                # too; its caller's own loop then stops after this spawn's round.
+                stop_after_tools=lambda: (
+                    dispatcher.stop_requested or self._turn_halt_notice is not None
+                ),
                 persist=_persist,
                 subsession_model_key=model_id,
                 on_stall=self._make_stall_handler(

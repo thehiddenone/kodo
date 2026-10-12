@@ -7,7 +7,12 @@ one: which underlying engine primitive runs is decided entirely by the
 * ``path`` given: delegates to ``EngineServices.init_project`` (the former
   ``init_project`` tool's behavior) — *path* must already exist; if it's
   already a Kodo project (``.kodo/`` present), the engine no-ops and reports
-  ``already_scaffolded`` rather than erroring.
+  ``already_scaffolded`` rather than erroring. *path* must be absolute: a
+  relative one is rejected here, never resolved. There is no meaningful base
+  to resolve it against — the server process's working directory is an
+  accident of how it was launched — and a model that drops the leading ``/``
+  (``Users/me/proj``) would otherwise get a directory it never named, sent on
+  verbatim to the editor window.
 * No ``path``, no workspace bound yet: delegates to
   ``EngineServices.bootstrap_project`` (the former ``create_new_project``
   bootstrap fork), regardless of whether ``name`` was given.
@@ -29,13 +34,16 @@ exactly the case where returning early used to leave the agent poking at a
 workspace mid-restart. A confirmation that fails or times out is reported as
 ``workspace_attached: false`` plus a ``warning``, never as an error: the
 project genuinely exists on disk and is bound to the session either way, and
-an agent told "error" would scaffold it a second time.
+an agent told "error" would scaffold it a second time. A *timeout* — no
+window answered at all — also ends the turn after this call; that is decided
+and enforced engine-side, this handler only forwards the warning.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 from kodo.project import ProjectLayoutError
 
@@ -53,6 +61,16 @@ class ScaffoldNewProjectTool(Tool):
         raw_path = tool_input.get("path")
         path = str(raw_path).strip() if isinstance(raw_path, str) else ""
         name = str(tool_input.get("name", "")).strip()
+        if path and not Path(path).is_absolute():
+            return json.dumps(
+                {
+                    "error": (
+                        f"scaffold_new_project requires an absolute 'path', got {path!r}. "
+                        "Pass the full path of the existing directory, starting from the "
+                        "filesystem root."
+                    )
+                }
+            )
         try:
             if path:
                 result = await self.context.services.init_project(path)

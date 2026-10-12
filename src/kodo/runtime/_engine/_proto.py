@@ -86,6 +86,7 @@ class EngineHost(Protocol):
     _tool_call_cycle_streak: bool
     _repeat_streak: bool
     _subsession_crash_recovered: bool
+    _turn_halt_notice: str | None
 
     # -- core helpers (defined in _core) ---------------------------------------
     def _agent_available(self, name: str) -> bool: ...
@@ -171,6 +172,8 @@ class EngineHost(Protocol):
         attachments: list[str] | None = None,
         nudge_detail: dict[str, object] | None = None,
     ) -> None: ...
+
+    async def _report_turn_halt(self) -> None: ...
 
     async def _store_attachments(
         self, paths: list[str]
