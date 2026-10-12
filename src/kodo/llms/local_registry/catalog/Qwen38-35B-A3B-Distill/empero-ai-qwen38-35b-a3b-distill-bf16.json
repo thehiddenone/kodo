@@ -1,0 +1,34 @@
+{
+  "description": "Qwen 3.8 35B-A3B Distill BF16 by empero-ai",
+  "repo_id": "empero-ai/Qwen3.8-35B-A3B-Distill-GGUF",
+  "filename": "Qwen3.8-35B-A3B-BF16.gguf",
+  "quant_author": "empero-ai",
+  "quant_type": "BF16",
+  "size_hint": "71.1 GB",
+  "llm_author": "empero-ai",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/LICENSE",
+  "gpu_tip": "~76GB total at 128K context — the full-precision build. It is a sparse 3B-active MoE, so most of those weights sit idle on any given token: a 16GB GPU (e.g. RTX 4080) holds the always-on attention and shared layers at full speed while llama.cpp offloads the inactive experts to a 96GB DDR5 kit. The quantized builds below get close at a fraction of the memory.",
+  "mac_tip": "Needs ~76GB — too much for a 64GB MacBook Pro; a 96GB or 128GB M4 Max or M5 Max fits it.",
+  "context_window": 262144,
+  "llamacpp_version": 11063,
+  "min_memory": 96,
+  "memory": 128,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35moe",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {
+    "kv-cache": "f16",
+    "tail-culling": "none",
+    "temperature": "t06",
+    "nucleus-sampling": "k20-p095"
+  }
+}
