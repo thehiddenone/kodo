@@ -1,0 +1,32 @@
+{
+  "description": "K2 Horizon 32B Q8_0 by bartowski",
+  "repo_id": "bartowski/K2-Horizon-32B-GGUF",
+  "filename": "K2-Horizon-32B-Q8_0.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q8_0",
+  "size_hint": "37.0 GB",
+  "llm_author": "IFM",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~57GB total at 128K context, ~18GB of it KV cache since every one of the 64 layers uses full attention. A 16GB GPU (e.g. RTX 4080) plus a 48GB DDR5 kit covers it, with llama.cpp's layer offloading running the remaining layers from RAM.",
+  "mac_tip": "Needs ~57GB — fits a 64GB MacBook Pro (M4 Pro/Max or M5 Pro/Max), with little room for much else alongside.",
+  "context_window": 524288,
+  "llamacpp_version": 11454,
+  "min_memory": 64,
+  "memory": 64,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-k2-horizon"
+  ],
+  "knob_defaults": {
+    "tail-culling": "none",
+    "temperature": "t10",
+    "nucleus-sampling": "p095"
+  }
+}

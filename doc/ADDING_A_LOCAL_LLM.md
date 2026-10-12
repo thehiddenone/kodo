@@ -124,7 +124,14 @@ message.
 - **`filename`**: the first shard of a split GGUF. **`size_hint`**: the sum
   of all shards in decimal GB, to three significant figures: one decimal
   from 10 GB up (`"77.8 GB"`), two below (`"5.54 GB"`).
-- **`context_window`**: the header's `<arch>.context_length`.
+- **`context_window`**: the header's `<arch>.context_length`. That is also
+  the length the model **launches at**: the base args' `--ctx-size 0` means
+  "the full trained length", and since llama.cpp #19070 an explicit 0 stops
+  `--fit` from shrinking it. A native context above 256K therefore needs a
+  private knob whose default caps `--ctx-size` (K2-Horizon-32B's
+  `context-k2-horizon`, 128K default), or the default launch reserves the
+  whole KV cache. `test_no_shipped_entry_launches_above_256k_by_default`
+  enforces this.
 - **`knobs`**: every id in `SHARED_KNOBS`, in that order (this includes
   `cpu-moe` even on dense models). Then add:
   - a context knob only if `context_knob_architectures()` maps one to
@@ -353,6 +360,15 @@ hatch run check     # fmt, lint, typecheck, tests
 
 Each of these has cost a real change before:
 
+- **`--ctx-size 0` is the full native length, and `--fit` won't shrink it.**
+  K2-Horizon-32B's 512K would have reserved a ~73GB q8_0 KV cache on every
+  default launch. Cap long native contexts with a knob (§4,
+  `context_window`); an explicit non-zero `--ctx-size` is honored exactly.
+- **A thinking control can exist and still be broken upstream.**
+  K2-Horizon-32B's template takes `reasoning_effort`, but llama.cpp's parser
+  loses the answer at `medium`/`low` (#30246). Search open issues for the
+  model before wiring tiers, and leave the family out (or pin past the fix)
+  when only the default works.
 - **The context knob must match the exact architecture, and a mismatch fails
   silently.** Dense and MoE sizes of one family differ (`qwen35` vs
   `qwen35moe`). A knob whose `--override-kv` names a key the GGUF lacks is

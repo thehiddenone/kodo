@@ -1,0 +1,32 @@
+{
+  "description": "K2 Horizon 32B Q3_K_M by bartowski",
+  "repo_id": "bartowski/K2-Horizon-32B-GGUF",
+  "filename": "K2-Horizon-32B-Q3_K_M.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q3_K_M",
+  "size_hint": "16.7 GB",
+  "llm_author": "IFM",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~37GB total at 128K context. Lower quality than the Q4 rung but usable. An 8GB GPU (e.g. RTX 5060) plus ~32GB of DDR5 system RAM covers it via llama.cpp's layer offloading. The ~18GB KV cache doesn't shrink with the weights, so the KV cache knob's q4_0 option saves more than dropping another rung.",
+  "mac_tip": "Needs ~37GB — fits a 48GB MacBook Pro comfortably; a 36GB M4 Max or M5 Max is too tight unless the KV cache knob is set to q4_0.",
+  "context_window": 524288,
+  "llamacpp_version": 11454,
+  "min_memory": 48,
+  "memory": 48,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-k2-horizon"
+  ],
+  "knob_defaults": {
+    "tail-culling": "none",
+    "temperature": "t10",
+    "nucleus-sampling": "p095"
+  }
+}

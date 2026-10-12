@@ -1,0 +1,32 @@
+{
+  "description": "K2 Horizon 32B Q5_K_M by bartowski",
+  "repo_id": "bartowski/K2-Horizon-32B-GGUF",
+  "filename": "K2-Horizon-32B-Q5_K_M.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q5_K_M",
+  "size_hint": "26.3 GB",
+  "llm_author": "IFM",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~46GB total at 128K context. An 8GB GPU (e.g. RTX 4060) plus a 48GB DDR5 kit is enough, with llama.cpp's layer offloading running the rest from RAM.",
+  "mac_tip": "Needs ~46GB — fits a 64GB MacBook Pro comfortably; a 48GB config is tight.",
+  "context_window": 524288,
+  "llamacpp_version": 11454,
+  "min_memory": 48,
+  "memory": 64,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-k2-horizon"
+  ],
+  "knob_defaults": {
+    "tail-culling": "none",
+    "temperature": "t10",
+    "nucleus-sampling": "p095"
+  }
+}

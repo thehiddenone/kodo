@@ -59,7 +59,8 @@ Submodules:
         base args every Default profile starts from.
     ``_knobs_context`` — factory for the private per-model YaRN long-context
         knob (needs the model's architecture key and native context length).
-    ``_knobs_qwen`` / ``_knobs_laguna`` — the private per-family knobs.
+    ``_knobs_qwen`` / ``_knobs_laguna`` / ``_knobs_k2_horizon`` — the private
+        per-family knobs.
     ``_knobs_mtp`` — the built-in MTP checkbox, and the per-family MTP head
         picker built from a family's ``mtp_sidecars.json``.
     ``_mtp_sidecars`` — the ``mtp_sidecars.json`` format: a family's

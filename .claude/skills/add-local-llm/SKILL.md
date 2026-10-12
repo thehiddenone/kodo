@@ -44,7 +44,7 @@ Skim these before collecting any facts, because they decide which facts matter:
 | Procedure, rules, traps | `doc/ADDING_A_LOCAL_LLM.md` | all of it |
 | File format | `local_registry/_catalog_files.py` | `_STR_FIELDS`/`_INT_FIELDS`/`_BOOL_FIELDS`/`_STR_MAP_FIELDS`/`_REQUIRED`, path-derived keys (`name` = file stem, `base_llm` = dir, both rejected inside the file), `validate_catalog_entry`, `catalog_sort_key` |
 | Knob ids an entry may list | `_knobs_table.py` `KNOBS_BY_ID`; shared order in `_knobs_shared.py` `SHARED_KNOBS` | shared ids first, then private ones |
-| Context-extension knobs | `context_knob_architectures()` | which `general.architecture` each knob targets |
+| Context knobs | `context_knob_architectures()`; `_knobs_k2_horizon.py` | which `general.architecture` each YaRN knob targets; how a native context above 256K gets capped (guide §4 `context_window`) |
 | MTP | `offers_builtin_mtp`, `_knobs_mtp.py`, `_mtp_sidecars.py` (`mtp_sidecars.json`, `MTP_HEAD_MIN_LLAMACPP_VERSION`) | built-in layers vs standalone heads |
 | Import-time invariants | `_catalog.py` `_validate_catalog` | thinking slugs must exist, MTP/knob agreement, … |
 | Thinking families | `_thinking.py`; per-request field names in `llamacpp/_llama.py` `_TIER_TEMPLATE_KWARG` and `_build_thinking_extra_body` | family frozensets, `QWEN_TIER_TOKEN_BUDGETS` |

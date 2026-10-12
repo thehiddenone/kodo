@@ -1902,6 +1902,14 @@ before it must answer. Four mechanisms exist, keyed off `base_llm` (never
   matter only for a per-request *token* cap (`reasoning_budget_tokens`), which
   this family does not use.
 
+`K2-Horizon-32B` is in **no** family (2026-10-11), although its template
+takes the same nested `reasoning_effort` with GPT-OSS's `low`/`medium`/`high`
+vocabulary. Its card asks for `high` always, the template already defaults
+to `high`, and on current llama.cpp `medium`/`low` leave the answer and tool
+calls in `reasoning_content` (ggml-org/llama.cpp#30246, fix PR #30335 open).
+Joining `gpt_oss_reasoning_effort` would also start it at that family's
+`medium` default. See `catalog/K2-Horizon-32B/README.md`.
+
 Further families exist that are *not* local and therefore not in
 `local_registry/` at all — **one per cloud vendor**. See §4.5a.
 
@@ -2151,7 +2159,7 @@ the two editors while offering it in the other would be arbitrary.
 
 **Private per-model knobs.** Anything needing model knowledge is a private
 knob, defined in its own `_knobs_<family>.py` module (`_knobs_qwen.py`,
-`_knobs_laguna.py`, `_knobs_mtp.py`) and registered by id in
+`_knobs_laguna.py`, `_knobs_k2_horizon.py`, `_knobs_mtp.py`) and registered by id in
 `_knobs_table.KNOBS_BY_ID`, which is the only way a catalog file can name it
 (§4.0). The two Qwen ones are the YaRN
 long-context knobs built by `_knobs_context.make_yarn_context_knob`, which
@@ -2177,6 +2185,19 @@ runs at its unscaled native length, so there is no "native" option to offer.
 `256k` (default, no args — relies on the GGUF's own baked-in scaling) / `512k`
 / `1m`, where the latter two write the same explicit YaRN args as the Qwen
 knobs, computed off the real native context of 8192.
+
+**`context-k2-horizon` caps rather than extends** (`_knobs_k2_horizon.py`,
+2026-10-11). K2-Horizon-32B's GGUF has a native 524288-token context, and
+the base `--ctx-size 0` means "allocate the full trained length". Since
+llama.cpp #19070 (2026-01) an explicit `--ctx-size 0` also disables
+`--fit`'s context shrinking, so the default launch would reserve a ~73GB
+q8_0 KV cache (all 64 layers are full attention). The knob offers `128k`
+(default, `--ctx-size 131072`) / `256k` (`--ctx-size 262144`) / `512k`
+(native, no args). No option needs YaRN, so it writes no `--override-kv`
+and is absent from `context_knob_architectures()`. An explicit non-zero
+`--ctx-size` is honored exactly (`--fit` offloads layers instead).
+`test/test_local_registry_k2_horizon_context.py` asserts that no shipped
+entry launches above 256K by default.
 
 **MTP (Multi-Token Prediction) speculative decoding** is one knob shared
 across every family that has it, `spec-decoding-mtp`
@@ -2230,7 +2251,9 @@ stays at the field's default `False`, including entries that look like
 plausible candidates: Ornith15-9B and Ornith10-9B/-35B-A3B (no MTP tensors
 in the underlying weights, or unverifiable), Granite-4.2-30B and
 Granite-4.2-8B (no `granite.nextn_predict_layers` in any of their eight quants
-each and no standalone heads, checked 2026-10-11), and Qwen38-Flash-Next (its quant
+each and no standalone heads, checked 2026-10-11), K2-Horizon-32B (no
+`k2-horizon.nextn_predict_layers` in any of its eight quants and no
+standalone heads, checked 2026-10-11), and Qwen38-Flash-Next (its quant
 GGUFs have no `nextn_predict_layers` — the head ships only as the repo's
 `MTP/` standalone files, which since 2026-10-04 reach it through the head
 picker, §4.0a).
@@ -2479,6 +2502,13 @@ top_p 0.95 / top_k 20, while the GGUF headers say `general.sampling.temp =
 1.0`; the card won, so every `Qwen38-35B-A3B-Distill` entry ships
 `{"tail-culling": "none", "temperature": "t06", "nucleus-sampling":
 "k20-p095"}`, plus `kv-cache: f16` on BF16. See the family README.
+
+**Update 2026-10-11 (K2-Horizon-32B):** a sixth family ships sampling
+defaults. IFM's card says `temperature=1.0`, `top_p=0.95`, Granite 4.2's
+recipe, so every `K2-Horizon-32B` entry ships `{"tail-culling": "none",
+"temperature": "t10", "nucleus-sampling": "p095"}`, plus `kv-cache: f16` on
+BF16. The GGUF header has no `general.sampling.*` keys. See the family
+README.
 
 Because selections are stored sparsely (§4.6), changing a `knob_defaults`
 value in a later release reaches every user who never deliberately moved that

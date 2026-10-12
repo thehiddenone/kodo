@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 
 from ._knobs import LlamaKnob
+from ._knobs_k2_horizon import K2_HORIZON_CONTEXT_KNOB
 from ._knobs_laguna import LAGUNA_CONTEXT_KNOB
 from ._knobs_mtp import MTP_SPEC_DECODE_KNOB
 from ._knobs_qwen import QWEN4EXP_CONTEXT_KNOB, QWEN_CONTEXT_KNOB, QWEN_MOE_CONTEXT_KNOB
@@ -37,6 +38,7 @@ _ALL_KNOBS: tuple[LlamaKnob, ...] = SHARED_KNOBS + (
     QWEN_MOE_CONTEXT_KNOB,
     QWEN4EXP_CONTEXT_KNOB,
     LAGUNA_CONTEXT_KNOB,
+    K2_HORIZON_CONTEXT_KNOB,
     MTP_SPEC_DECODE_KNOB,
 )
 
