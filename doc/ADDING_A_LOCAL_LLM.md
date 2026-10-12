@@ -186,6 +186,10 @@ message.
   8 of 43 layers, so its totals are file size + ~3-4 GB. `min_memory` is the
   smallest sensible total and `memory` the comfortable one. kodo-vsix compares
   both against detected VRAM+RAM ([LLM_REGISTRY.md](LLM_REGISTRY.md) §4.4).
+  When the quant is installed on a unified-memory Mac, measure instead of
+  estimating: `kodo-memcheck <entry> --ctx-size 131072` prints the total in
+  the same GB unit ([MEMCHECK.md](MEMCHECK.md)). Pass `--cache-type-k/-v` when
+  the entry's `kv-cache` default isn't the one you're sizing for.
 - **`gpu_tip` / `mac_tip`**: copy the voice of the existing entries
   ([LLM_REGISTRY.md](LLM_REGISTRY.md) §4). `gpu_tip` pairs a modest 8-16 GB
   GPU with DDR5 system RAM and names the offload style: expert offload for

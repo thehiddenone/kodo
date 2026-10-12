@@ -1,10 +1,10 @@
 """Behavior tests for the ``python -m`` entry points of Kōdo's sub-packages.
 
 Covers ``kodo.server.__main__`` (``kodo-server``: claim the discovery file,
-serve on loopback until a stop is requested, then clean up) and the three
-one-line ``__main__`` shims of ``kodo.harbor``, ``kodo.headless`` and
-``kodo.llamaserver``, which hand ``sys.argv[1:]`` to the package's ``main`` and
-exit with its return code.
+serve on loopback until a stop is requested, then clean up) and the four
+one-line ``__main__`` shims of ``kodo.harbor``, ``kodo.headless``,
+``kodo.llamaserver`` and ``kodo.memcheck``, which hand ``sys.argv[1:]`` to
+the package's ``main`` and exit with its return code.
 
 ``kodo.__main__`` (the ``kodo`` diagnostics CLI) has its own module,
 ``test_main.py``.
@@ -33,6 +33,7 @@ from aiohttp import web
 import kodo.harbor
 import kodo.headless
 import kodo.llamaserver
+import kodo.memcheck
 import kodo.server.__main__ as server_main
 from kodo.server import Config, Lifecycle
 
@@ -263,7 +264,7 @@ def test_server_script_passes_argv_and_swallows_ctrl_c(
 
 
 # ---------------------------------------------------------------------------
-# The one-line shims: kodo.harbor / kodo.headless / kodo.llamaserver
+# The one-line shims: kodo.harbor / kodo.headless / kodo.llamaserver / kodo.memcheck
 # ---------------------------------------------------------------------------
 
 
@@ -273,6 +274,7 @@ def test_server_script_passes_argv_and_swallows_ctrl_c(
         pytest.param(kodo.harbor, id="harbor"),
         pytest.param(kodo.headless, id="headless"),
         pytest.param(kodo.llamaserver, id="llamaserver"),
+        pytest.param(kodo.memcheck, id="memcheck"),
     ],
 )
 def test_shim_runs_the_package_main_and_exits_with_its_code(

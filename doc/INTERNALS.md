@@ -57,12 +57,14 @@ source:
 | `runtime` | `common`, `transport`, `toolspecs`, `tools`, `findings`, `plan`, `workproducts`, `guided_state`, `project`, `state`, `subagents`, `llms`, `titling`, `mirror`, `shellparser`, `binutils` |
 | `server` | `common`, `transport`, `project`, `state`, `subagents`, `llms`, `titling`, `runtime`, `binutils` |
 | `llamaserver` | `llms`, `project` |
+| `memcheck` | `llms`, `project` |
 | `headless` | `common`, `transport` |
 | `harbor` | `headless`, `llms`, `binutils`, `project` |
 | `harbor.agent` | `headless` (+ the third-party `harbor`) |
 
 `llamaserver` (the `kodo-llama-server` command) is a leaf in the other
-direction: nothing in `kodo` imports it. `headless` (the `kodo-headless`
+direction: nothing in `kodo` imports it. Neither does anything import
+`memcheck` (the `kodo-memcheck` command, [MEMCHECK.md](MEMCHECK.md)). `headless` (the `kodo-headless`
 command) is imported only by `harbor` (the `kodo-harbor` command,
 [HARBOR.md](HARBOR.md)), which is itself a leaf. `harbor.agent` is the one
 module in `kodo` that imports the third-party `harbor` package, and only

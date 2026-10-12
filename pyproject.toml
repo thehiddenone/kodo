@@ -27,6 +27,7 @@ dependencies = [
 kodo = "kodo.__main__:main"
 kodo-server = "kodo.server.__main__:main"
 kodo-llama-server = "kodo.llamaserver:main"
+kodo-memcheck = "kodo.memcheck:main"
 kodo-headless = "kodo.headless:main"
 kodo-harbor = "kodo.harbor:main"
 
