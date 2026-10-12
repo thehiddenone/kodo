@@ -1305,7 +1305,7 @@ so it is the floor for both families' heads. unsloth measured the BF16
 Flash-Next head as bigger *and slower* than Q8_0 with near-identical
 acceptance (66.5% vs 66.1%); it is still listed first because the list is
 ordered by precision, not by speed. The other MTP families (Ornith15-35B-A3B,
-Qwen35-9B, Qwen36-*, Ling-3.0-Flash) publish no standalone heads and keep the checkbox.
+Qwen35-9B, Qwen36-*, Ling-3.0-Flash, Qwen38-9B-Distill) publish no standalone heads and keep the checkbox.
 
 ### 4.0b The Model Importer agent — catalog files from a Hugging Face repo
 
@@ -1820,7 +1820,7 @@ before it must answer. Four mechanisms exist, keyed off `base_llm` (never
   `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith15-35B-A3B`, `Ornith15-9B`,
   `Ornith10-35B-A3B`, `Ornith10-9B`, `Qwen38-27B`,
   `Laguna-S-2.1`, `Laguna-XS-2.1`, `Nanbeige4.2-3B`, `Nemotron35-30B-A3B`,
-  `Ling-3.0-Flash`, `Granite-4.2-30B`, `Granite-4.2-8B`
+  `Ling-3.0-Flash`, `Granite-4.2-30B`, `Granite-4.2-8B`, `Qwen38-9B-Distill`
   (`QWEN_REASONING_BUDGET_FAMILY` in `kodo/llms/local_registry/`; notably
   **not** `Qwen3-Coder-Next-80B`, which despite the name shares no thinking
   mechanism with the rest of the Qwen lineup — it has no thinking family at
@@ -2219,7 +2219,9 @@ code above already insists on for `arch_key`.
 As of this writing, `mtp_supported=True` on: every Ornith15-35B-A3B entry,
 every Qwen35-9B entry, every Qwen36-35B-A3B entry, every Qwen38-27B entry,
 every Ling-3.0-Flash entry (`bailingmoe3.nextn_predict_layers = 1`, checked
-on all eight quants 2026-10-09), and the four `unsloth/Qwen3.6-27B-MTP-GGUF`-backed Qwen36-27B entries (not
+on all eight quants 2026-10-09), every Qwen38-9B-Distill entry
+(`qwen35.nextn_predict_layers = 1`, checked on all five quants 2026-10-11),
+and the four `unsloth/Qwen3.6-27B-MTP-GGUF`-backed Qwen36-27B entries (not
 its `atomicchat-qwen36-27b-q8` sibling). Everything else in the catalog
 stays at the field's default `False`, including entries that look like
 plausible candidates: Ornith15-9B and Ornith10-9B/-35B-A3B (no MTP tensors
@@ -2460,6 +2462,13 @@ recipe, the maintainer chose to reproduce it exactly on both sizes. Every
 `Granite-4.2-30B` and `Granite-4.2-8B` entry now ships `{"tail-culling":
 "none", "temperature": "t10", "nucleus-sampling": "p095"}`, plus
 `kv-cache: f16` on BF16.
+
+**Update 2026-10-11 (Qwen38-9B-Distill):** a fourth family ships sampling
+defaults. empero-ai's card recommends temperature 0.6 / top_p 0.95 / top_k
+20, Qwen3.5's own settings, so every `Qwen38-9B-Distill` entry ships Ling's
+recipe, `{"tail-culling": "none", "temperature": "t06",
+"nucleus-sampling": "k20-p095"}`, plus `kv-cache: f16` on BF16. See the
+family README.
 
 Because selections are stored sparsely (§4.6), changing a `knob_defaults`
 value in a later release reaches every user who never deliberately moved that

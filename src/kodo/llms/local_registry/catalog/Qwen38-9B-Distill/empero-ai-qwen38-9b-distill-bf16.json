@@ -1,0 +1,34 @@
+{
+  "description": "Qwen 3.8 9B Distill BF16 by empero-ai",
+  "repo_id": "empero-ai/Qwen3.8-9B-Distill-GGUF",
+  "filename": "Qwen3.8-9B-BF16.gguf",
+  "quant_author": "empero-ai",
+  "quant_type": "BF16",
+  "size_hint": "18.4 GB",
+  "llm_author": "empero-ai",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/LICENSE",
+  "gpu_tip": "~24GB total at 128K context — the full-precision build, and a little more than a 24GB GPU (e.g. RTX 4090 or RTX 3090) holds on its own at full context. It is a dense build, so llama.cpp offloads whole layers to system RAM to cover the rest, and every layer that spills costs real speed; the quantized builds below leave much more headroom.",
+  "mac_tip": "Needs ~24GB — too tight for a 24GB MacBook Pro once macOS takes its share; a 32GB MacBook Pro (M4 Pro, M5, or M5 Pro) fits it comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 11063,
+  "min_memory": 24,
+  "memory": 32,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {
+    "kv-cache": "f16",
+    "tail-culling": "none",
+    "temperature": "t06",
+    "nucleus-sampling": "k20-p095"
+  }
+}

@@ -44,6 +44,7 @@ QWEN_REASONING_BUDGET_FAMILY: frozenset[str] = frozenset(
         "Ling-3.0-Flash",
         "Granite-4.2-30B",
         "Granite-4.2-8B",
+        "Qwen38-9B-Distill",
     }
 )
 
@@ -217,6 +218,13 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "huge": 16384,
     },
     "Granite-4.2-8B": {
+        "minimal": 2048,
+        "low": 4096,
+        "medium": 8192,
+        "high": 16384,
+        "huge": 32768,
+    },
+    "Qwen38-9B-Distill": {
         "minimal": 2048,
         "low": 4096,
         "medium": 8192,

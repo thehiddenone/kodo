@@ -1,0 +1,33 @@
+{
+  "description": "Qwen 3.8 9B Distill Q6_K by empero-ai",
+  "repo_id": "empero-ai/Qwen3.8-9B-Distill-GGUF",
+  "filename": "Qwen3.8-9B-Q6_K.gguf",
+  "quant_author": "empero-ai",
+  "quant_type": "Q6_K",
+  "size_hint": "7.56 GB",
+  "llm_author": "empero-ai",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/LICENSE",
+  "gpu_tip": "~12GB total at 128K context — near-lossless, and comfortably fits a 16GB GPU (e.g. RTX 5070 Ti), with room to spare.",
+  "mac_tip": "Needs ~12GB — fits a 16GB MacBook Pro (M4 or M5) comfortably.",
+  "context_window": 262144,
+  "llamacpp_version": 11063,
+  "min_memory": 12,
+  "memory": 16,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {
+    "tail-culling": "none",
+    "temperature": "t06",
+    "nucleus-sampling": "k20-p095"
+  }
+}
