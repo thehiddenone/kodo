@@ -24,5 +24,9 @@
     "nucleus-sampling",
     "spec-decoding-mtp"
   ],
-  "knob_defaults": {}
+  "knob_defaults": {
+    "tail-culling": "none",
+    "temperature": "t06",
+    "nucleus-sampling": "k20-p095"
+  }
 }

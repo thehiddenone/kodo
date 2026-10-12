@@ -137,14 +137,18 @@ message.
     `spec-decoding-mtp-head:…` id into an entry file.
 - **`knob_defaults`**: `{"kv-cache": "f16"}` for F16/BF16 weights, `{}`
   otherwise ([LLM_REGISTRY.md](LLM_REGISTRY.md) §4.6a), plus sampling
-  defaults only when the maintainer chose to ship the card's (§3). Both
-  outcomes have precedent. Ling-3.0-Flash's card asks for temperature 0.6 /
-  top_p 0.95 / top_k 20 and it keeps the shared defaults. Granite-4.2-30B's
-  card insists on temperature 1.0 / top_p 0.95 for every task, and it ships
-  `{"temperature": "t10", "nucleus-sampling": "p095"}`. Map the card's values
-  onto existing knob options; if a value has no matching option, say so
-  instead of adding one silently. Record the choice and the card's wording
-  in the README either way.
+  defaults only when the maintainer chose to ship the card's (§3). Most
+  families keep the shared defaults. Granite-4.2-30B's card insists on
+  temperature 1.0 / top_p 0.95 for every task, and it ships
+  `{"temperature": "t10", "nucleus-sampling": "p095"}`. Ling-3.0-Flash's
+  card asks for temperature 0.6 / top_p 0.95 / top_k 20, and it ships
+  `{"temperature": "t06", "nucleus-sampling": "k20-p095", "tail-culling":
+  "none"}`. Map the card's values onto existing knob options. If a value has
+  no matching option, say so instead of adding one silently. Mind min-p:
+  cards usually assume vLLM/SGLang, where min_p defaults to 0, but
+  llama.cpp's own default is 0.05. Leaving `tail-culling` on `off` keeps the
+  0.05, and only `none` turns it off. Record the choice and the card's
+  wording in the README either way.
 - **`llamacpp_version`**: the oldest llama.cpp build that runs the model
   **correctly for an agent**. This is often newer than the build the quants
   were made with. Check all four:

@@ -25,6 +25,9 @@
     "spec-decoding-mtp"
   ],
   "knob_defaults": {
-    "kv-cache": "f16"
+    "kv-cache": "f16",
+    "tail-culling": "none",
+    "temperature": "t06",
+    "nucleus-sampling": "k20-p095"
   }
 }

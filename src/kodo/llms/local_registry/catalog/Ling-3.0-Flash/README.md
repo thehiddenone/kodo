@@ -51,3 +51,18 @@ closed #28724).
 BF16/Q8_0/Q6_K/Q5_K_M/Q4_K_M plus the Q3_K_XL/IQ3_M/Q2_K_L low-RAM tail.
 Sampling is left on the shared defaults like every other family, although
 the card recommends temperature 0.6, top_p 0.95, top_k 20.
+
+**Update 2026-10-11: the card's sampling now ships as defaults**
+(maintainer's choice). The paragraph above kept the shared defaults. The
+card says, under "Quickstart", "We recommend the sampling parameters
+`temperature=0.6`, `top_p=0.95`, and `top_k=20`", and its evaluation notes
+call these "the default parameters for Ling-3.0-flash". The GGUF header has
+no `general.sampling.*` keys, and the base repo has no
+`generation_config.json`. The shared knobs could not express that recipe
+exactly. Every top-p rung pins `--top-k 0`, and the knobs' "off" states
+leave llama.cpp's own min-p 0.05 in place, whereas the card's SGLang/vLLM
+setups default to min_p 0. Two shared options were added to close that gap:
+`nucleus-sampling: k20-p095` (`--top-k 20 --top-p 0.95`) and
+`tail-culling: none` (`--min-p 0.0`). Every entry now defaults to those two
+plus `temperature: t06` (`--temp 0.6`). The BF16 entry keeps
+`kv-cache: f16`. Users can move any of the three knobs back.

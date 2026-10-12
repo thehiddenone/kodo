@@ -2107,11 +2107,11 @@ The shared knobs — offered by every launchable entry, `_knobs_shared.py`:
 | id | kind | options / range | flags |
 |----|------|-----------------|-------|
 | `kv-cache` | dropdown | `q8_0` (default), `q4_0`, `f16` | `--cache-type-k`, `--cache-type-v` |
-| `tail-culling` | dropdown | `off` (default), `minimal`, `light`, `light-medium`, `medium`, `medium-strong`, `strong` | `--min-p`, `--top-nsigma` |
+| `tail-culling` | dropdown | `off` (default), `none` (min-p 0), `minimal`, `light`, `light-medium`, `medium`, `medium-strong`, `strong` | `--min-p`, `--top-nsigma` |
 | `temperature` | dropdown | 13 rungs, `very-high` (1.5) down to `near-greedy` (0.05); `default` (0.8) — full table in QUANT_SAMPLING.md §7 | `--temp` |
 | `gpu-layers` | number, advanced | default `-1` | `--n-gpu-layers` |
 | `cpu-moe` | number, advanced | unset by default | `--n-cpu-moe` |
-| `nucleus-sampling` | dropdown, advanced | `off` (default), `top-p 1.00` .. `top-p 0.80` in steps of `0.05` | `--top-k`, `--top-p` |
+| `nucleus-sampling` | dropdown, advanced | `off` (default), `top-p 1.00` .. `top-p 0.80` in steps of `0.05`, `k20-p095` (top-k 20 + top-p 0.95) | `--top-k`, `--top-p` |
 
 `kv-cache` is what replaced the `make_default_kv_q8` / `make_default_kv_fp16`
 pair of predefined flavors: an F16/BF16 GGUF's catalog file now just
@@ -2128,8 +2128,12 @@ That is the same "one axis moves at a time" rule the five predecessor preset
 flavors followed by convention (doc/QUANT_SAMPLING.md §4) — as knobs it is
 enforced structurally by the invariant above. `nucleus-sampling` is `off` by
 default, so unless a rung is picked, llama.cpp's own `top_k 40`/`top_p 0.95`
-defaults apply alongside whatever `tail-culling` is doing; picking a rung
-also forces `--top-k 0` so `--top-p` is the only truncation that knob applies
+defaults apply alongside whatever `tail-culling` is doing; picking a top-p
+rung also forces `--top-k 0` so `--top-p` is the only truncation that knob
+applies, except `k20-p095`, which writes the `--top-k 20 --top-p 0.95` pair
+several model cards recommend. `tail-culling`'s `off` likewise leaves
+llama.cpp's own `min_p 0.05` in force, and `none` writes `--min-p 0.0` to
+turn it off
 (flash attention was previously a shared knob here too, but was removed —
 modern llama.cpp always uses it when the build/hardware support it, so
 forcing it on or off is no longer offered as a Default-profile control; it
@@ -2436,6 +2440,16 @@ IBM's card states temperature 1.0 / top_p 0.95 for all tasks, including tool
 calling, and the GGUF header carries the same values, so the maintainer chose
 to follow it. Whether a family ships its card's sampling is decided per family
 (doc/ADDING_A_LOCAL_LLM.md §3) and recorded in its README.
+
+**Update 2026-10-11 (later the same day):** the parenthetical above, that
+Ling-3.0-Flash "still doesn't" ship sampling defaults, no longer holds.
+Every `Ling-3.0-Flash` entry now ships `{"temperature": "t06",
+"nucleus-sampling": "k20-p095", "tail-culling": "none"}`: temperature 0.6,
+top-k 20, top-p 0.95 and min-p 0, which is the card's recipe exactly. Two
+shared options were added for it. Previously no top-p rung could keep a
+non-zero top-k, and no tail-culling option could undo llama.cpp's own min-p
+0.05 default, which the card's vLLM/SGLang setups do not apply. See the
+family README.
 
 Because selections are stored sparsely (§4.6), changing a `knob_defaults`
 value in a later release reaches every user who never deliberately moved that

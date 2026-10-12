@@ -392,7 +392,8 @@ shared dropdowns, one per axis, defined in
 
 | Knob | Option | Flags |
 |---|---|---|
-| **Tail culling** | `off` *(default)* | *(none — llama.cpp's own `top_k 40`/`top_p 0.95` apply, unless Nucleus sampling below overrides them)* |
+| **Tail culling** | `off` *(default)* | *(none — llama.cpp's own `min_p 0.05` applies, as do its `top_k 40`/`top_p 0.95` unless Nucleus sampling below overrides them)* |
+| | `none` | `--min-p 0.0` — turns min-p off; for reproducing a vLLM/SGLang model-card recipe |
 | | `minimal` | `--min-p 0.02` |
 | | `light` | `--min-p 0.05` — §3a, the mildest explicit cull |
 | | `light-medium` | `--min-p 0.065` |
@@ -414,6 +415,7 @@ shared dropdowns, one per axis, defined in
 | | `near-greedy` — "Near-greedy (0.05)" | `--temp 0.05` |
 | **Nucleus sampling** *(advanced)* | `off` *(default)* | *(none)* |
 | | `top-p 1.00` … `top-p 0.80`, step `0.05` | `--top-k 0 --top-p <value>` |
+| | `k20-p095` — "top-k 20 + top-p 0.95" | `--top-k 20 --top-p 0.95` — the Ling 3.0 / Qwen3 card recipe |
 
 The Temperature column lists each option's id *and* its display name because
 the two deliberately no longer echo one another. The names are one monotone
@@ -467,7 +469,7 @@ Four constraints on any change to these values:
    (`--ctx-size 0`, `--reasoning-format auto`, `--jinja`) and every other
    knob's flags are merged in around it. This is why the tail-culling options
    carry only `--min-p` (plus `--top-nsigma` at the strongest rung), the
-   nucleus-sampling options carry only `--top-k 0`/`--top-p`, and the
+   nucleus-sampling options carry only `--top-k`/`--top-p`, and the
    temperature options carry nothing but `--temp` — none of the three ever
    touches another's flags.
 2. **Every value must stay inside its sensible band** (SAMPLING.md §8d). Both

@@ -134,9 +134,21 @@ TAIL_CULLING_KNOB = LlamaKnob(
             id="off",
             name="llama.cpp defaults",
             description=(
-                "No explicit min-p or top-n-sigma settings. Fine for an 8-bit or larger quant, "
-                "where there is little tail noise to cut in the first place."
+                "No explicit min-p or top-n-sigma settings, so llama.cpp's own min-p 0.05 applies. "
+                "Fine for an 8-bit or larger quant, where there is little tail noise to cut in "
+                "the first place."
             ),
+        ),
+        KnobOption(
+            id="none",
+            name="None (min-p 0)",
+            description=(
+                "Turns min-p off entirely. llama.cpp's own defaults already apply min-p 0.05, so "
+                "this is the only option that culls nothing. For reproducing a model card's "
+                "recommended sampling, which is usually stated for vLLM or SGLang, where min-p "
+                "defaults to 0."
+            ),
+            llama_args={"--min-p": "0.0"},
         ),
         KnobOption(
             id="minimal",
@@ -401,10 +413,12 @@ CPU_MOE_KNOB = LlamaKnob(
 
 #: Nucleus sampling: a hard cutoff in cumulative-probability space, layered
 #: independently on top of :data:`TAIL_CULLING_KNOB`'s min-p/top-n-sigma
-#: (see the module docstring on why these are separate axes). Every active
-#: option also pins ``--top-k 0`` so top-p is the only thing this knob's
+#: (see the module docstring on why these are separate axes). Every top-p
+#: rung also pins ``--top-k 0`` so top-p is the only thing that rung's
 #: cutoff depends on — otherwise llama.cpp's own ``top-k 40`` would silently
-#: prune the candidate set before top-p ever saw it. Advanced because tail
+#: prune the candidate set before top-p ever saw it. The one exception is
+#: ``k20-p095``, which sets ``--top-k 20`` explicitly because that exact pair
+#: is a model-card recipe (Ling-3.0-Flash ships it as a default). Advanced because tail
 #: culling (min-p) is the better first tool for quantization noise; this is
 #: for reproducing a specific external nucleus-sampling recipe or chasing an
 #: exact cutoff tail-culling's percentile framing does not express.
@@ -421,8 +435,9 @@ NUCLEUS_SAMPLING_KNOB = LlamaKnob(
     name="Nucleus sampling (top-p)",
     description=(
         "A hard cutoff on the candidate token set: only the smallest group of tokens whose "
-        "probabilities add up to at least top-p is kept, and top-k is disabled so top-p is the "
-        "only truncation this knob applies. Independent of Tail culling above, and stacks with "
+        "probabilities add up to at least top-p is kept. The top-p rungs disable top-k, so top-p "
+        "is the only truncation they apply; the top-k 20 option pairs both. Independent of Tail "
+        "culling above, and stacks with "
         "it — reach for this when you want a fixed, reproducible cutoff rather than the "
         "min-p-relative-to-the-top-token shape Tail culling uses."
     ),
@@ -448,6 +463,16 @@ NUCLEUS_SAMPLING_KNOB = LlamaKnob(
                 llama_args={"--top-k": "0", "--top-p": value},
             )
             for value in _NUCLEUS_SAMPLING_STEPS
+        ),
+        KnobOption(
+            id="k20-p095",
+            name="top-k 20 + top-p 0.95",
+            description=(
+                "Keeps at most the 20 most likely tokens, then the smallest set of those whose "
+                "cumulative probability reaches 0.95. Use this to reproduce model cards that "
+                "recommend top_k=20 with top_p=0.95, such as Ling 3.0 and Qwen3."
+            ),
+            llama_args={"--top-k": "20", "--top-p": "0.95"},
         ),
     ),
     default_option="off",
