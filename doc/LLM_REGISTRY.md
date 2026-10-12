@@ -1820,7 +1820,7 @@ before it must answer. Four mechanisms exist, keyed off `base_llm` (never
   `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith15-35B-A3B`, `Ornith15-9B`,
   `Ornith10-35B-A3B`, `Ornith10-9B`, `Qwen38-27B`,
   `Laguna-S-2.1`, `Laguna-XS-2.1`, `Nanbeige4.2-3B`, `Nemotron35-30B-A3B`,
-  `Ling-3.0-Flash`, `Granite-4.2-30B`
+  `Ling-3.0-Flash`, `Granite-4.2-30B`, `Granite-4.2-8B`
   (`QWEN_REASONING_BUDGET_FAMILY` in `kodo/llms/local_registry/`; notably
   **not** `Qwen3-Coder-Next-80B`, which despite the name shares no thinking
   mechanism with the rest of the Qwen lineup — it has no thinking family at
@@ -2223,9 +2223,9 @@ on all eight quants 2026-10-09), and the four `unsloth/Qwen3.6-27B-MTP-GGUF`-bac
 its `atomicchat-qwen36-27b-q8` sibling). Everything else in the catalog
 stays at the field's default `False`, including entries that look like
 plausible candidates: Ornith15-9B and Ornith10-9B/-35B-A3B (no MTP tensors
-in the underlying weights, or unverifiable), Granite-4.2-30B (no
-`granite.nextn_predict_layers` in any of its eight quants and no standalone
-heads, checked 2026-10-11), and Qwen38-Flash-Next (its quant
+in the underlying weights, or unverifiable), Granite-4.2-30B and
+Granite-4.2-8B (no `granite.nextn_predict_layers` in any of their eight quants
+each and no standalone heads, checked 2026-10-11), and Qwen38-Flash-Next (its quant
 GGUFs have no `nextn_predict_layers` — the head ships only as the repo's
 `MTP/` standalone files, which since 2026-10-04 reach it through the head
 picker, §4.0a).
@@ -2427,9 +2427,9 @@ every catalog entry whose `quant_type` is `"F16"`/`"BF16"` (unquantized
 weights) sets it so the KV cache defaults to full
 precision there instead of the knob's own `q8_0` default — a quantized-only
 cache would otherwise be the least precise thing in an unquantized-weight
-pipeline. As of this writing that's the `gpt-oss-120b`/`gpt-oss-20b` F16
-entries and the `laguna-xs-2.1`/`qwen35-9b`/`ornith10-9b`/`ornith10-35b-a3b`/
-`ornith15-9b`/`ornith15-35b-a3b` BF16 entries — any new F16/BF16 entry should set it too.
+pipeline. As of 2026-10-11 every shipped F16/BF16 entry sets it (the
+`gpt-oss-*` F16 entries and every family's BF16 entry), and any new F16/BF16
+entry should set it too.
 
 **Update 2026-10-11:** the kv-cache default above is no longer the only use.
 Every `Granite-4.2-30B` entry also ships sampling defaults,
@@ -2450,6 +2450,16 @@ shared options were added for it. Previously no top-p rung could keep a
 non-zero top-k, and no tail-culling option could undo llama.cpp's own min-p
 0.05 default, which the card's vLLM/SGLang setups do not apply. See the
 family README.
+
+**Update 2026-10-11 (Granite-4.2-8B):** the first update above described
+Granite-4.2-30B's defaults as temperature and top-p only. That left
+llama.cpp's own min-p 0.05 in force, which IBM's recipe (stated for vLLM and
+transformers, where min-p is 0) does not apply, because `tail-culling: none`
+did not exist yet. When `Granite-4.2-8B` was added with the same card
+recipe, the maintainer chose to reproduce it exactly on both sizes. Every
+`Granite-4.2-30B` and `Granite-4.2-8B` entry now ships `{"tail-culling":
+"none", "temperature": "t10", "nucleus-sampling": "p095"}`, plus
+`kv-cache: f16` on BF16.
 
 Because selections are stored sparsely (§4.6), changing a `knob_defaults`
 value in a later release reaches every user who never deliberately moved that

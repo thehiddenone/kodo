@@ -87,3 +87,14 @@ knob back.
 
 **Not wired:** vision (the model is text-only anyway), the 512K extension
 (above), and the binary `low_effort` switch (above).
+
+**Update 2026-10-11 (later the same day): min-p is now 0 as well**
+(maintainer's choice, made while adding `Granite-4.2-8B`). The sampling
+paragraph above left tail culling at the shared default. That keeps
+llama.cpp's own min-p 0.05 in force, which IBM's recipe does not include:
+the card names no min-p, and its vLLM and SGLang serving sections default
+min-p to 0. The `tail-culling: none` option (`--min-p 0.0`) did not exist when
+this family shipped. It was added for Ling-3.0-Flash later the same day.
+Every entry now also defaults `tail-culling` to `none`, so a launch
+reproduces the card's recipe exactly. Users who never moved the knob pick
+up the new default, and an explicit choice is kept.

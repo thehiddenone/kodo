@@ -1,0 +1,31 @@
+{
+  "description": "Granite 4.2 8B Q8_0 by bartowski",
+  "repo_id": "bartowski/granite-4.2-8b-GGUF",
+  "filename": "granite-4.2-8b-Q8_0.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q8_0",
+  "size_hint": "9.35 GB",
+  "llm_author": "IBM",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~22GB total at 128K context, ~11GB of it KV cache, since all 40 of Granite's layers use full attention. Fits entirely on a 24GB GPU (e.g. RTX 4090 or RTX 3090) with no CPU offload; on a 16GB GPU (e.g. RTX 4060 Ti 16GB) llama.cpp's layer offloading runs the last few layers from DDR5 system RAM.",
+  "mac_tip": "Needs ~22GB — fits a 24GB MacBook Pro (M4, M4 Pro, M5, or M5 Pro), though it's close to the limit; a 32GB configuration leaves more headroom.",
+  "context_window": 131072,
+  "llamacpp_version": 11063,
+  "min_memory": 24,
+  "memory": 32,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {
+    "tail-culling": "none",
+    "temperature": "t10",
+    "nucleus-sampling": "p095"
+  }
+}

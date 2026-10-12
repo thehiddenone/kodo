@@ -25,6 +25,7 @@
   ],
   "knob_defaults": {
     "kv-cache": "f16",
+    "tail-culling": "none",
     "temperature": "t10",
     "nucleus-sampling": "p095"
   }

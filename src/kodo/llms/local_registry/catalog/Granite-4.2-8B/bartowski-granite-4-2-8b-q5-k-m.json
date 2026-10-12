@@ -1,0 +1,31 @@
+{
+  "description": "Granite 4.2 8B Q5_K_M by bartowski",
+  "repo_id": "bartowski/granite-4.2-8b-GGUF",
+  "filename": "granite-4.2-8b-Q5_K_M.gguf",
+  "quant_author": "bartowski",
+  "quant_type": "Q5_K_M",
+  "size_hint": "6.41 GB",
+  "llm_author": "IBM",
+  "license_name": "Apache License 2.0",
+  "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+  "gpu_tip": "~19GB total at 128K context. A 16GB GPU (e.g. RTX 4070 Ti Super) plus DDR5 system RAM covers it with only a little layer offloading; the KV cache knob's q4_0 option brings it under 16GB.",
+  "mac_tip": "Needs ~19GB — fits a 24GB MacBook Pro (M4, M4 Pro, M5, or M5 Pro) comfortably.",
+  "context_window": 131072,
+  "llamacpp_version": 11063,
+  "min_memory": 24,
+  "memory": 24,
+  "mtp_supported": false,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling"
+  ],
+  "knob_defaults": {
+    "tail-culling": "none",
+    "temperature": "t10",
+    "nucleus-sampling": "p095"
+  }
+}

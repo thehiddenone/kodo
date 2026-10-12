@@ -24,6 +24,7 @@
     "nucleus-sampling"
   ],
   "knob_defaults": {
+    "tail-culling": "none",
     "temperature": "t10",
     "nucleus-sampling": "p095"
   }

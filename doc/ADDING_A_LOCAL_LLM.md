@@ -122,7 +122,8 @@ message.
   ([LLM_REGISTRY.md](LLM_REGISTRY.md) §4.1b). There is no rename migration, by
   design.
 - **`filename`**: the first shard of a split GGUF. **`size_hint`**: the sum
-  of all shards in decimal GB, to one decimal (`"77.8 GB"`).
+  of all shards in decimal GB, to three significant figures: one decimal
+  from 10 GB up (`"77.8 GB"`), two below (`"5.54 GB"`).
 - **`context_window`**: the header's `<arch>.context_length`.
 - **`knobs`**: every id in `SHARED_KNOBS`, in that order (this includes
   `cpu-moe` even on dense models). Then add:
@@ -138,9 +139,10 @@ message.
 - **`knob_defaults`**: `{"kv-cache": "f16"}` for F16/BF16 weights, `{}`
   otherwise ([LLM_REGISTRY.md](LLM_REGISTRY.md) §4.6a), plus sampling
   defaults only when the maintainer chose to ship the card's (§3). Most
-  families keep the shared defaults. Granite-4.2-30B's card insists on
-  temperature 1.0 / top_p 0.95 for every task, and it ships
-  `{"temperature": "t10", "nucleus-sampling": "p095"}`. Ling-3.0-Flash's
+  families keep the shared defaults. The Granite 4.2 cards insist on
+  temperature 1.0 / top_p 0.95 for every task, and both sizes ship
+  `{"tail-culling": "none", "temperature": "t10", "nucleus-sampling":
+  "p095"}`. Ling-3.0-Flash's
   card asks for temperature 0.6 / top_p 0.95 / top_k 20, and it ships
   `{"temperature": "t06", "nucleus-sampling": "k20-p095", "tail-culling":
   "none"}`. Map the card's values onto existing knob options. If a value has
