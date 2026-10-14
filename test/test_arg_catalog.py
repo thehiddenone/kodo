@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import json
 
-from kodo.llms import LLAMA_ARG_CATALOG, RESERVED_LLAMA_ARGS, llama_arg_catalog_to_json
+from kodo.llms import (
+    LLAMA_ARG_CATALOG,
+    RESERVED_LLAMA_ARGS,
+    SAMPLING_PARAM_SPECS,
+    llama_arg_catalog_to_json,
+)
 
 _WIRE_KEYS = frozenset(
     {
@@ -26,6 +31,7 @@ _WIRE_KEYS = frozenset(
         "default",
         "sensible_minimum",
         "sensible_maximum",
+        "neutral",
         "valid_values",
     }
 )
@@ -70,3 +76,22 @@ def test_no_reserved_flag_is_offered() -> None:
     offered = {item["flag"] for item in llama_arg_catalog_to_json()}
 
     assert offered.isdisjoint(RESERVED_LLAMA_ARGS)
+
+
+def test_sampling_flags_carry_their_specs_neutral_value() -> None:
+    # The profile editor exempts this value from its recommended-band warning,
+    # so `--min-p 0` (outside min-p's 0.01–0.2 band, but its "off") stays
+    # savable — same as in the session sampling modal.
+    by_flag = {item["flag"]: item for item in llama_arg_catalog_to_json()}
+
+    for spec in SAMPLING_PARAM_SPECS:
+        if spec.cli_flags:
+            assert by_flag[spec.cli_flags[0]]["neutral"] == spec.neutral, spec.name
+
+
+def test_non_sampling_flags_have_no_neutral_value() -> None:
+    sampling_flags = {spec.cli_flags[0] for spec in SAMPLING_PARAM_SPECS if spec.cli_flags}
+
+    for item in llama_arg_catalog_to_json():
+        if item["flag"] not in sampling_flags:
+            assert item["neutral"] == "", item["flag"]

@@ -529,6 +529,13 @@ def _huge(fit_log: str) -> str:
     return fit_log.replace("65536 +    1396", "9965536 +    1396")
 
 
+def _tiny(fit_log: str) -> str:
+    """*fit_log* with a projection of a few MiB, so it fits any machine's RAM."""
+    return fit_log.replace("63890 +   65536 +    1396", "1 +   1 +    1").replace(
+        "2447 +       0 +     592", "1 +       0 +     1"
+    )
+
+
 @_POSIX_ONLY
 def test_dry_run_reports_the_projection_without_loading(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -565,8 +572,7 @@ def test_a_projection_that_fits_ram_is_then_measured_for_real(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     fake = _FakeLlama(tmp_path, monkeypatch, _CLI_LOG)
-    small = _FIT_LOG.replace("65536 +    1396", "1024 +    1396")
-    _install_fake_fit_params(tmp_path, monkeypatch, small)
+    _install_fake_fit_params(tmp_path, monkeypatch, _tiny(_FIT_LOG))
 
     assert main(["fake-model"]) == 0
 

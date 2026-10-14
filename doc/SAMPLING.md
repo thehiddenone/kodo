@@ -792,7 +792,11 @@ number", it removes the field from the wire.
 described in §8d are rendered in *both* editors, from the same
 `sensible_minimum`/`sensible_maximum` fields of the same pushed spec table, so a
 value that is a bad idea is advertised and flagged identically whether it is
-being set as a launch arg or as a session override:
+being set as a launch arg or as a session override. The profile editor reads
+them off `llama_arg_catalog`, whose sampling rows also carry the spec's
+`neutral` value (`""` on every other flag) so the §8d off-value exemption holds
+there too — `--min-p 0` saves cleanly on a user-defined profile, just as
+`min_p 0.0` applies cleanly in the session modal:
 
 - the session sampling modal (`kodo-vsix/src/webview/SamplingModal.tsx`) puts
   the ⚠ between a parameter's label and its input, above that parameter's

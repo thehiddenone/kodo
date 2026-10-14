@@ -940,7 +940,7 @@ Sent once after every `local_llm.*` / `llama_server_override.*` mutation (§7.6)
                            "advanced": false, "minimum": 0, "maximum": null, "step": 1024,
                            "choices": [], "placeholder": "", "default": "0 (the GGUF's own …)",
                            "sensible_minimum": null, "sensible_maximum": null,
-                           "valid_values": null } ],
+                           "neutral": "", "valid_values": null } ],
   "sampling_specs": [ { "name": "temperature", "kind": "float", "label": "Temperature",
                         "advanced": false, "minimum": 0.0, "maximum": 4.0,
                         "sensible_minimum": 0.0, "sensible_maximum": 2.0, "step": 0.05,

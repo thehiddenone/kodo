@@ -85,6 +85,13 @@ class LlamaArgSpec:
             raise the same ⚠ as the session sampling modal. ``None`` for every
             non-sampling flag.
         sensible_maximum: Upper end of the recommended band, or ``None``.
+        neutral: The value that *disables* the sampler this flag mirrors, as
+            display text (``"0.0"`` for ``--min-p``), carried through from
+            :attr:`~kodo.llms.SamplingParamSpec.neutral`. Exempt from the
+            recommended-band ⚠ for the same reason it is in the session
+            sampling modal: several samplers' off value sits outside their
+            useful active band, and a deliberate "off" is not suspicious.
+            Empty for every non-sampling flag.
         valid_values: Hard whitelist for a ``"str_list"`` flag (only
             ``samplers``), or ``None``. An entry outside it is a hard error,
             not advice — see :attr:`~kodo.llms.SamplingParamSpec.valid_values`.
@@ -104,6 +111,7 @@ class LlamaArgSpec:
     default: str = ""
     sensible_minimum: float | None = None
     sensible_maximum: float | None = None
+    neutral: str = ""
     valid_values: tuple[str, ...] | None = None
 
 
@@ -490,7 +498,7 @@ def _sampling_arg_specs() -> tuple[LlamaArgSpec, ...]:
     """The sampling half of the catalog, derived from :data:`SAMPLING_PARAM_SPECS`.
 
     Uses each spec's ``cli_flags[0]`` (its canonical long flag) and carries the
-    recommended band, ``samplers`` whitelist, step and help text straight
+    recommended band, neutral value, ``samplers`` whitelist, step and help text straight
     through, so the profile editor raises exactly the same ⚠ as the session
     sampling modal without a second copy of the table. Specs with no CLI flag
     at all (``min_keep``) are skipped — there is nothing to write into a
@@ -514,6 +522,7 @@ def _sampling_arg_specs() -> tuple[LlamaArgSpec, ...]:
             step=spec.step,
             sensible_minimum=spec.sensible_minimum,
             sensible_maximum=spec.sensible_maximum,
+            neutral=spec.neutral,
             valid_values=spec.valid_values,
         )
         for spec in SAMPLING_PARAM_SPECS
@@ -575,6 +584,7 @@ def llama_arg_catalog_to_json() -> list[dict[str, object]]:
             "default": spec.default,
             "sensible_minimum": spec.sensible_minimum,
             "sensible_maximum": spec.sensible_maximum,
+            "neutral": spec.neutral,
             "valid_values": list(spec.valid_values) if spec.valid_values is not None else None,
         }
         for spec in LLAMA_ARG_CATALOG

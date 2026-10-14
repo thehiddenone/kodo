@@ -2413,14 +2413,19 @@ nothing and pressing Apply never interrupts a window mid-generation.
 **kodo-vsix UI.** Three surfaces, in two places:
 
 - The **sidebar** LLM card carries a profile picker (`Default` + each
-  user-defined profile) and, whenever `Default` is selected, a **Configure**
-  button. Changing the picker posts `set_active_profile` and updates the card's
-  Context line immediately from the pending profile's own args — no round trip.
-  Configure deep-links into Kōdo Settings (`openKodoSettings('local-inference',
-  name)` → `KodoSettingsPanel.configureLocalModel`), because a modal of knobs
-  with descriptions and an Advanced section does not fit a 300px sidebar built
-  as a plain-JS string-embedded script.
-- The **Configure modal** (`settings-webview/ConfigureModal.tsx`) renders one
+  user-defined profile + a trailing **Manage Profiles...** item) and, whenever
+  `Default` is selected, a **⚙ Configure Default Profile** button. Changing the
+  picker to a profile posts `set_active_profile` and updates the card's Context
+  line immediately from the pending profile's own args — no round trip.
+  "Manage Profiles..." is an action, never a selection: choosing it snaps the
+  picker back to the profile that was selected and posts
+  `manage_local_model_profiles`. Both the ⚙ button and that item deep-link into
+  Kōdo Settings (`openKodoSettings('local-inference', {modal: 'configure' |
+  'manage_profiles', name})` → `KodoSettingsPanel.openLocalModelModal`, which
+  posts `configure_local_model` / `manage_local_model_profiles` to the
+  webview), because a modal of knobs with descriptions and an Advanced section
+  does not fit a 300px sidebar built as a plain-JS string-embedded script.
+- The **Configure Default Profile modal** (`settings-webview/ConfigureModal.tsx`) renders one
   block per knob — control, the knob's description, the selected option's own
   description, and the exact flags that state produces — with the advanced
   knobs behind a collapsible section that is collapsed every time the modal
@@ -2430,7 +2435,8 @@ nothing and pressing Apply never interrupts a window mid-generation.
   so "change three knobs, restart once" has to be possible.
 - The **Manage profiles modal** (`settings-webview/ProfileModal.tsx`) is the
   user-defined-profile editor — see §4.7 for its argument picker. The settings
-  panel's Local LLMs card offers both buttons (Configure, Manage profiles).
+  panel's Local LLMs card offers both buttons (Configure Default Profile,
+  Manage profiles).
 
 ### 4.6a Per-entry knob defaults (`knob_defaults`)
 
