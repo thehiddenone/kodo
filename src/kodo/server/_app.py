@@ -27,12 +27,17 @@ from huggingface_hub.errors import GatedRepoError
 from kodo.agents import (
     KIND_AGENT,
     KIND_SUBAGENT,
+    AgentCopyError,
     AgentInstallError,
     AgentLoadError,
     AgentRegistry,
+    AgentValidator,
     UserAgentDeleteError,
     UserAgentStore,
+    copy_agent,
+    copy_sources,
     install_source,
+    plan_copy,
     scan_source,
 )
 from kodo.binutils import ensure_all_utils
@@ -134,11 +139,14 @@ from kodo.transport import (
     EVT_LOCAL_LLM_UPDATES_AVAILABLE,
     MSG_AGENT_RUN,
     MSG_AGENT_SET,
+    MSG_AGENTS_COPY,
+    MSG_AGENTS_COPY_SCAN,
     MSG_AGENTS_DELETE,
     MSG_AGENTS_INSTALL,
     MSG_AGENTS_INSTALL_SCAN,
     MSG_AGENTS_LIST,
     MSG_AGENTS_RELOAD,
+    MSG_AGENTS_VALIDATE,
     MSG_BEDROCK_MODELS_REFRESH,
     MSG_CHECKPOINT_LIST,
     MSG_CHECKPOINT_REDO,
@@ -1063,14 +1071,20 @@ def _agents_payload(registry: AgentRegistry) -> dict[str, object]:
     edited by hand shows up after ``agents.reload``, exactly as it reaches the
     picker.
 
+    Each row carries ``warnings``, the number of lint findings on its prompt
+    (doc/AGENT_BUILDER.md §5.2), so the table can flag an entry before the user
+    asks for its report. ``builtins`` lists every built-in ``agents.copy``
+    accepts as a source, for the panel's copy picker.
+
     Args:
         registry: The live registry.
 
     Returns:
-        dict[str, object]: ``{agents: [...], root}``.
+        dict[str, object]: ``{agents: [...], builtins: [...], root}``.
     """
     root = kodo_agents_dir()
     configs = {top.name: top for top in registry.top_agents()}
+    validator = AgentValidator(registry)
     rows: list[dict[str, object]] = []
     for agent in registry.user_agents():
         config = configs.get(agent.name)
@@ -1083,6 +1097,7 @@ def _agents_payload(registry: AgentRegistry) -> dict[str, object]:
                 "description": config.description if config is not None else "",
                 "path": str(agent.source_path.parent),
                 "error": "",
+                "warnings": _warning_count(validator, agent.name),
             }
         )
     for entry in registry.broken_agents:
@@ -1095,9 +1110,31 @@ def _agents_payload(registry: AgentRegistry) -> dict[str, object]:
                 "description": "",
                 "path": str(entry.path),
                 "error": entry.error,
+                "warnings": _warning_count(validator, entry.name),
             }
         )
-    return {"agents": rows, "root": str(root)}
+    return {"agents": rows, "builtins": _copy_sources_payload(), "root": str(root)}
+
+
+def _warning_count(validator: AgentValidator, name: str) -> int:
+    """How many lint findings *name*'s prompt has, ``0`` when it has no report."""
+    report = validator.validate(name)
+    return len(report.findings) if report is not None else 0
+
+
+def _copy_sources_payload() -> list[dict[str, object]]:
+    """The built-ins ``agents.copy`` accepts, as ``agents.*`` acks list them.
+
+    Empty rather than raising if a packaged agent does not load: the registry
+    would already have refused to start in that case, so this is a listing
+    that must not take the Agents section down with it.
+    """
+    try:
+        sources = copy_sources()
+    except AgentCopyError as exc:
+        _log.error("could not list the built-in agents that can be copied: %s", exc)
+        return []
+    return [{"name": s.name, "kind": s.kind, "label": s.label} for s in sources]
 
 
 def _reload_agents(registry: AgentRegistry) -> str:
@@ -1216,6 +1253,89 @@ def _make_agents_install_handler(registry: AgentRegistry) -> HandlerFn:
         )
 
     return _handle_agents_install
+
+
+async def _handle_agents_copy_scan(req: Request) -> None:
+    name = str(req.env.payload.get("name", "")).strip()
+    prefix = str(req.env.payload.get("prefix", "")).strip()
+    base: dict[str, object] = {"type": "agents.copy_scan.ack", "name": name, "prefix": prefix}
+    try:
+        plan = await asyncio.to_thread(plan_copy, name, prefix, kodo_agents_dir())
+    except AgentCopyError as exc:
+        await req.reply({**base, "ok": False, "error": str(exc)})
+        return
+    await req.reply(
+        {
+            **base,
+            "ok": True,
+            "members": [
+                {
+                    "source": m.source,
+                    "name": m.name,
+                    "kind": m.kind,
+                    "installed_version": m.installed_version,
+                }
+                for m in plan.members
+            ],
+            "conflicts": plan.conflict_report(),
+        }
+    )
+
+
+def _make_agents_copy_handler(registry: AgentRegistry) -> HandlerFn:
+    """Build the ``agents.copy`` handler bound to the process registry."""
+
+    async def _handle_agents_copy(req: Request) -> None:
+        name = str(req.env.payload.get("name", "")).strip()
+        prefix = str(req.env.payload.get("prefix", "")).strip()
+        replace = bool(req.env.payload.get("replace", False))
+        base: dict[str, object] = {"type": "agents.copy.ack", "name": name, "prefix": prefix}
+        try:
+            result = await asyncio.to_thread(
+                copy_agent, name, prefix, kodo_agents_dir(), replace=replace
+            )
+        except AgentCopyError as exc:
+            await req.reply({**base, "ok": False, "error": str(exc)})
+            return
+        reload_error = _reload_agents(registry)
+        copied = frozenset(result.copied)
+        # Each copied file passed its strict loader before it was moved into
+        # place; whether the set loads together is the reloaded registry's call.
+        failed = [f"{b.name}: {b.error}" for b in registry.broken_agents if b.name in copied]
+        await req.reply(
+            {
+                **base,
+                "ok": not reload_error,
+                "error": reload_error,
+                "copied": list(result.copied),
+                "kept": list(result.kept),
+                "failed": failed,
+                **_agents_payload(registry),
+            }
+        )
+
+    return _handle_agents_copy
+
+
+def _make_agents_validate_handler(registry: AgentRegistry) -> HandlerFn:
+    """Build the ``agents.validate`` handler bound to the process registry."""
+
+    async def _handle_agents_validate(req: Request) -> None:
+        name = str(req.env.payload.get("name", "")).strip()
+        report = AgentValidator(registry).validate(name)
+        if report is None:
+            await req.reply(
+                {
+                    "type": "agents.validate.ack",
+                    "ok": False,
+                    "name": name,
+                    "error": f"no agent named {name!r} is loaded or installed",
+                }
+            )
+            return
+        await req.reply({"type": "agents.validate.ack", "ok": True, "report": report.as_payload()})
+
+    return _handle_agents_validate
 
 
 def _make_agents_reload_handler(registry: AgentRegistry) -> HandlerFn:
@@ -3007,6 +3127,9 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_AGENTS_INSTALL_SCAN, _handle_agents_install_scan)
     conn_registry.register_handler(MSG_AGENTS_INSTALL, _make_agents_install_handler(registry))
     conn_registry.register_handler(MSG_AGENTS_RELOAD, _make_agents_reload_handler(registry))
+    conn_registry.register_handler(MSG_AGENTS_COPY_SCAN, _handle_agents_copy_scan)
+    conn_registry.register_handler(MSG_AGENTS_COPY, _make_agents_copy_handler(registry))
+    conn_registry.register_handler(MSG_AGENTS_VALIDATE, _make_agents_validate_handler(registry))
     conn_registry.register_handler(MSG_SKILLS_LIST, _handle_skills_list)
     conn_registry.register_handler(MSG_SKILLS_DELETE, _handle_skills_delete)
     conn_registry.register_handler(MSG_SKILLS_INSTALL_SCAN, _handle_skills_install_scan)

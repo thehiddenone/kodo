@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from kodo.agents import COMPACTOR_AGENT, DEPSMGR_AGENT, WEB_SEARCH_AGENT
 from kodo.llms import Message, ToolSpec
 from kodo.toolspecs import ALL_TOOLS
 
@@ -31,19 +32,21 @@ from kodo.toolspecs import ALL_TOOLS
 # ``_JUDGE_AGENT_NAME``) are gone: which agent backs which selection is data in
 # the registry now, not a name the engine knows (doc/TOP_AGENT_PLAN.md §4.1).
 _FALLBACK_AGENT_NAME = "kodo_guide"
-_COMPACTOR_AGENT_NAME = "kodo_compactor"
+# The three engine-driven sub-agents are named in ``kodo.agents`` (which also
+# needs the set: they cannot be copied, and are exempt from a lint rule).
+_COMPACTOR_AGENT_NAME = COMPACTOR_AGENT
 # Dependency-management sub-agent behind the ``toolchain_deps`` tool. Spawned only
 # through the tool's dedicated ungated service (``_run_dependency_manager``), so
 # it is intentionally *not* in ``_DIRECT_ONLY_AGENTS`` (which would make
 # ``_spawn_subagent`` short-circuit it) nor in any agent's ``subagents:`` list.
-_DEPSMGR_AGENT_NAME = "kodo_toolchain_depsmgr"
+_DEPSMGR_AGENT_NAME = DEPSMGR_AGENT
 # The agent behind the ``web_search`` tool (doc/WEB_SEARCH.md): drives its own
 # discovery/read/synthesis loop via query_search_engine/read_webpage plus the
 # pacing tools. Driven only through the tool's dedicated ungated service
 # (``_run_web_search_agent``) as a *silent, multi-round tool-calling* turn —
 # never as a subsession, since ``web_search`` is typically called from a
 # sub-agent (the investigator) and subsessions do not nest.
-_WEB_SEARCH_AGENT_NAME = "kodo_web_search"
+_WEB_SEARCH_AGENT_NAME = WEB_SEARCH_AGENT
 
 # Sub-agents that the engine drives directly and that must never be reachable
 # through the ``run_subagent`` tool (the Guide/Problem Solver cannot

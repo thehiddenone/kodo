@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-__all__ = ["ROLE_CRITIC", "SubAgent", "AgentLoadError", "load_agent"]
+__all__ = ["ROLE_CRITIC", "SubAgent", "AgentLoadError", "load_agent", "split_frontmatter"]
 
 # The one recognized ``role:`` value. See ``SubAgent.role``.
 ROLE_CRITIC = "critic"
@@ -312,6 +312,29 @@ def _default_display_name(name: str) -> str:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def split_frontmatter(text: str) -> tuple[str, str]:
+    """Split an agent file into its frontmatter block and its body, unstripped.
+
+    The two halves concatenate back to *text* exactly, which is what lets a
+    caller rewrite one half and reassemble the file, or count the lines of the
+    first half to turn an offset in the body into a line number of the file.
+
+    Args:
+        text: The whole contents of an ``agent_*.md`` / ``subagent_*.md`` file.
+
+    Returns:
+        tuple[str, str]: The frontmatter block, both ``---`` delimiter lines
+        included, and everything after it.
+
+    Raises:
+        AgentLoadError: *text* does not open with a ``---`` frontmatter block.
+    """
+    m = _FRONT_RE.match(text)
+    if not m:
+        raise AgentLoadError("missing --- frontmatter delimiters")
+    return text[: m.end()], text[m.end() :]
 
 
 def _parse_frontmatter(text: str, path: Path) -> tuple[dict[str, object], str]:

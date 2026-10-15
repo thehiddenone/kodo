@@ -414,12 +414,15 @@ MSG_DEFAULT_AGENT_SET = "default_agent.set"
 # Client → Server. Control connection only. List every user-installed agent and
 # sub-agent under ``~/.kodo/agents`` (doc/USER_AGENTS.md §6), for the Kōdo
 # Settings panel's Agents section. No payload. Replies ``agents.list.ack``
-# ``{ok: true, agents: [{name, kind, version, label, description, path, error}, ...],
-# root}``. ``kind`` is ``"agent"`` or ``"subagent"``; a non-empty ``error`` is a
+# ``{ok: true, agents: [{name, kind, version, label, description, path, error,
+# warnings}, ...], builtins: [{name, kind, label}, ...], root}``. ``warnings`` is
+# the number of lint findings on the entry's prompt (``agents.validate`` has
+# them); ``builtins`` is every built-in agent ``agents.copy`` accepts as a
+# source. ``kind`` is ``"agent"`` or ``"subagent"``; a non-empty ``error`` is a
 # bundle that failed to load, listed deliberately so a broken one is visible and
 # deletable rather than silently missing — the same contract ``skills.list``
-# has. Built-in agents are **not** listed: they are not the user's to delete,
-# and the picker already publishes them through ``top_agents.list``.
+# has. Built-in agents are **not** rows: they are not the user's to delete, and
+# the picker already publishes them through ``top_agents.list``.
 MSG_AGENTS_LIST = "agents.list"
 
 # Client → Server. Control connection only. Delete one user-installed agent —
@@ -465,6 +468,41 @@ MSG_AGENTS_INSTALL = "agents.install"
 # previous working set live (``AgentRegistry.reload`` swaps only on success), so
 # the session the user is in keeps working.
 MSG_AGENTS_RELOAD = "agents.reload"
+
+# Client → Server. Control connection only. Report what copying one built-in
+# agent, with its whole sub-agent pipeline, under a new prefix *would* write —
+# without writing anything (doc/AGENT_BUILDER.md §3). Payload: ``{name:
+# "kodo_guide", prefix: "acme_"}``. Replies ``agents.copy_scan.ack`` ``{ok:
+# true, name, prefix, members: [{source, name, kind, installed_version}, ...],
+# conflicts: "<multi-line report>"}``, the source first and then every
+# sub-agent and critic it reaches, or ``{ok: false, name, prefix, error}`` when
+# ``name`` is not a built-in that can be copied or ``prefix`` does not make a
+# valid user agent name for every member. A non-empty ``installed_version`` is
+# a member whose new name is already taken; ``conflicts`` is that set rendered
+# exactly as ``agents.install_scan`` renders it. The built-ins that can be
+# copied are listed in every ``agents.*`` ack's ``builtins``.
+MSG_AGENTS_COPY_SCAN = "agents.copy_scan"
+
+# Client → Server. Control connection only. Copy a built-in agent into
+# ``~/.kodo/agents`` (independently of any prior ``agents.copy_scan``).
+# Payload: ``{name, prefix, replace: false}`` — ``replace`` is the user's
+# answer to the keep-or-replace question, applying to every member whose new
+# name is taken. Writes are all-or-nothing. Replies ``agents.copy.ack`` ``{ok,
+# error?, name, prefix, copied, kept, failed: ["<name>: <why>", ...], agents,
+# builtins, root}`` with the post-copy listing; ``failed`` names every copied
+# member the reloaded registry could not load. ``{ok: false, error}`` when the
+# copy was refused or could not be written (nothing changed on disk).
+MSG_AGENTS_COPY = "agents.copy"
+
+# Client → Server. Control connection only. Validate one agent — built-in or
+# user, loaded or broken (doc/AGENT_BUILDER.md §5.1, §5.2). Payload: ``{name}``.
+# Replies ``agents.validate.ack`` ``{ok: true, report: {name, kind, load: "ok" |
+# "error", error, path, findings: [{rule, severity, line, message}, ...]}}``,
+# where ``error`` is why the agent does not load (``""`` when it does), every
+# finding is a ``"warning"`` from the deterministic lint, and ``line`` is the
+# 1-based line in the prompt file at ``path`` (``null`` for a missing
+# section). ``{ok: false, name, error}`` when no agent by that name exists.
+MSG_AGENTS_VALIDATE = "agents.validate"
 
 MSG_SKILLS_LIST = "skills.list"
 

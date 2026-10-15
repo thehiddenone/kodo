@@ -1701,6 +1701,26 @@ class AgentRegistry:
         """
         return self.__specs.get(name)
 
+    def agent_names(self) -> frozenset[str]:
+        """The names of every loaded agent, built-in and user, without rendering any.
+
+        Returns:
+            frozenset[str]: Every name :meth:`get` answers for.
+        """
+        return frozenset(self.__agents)
+
+    def authors_of(self, critic: str) -> frozenset[str]:
+        """The authors whose ``critic:`` names *critic* — the agents it reviews for.
+
+        Args:
+            critic: A critic's name.
+
+        Returns:
+            frozenset[str]: Every loaded agent paired with it; empty for an
+            agent no author names.
+        """
+        return frozenset(agent.name for agent in self.__agents.values() if agent.critic == critic)
+
     def all_agents(self) -> list[SubAgent]:
         """Return all loaded subagents (interactive-mode render) in name order."""
         return [

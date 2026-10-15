@@ -56,6 +56,13 @@ calls over the WS wire (``skills.install_scan``/``skills.install``/
 ``skills.install_local`` — doc/WS_PROTOCOL.md §7.6j), so a skill visible to
 one is visible to the other.
 
+``--copy-agent NAME --prefix PREFIX`` and ``--validate-agent NAME`` belong with
+``--list-agents``/``--install-agent``: the first copies a built-in agent with
+its whole sub-agent pipeline into ``~/.kodo/agents`` under new names
+(:func:`kodo.agents.copy_agent`), the second prints one agent's load check and
+prompt lint (:class:`kodo.agents.AgentValidator`) — the same functions behind
+the ``agents.copy`` and ``agents.validate`` WS messages (doc/AGENT_BUILDER.md).
+
 ``--install-skill`` accepts two shapes of ``TARGET``, told apart by whether it
 resolves to an existing path on disk (:func:`_run_install_skill`):
 
@@ -82,8 +89,7 @@ import os
 import sys
 from pathlib import Path
 
-import kodo.agents as _agents_pkg
-from kodo.agents import AgentLoadError, AgentRegistry, SubAgent
+from kodo.agents import PACKAGED_AGENTS_DIR, AgentLoadError, AgentRegistry, SubAgent
 from kodo.llms import CloudLLMEntry, get_cloud_registry, get_local_registry
 from kodo.llms.llamacpp import build_openai_tools, get_local_model_manager
 from kodo.project import kodo_agents_dir, kodo_skills_dir, kodo_user_dir
@@ -96,8 +102,6 @@ from kodo.skills import (
     install_skills,
     scan_repository,
 )
-
-_AGENTS_DIR = Path(_agents_pkg.__file__).parent
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -119,6 +123,10 @@ def main(argv: list[str] | None = None) -> int:
             code = _run_list_agents()
         elif args.install_agent is not None:
             code = _run_install_agent(args.install_agent, assume_yes=args.yes)
+        elif args.copy_agent is not None:
+            code = _run_copy_agent(args.copy_agent, args.prefix, assume_yes=args.yes)
+        elif args.validate_agent is not None:
+            code = _run_validate_agent(args.validate_agent, as_json=args.json)
         elif args.system_prompt is not None:
             code = _run_system_prompt(args.model, args.agent)
         else:
@@ -204,6 +212,23 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "is listed with both versions so you can choose to keep it or replace it.",
     )
     group.add_argument(
+        "--copy-agent",
+        metavar="NAME",
+        dest="copy_agent",
+        help="Copy built-in agent NAME, with every sub-agent and critic it uses, into "
+        "~/.kodo/agents so it can be edited. Requires --prefix, which replaces kodo_ in every "
+        "copied name (kodo_guide -> acme_guide). Anything already there under a new name is "
+        "listed so you can choose to keep it or replace it.",
+    )
+    group.add_argument(
+        "--validate-agent",
+        metavar="NAME",
+        dest="validate_agent",
+        help="Report whether agent NAME (built-in or user) loads, and lint its prompt against "
+        "the prompt-writing rules. Exits 1 when the agent does not load; lint findings are "
+        "warnings and exit 0.",
+    )
+    group.add_argument(
         "--install-skill",
         metavar="TARGET",
         dest="install_skill",
@@ -213,16 +238,31 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "cloned so you can interactively choose which of the skill(s) it contains to install.",
     )
     parser.add_argument(
+        "--prefix",
+        metavar="PREFIX",
+        dest="prefix",
+        default=None,
+        help="With --copy-agent, the prefix that replaces kodo_ in every copied name, e.g. acme_.",
+    )
+    parser.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        help="With --validate-agent, print the report as JSON.",
+    )
+    parser.add_argument(
         "--yes",
         "-y",
         dest="yes",
         action="store_true",
         help="With --install-skill, install without prompting — every valid skill found, for "
         "a repository URL, or the one skill at a local path, overwriting any same-named skill "
-        "already installed. With --install-agent, answer the keep-or-replace question with "
-        "'replace' instead of asking.",
+        "already installed. With --install-agent or --copy-agent, answer the keep-or-replace "
+        "question with 'replace' instead of asking.",
     )
     parsed = parser.parse_args(argv)
+    if parsed.copy_agent is not None and not parsed.prefix:
+        parser.error("--copy-agent requires --prefix")
     parsed.agent = parsed.system_prompt if parsed.system_prompt is not None else parsed.tools
     return parsed
 
@@ -391,7 +431,7 @@ def _agent_registry() -> AgentRegistry:
     Raises:
         AgentLoadError: A **packaged** agent failed to load.
     """
-    return AgentRegistry(_AGENTS_DIR, user_dir=kodo_agents_dir())
+    return AgentRegistry(PACKAGED_AGENTS_DIR, user_dir=kodo_agents_dir())
 
 
 def _print_user_agents(registry: AgentRegistry) -> None:
@@ -510,6 +550,107 @@ def _run_install_agent(source: str, *, assume_yes: bool) -> int:
             print(f"  {entry.name}: {entry.error}")
         return 1
     return 0
+
+
+def _run_copy_agent(name: str, prefix: str, *, assume_yes: bool) -> int:
+    """Copy a built-in agent, with its whole pipeline, into ``~/.kodo/agents``.
+
+    Plans first and writes second, so a member whose new name is already taken
+    can be put to the user — keep or replace, once for all of them — before a
+    single byte is written (doc/AGENT_BUILDER.md §3.4).
+
+    Args:
+        name: The ``--copy-agent`` argument — a built-in agent's name.
+        prefix: The ``--prefix`` argument, which replaces ``kodo_``.
+        assume_yes: Skip the keep-or-replace question and replace.
+
+    Returns:
+        int: 0 on success, 1 when the copy was refused or a copied agent does
+        not load.
+    """
+    from kodo.agents import AgentCopyError, copy_agent, plan_copy
+
+    root = kodo_agents_dir()
+    try:
+        plan = plan_copy(name, prefix, root)
+    except AgentCopyError as exc:
+        print(f"error: {exc}")
+        return 1
+    for member in plan.members:
+        print(f"{member.kind:9} {member.source} -> {member.name}")
+
+    replace = True
+    if plan.conflicting and not assume_yes:
+        print("\nAlready installed:")
+        print(plan.conflict_report())
+        answer = input("\nKeep the installed versions, or replace them? [keep/replace] ").strip()
+        replace = answer.lower() in ("replace", "r")
+
+    try:
+        result = copy_agent(name, prefix, root, replace=replace)
+    except AgentCopyError as exc:
+        print(f"error: {exc}")
+        return 1
+    for copied in result.copied:
+        print(f"copied {copied}")
+    for kept in result.kept:
+        print(f"kept the installed {kept}")
+    if not result.copied:
+        return 0
+    # The copy's files each passed their strict loader before they were moved
+    # into place, but whether the set *works* (a kept member that no longer
+    # fits, a shared block a newer Kōdo dropped) only the full registry can say.
+    try:
+        registry = _agent_registry()
+    except AgentLoadError as exc:
+        print(f"error: {exc}")
+        return 1
+    copied_names = frozenset(result.copied)
+    failed = [b for b in registry.broken_agents if b.name in copied_names]
+    if failed:
+        print("\nCopied, but Kōdo cannot load:")
+        for entry in failed:
+            print(f"  {entry.name}: {entry.error}")
+        return 1
+    return 0
+
+
+def _run_validate_agent(name: str, *, as_json: bool) -> int:
+    """Print one agent's validation report: the load check, then the lint.
+
+    Args:
+        name: The ``--validate-agent`` argument — a built-in or user agent.
+        as_json: Print the report as JSON instead of text.
+
+    Returns:
+        int: 0 when the agent loads (lint findings are warnings), 1 when it
+        does not, 2 when no agent by that name exists or a packaged agent fails
+        to load.
+    """
+    from kodo.agents import AgentValidator
+
+    try:
+        registry = _agent_registry()
+    except AgentLoadError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    report = AgentValidator(registry).validate(name)
+    if report is None:
+        print(f"Error: no agent named {name!r} is loaded or installed", file=sys.stderr)
+        return 2
+    if as_json:
+        print(json.dumps(report.as_payload(), indent=2, ensure_ascii=False))
+        return 0 if report.loads else 1
+    print(f"{report.kind} {report.name}")
+    if report.path is not None:
+        print(f"  {report.path}")
+    print(f"load: {'ok' if report.loads else 'error — ' + report.load_error}")
+    for finding in report.findings:
+        where = f"line {finding.line}" if finding.line is not None else "—"
+        print(f"  {finding.severity}  {finding.rule:24}  {where:9}  {finding.message}")
+    count = len(report.findings)
+    print(f"{count} warning{'' if count == 1 else 's'}")
+    return 0 if report.loads else 1
 
 
 def _run_install_skill(target: str, *, assume_yes: bool) -> int:

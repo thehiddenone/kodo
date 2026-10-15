@@ -2496,16 +2496,18 @@ prompt catalog is re-rendered from disk on every agent turn, so a skill added
 or deleted here takes effect on the next turn with no `config.reload`
 follow-up and no push to live sessions.
 
-### 7.6l `agents.list` / `agents.delete` / `agents.install_scan` / `agents.install` / `agents.reload` — user-installed agents
+### 7.6l `agents.list` / `agents.delete` / `agents.install_scan` / `agents.install` / `agents.reload` / `agents.copy_scan` / `agents.copy` / `agents.validate` — user-installed agents
 
 Control connection only, same framing as §7.6c — backs the **Kōdo Settings**
-panel's "Agents" section (kodo-vsix `AgentsSection.tsx`, `InstallAgentsModal.tsx`).
-Reads, installs and deletes the agents the user has installed under
-`~/.kodo/agents` (doc/USER_AGENTS.md).
+panel's "Agents" section (kodo-vsix `AgentsSection.tsx`, `InstallAgentsModal.tsx`,
+`CopyAgentModal.tsx`, `AgentReportModal.tsx`). Reads, installs, copies,
+validates and deletes the agents the user has installed under `~/.kodo/agents`
+(doc/USER_AGENTS.md, doc/AGENT_BUILDER.md).
 
-**Built-in agents are deliberately absent from every payload here.** They are
-not the user's to delete, and the picker already publishes them through
-`top_agents.list.ack`'s `agents` catalog (§7.4g).
+**Built-in agents are never rows in a listing here.** They are not the user's
+to delete, and the picker already publishes them through `top_agents.list.ack`'s
+`agents` catalog (§7.4g). The listing's separate `builtins` array names only the
+built-ins `agents.copy` accepts as a source.
 
 ```json
 { "type": "agents.list" }
@@ -2519,12 +2521,22 @@ not the user's to delete, and the picker already publishes them through
   "agents": [
     { "name": "reviewer", "kind": "agent", "version": "3.1.0",
       "label": "Reviewer", "description": "Audits an existing codebase…",
-      "path": "/home/u/.kodo/agents/reviewer", "error": "" },
+      "path": "/home/u/.kodo/agents/reviewer", "error": "", "warnings": 3 },
     { "name": "scanner", "kind": "subagent", "version": "1.6.0",
       "label": "Scanner", "description": "",
-      "path": "/home/u/.kodo/agents/subagents/scanner", "error": "" }
+      "path": "/home/u/.kodo/agents/subagents/scanner", "error": "", "warnings": 0 }
+  ],
+  "builtins": [
+    { "name": "kodo_problem_solver", "kind": "agent", "label": "Problem Solver" },
+    { "name": "kodo_coder", "kind": "subagent", "label": "Coder" }
   ] }
 ```
+
+`warnings` is the number of deterministic lint findings on the entry's prompt
+(doc/AGENT_BUILDER.md §5.2) — `agents.validate` returns them. It is counted for
+a broken row too whenever its prompt still parses. `builtins` lists every
+built-in `agents.copy` accepts, top-level agents first: never an engine-driven
+sub-agent and never an `interactive: false` agent.
 
 `kind` is `"agent"` (a top-level agent the user selects) or `"subagent"` (one
 another agent delegates to). A non-empty `error` is a bundle that failed to
@@ -2601,6 +2613,74 @@ removed from disk, and the refreshed table is what makes that obvious.
 
 → `agents.reload.ack` — `{ ok, error }` plus the listing. For the user who
 edited a bundle by hand rather than installing it.
+
+```json
+{ "type": "agents.copy_scan", "name": "kodo_guide", "prefix": "acme_" }
+```
+
+→ `agents.copy_scan.ack`:
+
+```json
+{ "ok": true, "name": "kodo_guide", "prefix": "acme_",
+  "members": [
+    { "source": "kodo_guide", "name": "acme_guide", "kind": "agent",
+      "installed_version": "" },
+    { "source": "kodo_coder", "name": "acme_coder", "kind": "subagent",
+      "installed_version": "(unversioned)" }
+  ],
+  "conflicts": "  subagent acme_coder   installed: (unversioned)   incoming: (unversioned)" }
+```
+
+What copying built-in `name` under `prefix` would write, without writing it
+(doc/AGENT_BUILDER.md §3): the source first, then every sub-agent and critic its
+`subagents:` and `critic:` reach, each renamed by replacing `kodo_` with
+`prefix`. A non-empty `installed_version` is a member whose new name is already
+a directory under the user root (`(unversioned)` when what is there declares no
+version or does not load); `conflicts` renders that set exactly as
+`agents.install_scan` does. `{ "ok": false, "name", "prefix", "error" }` when
+`name` is not a built-in that can be copied, or `prefix` does not make a valid
+user agent name for every member (it must start with a lowercase letter, hold
+only lowercase letters, digits and underscores, not start with `kodo_`, and
+keep every `run_subagent_<name>` within 64 characters).
+
+```json
+{ "type": "agents.copy", "name": "kodo_guide", "prefix": "acme_", "replace": false }
+```
+
+→ `agents.copy.ack` — `{ ok, error, name, prefix, copied, kept, failed }` plus
+the listing. `replace` answers keep-or-replace for every member whose name is
+taken; a kept member is listed in `kept` and left untouched. Writes are
+all-or-nothing: every file is rendered into a temporary directory and checked
+with the strict loaders before any member is moved into place. `failed` is
+`["<name>: <why>", …]` for every copied member the reloaded registry could not
+load (e.g. a kept member that no longer fits the fresh copy). A refused copy, or
+one that could not be written, replies `{ ok: false, error, name, prefix }`
+with no listing — nothing changed on disk.
+
+```json
+{ "type": "agents.validate", "name": "acme_guide" }
+```
+
+→ `agents.validate.ack`:
+
+```json
+{ "ok": true,
+  "report": { "name": "acme_guide", "kind": "agent", "load": "ok", "error": "",
+              "path": "/home/u/.kodo/agents/acme_guide/agent_acme_guide.md",
+              "findings": [
+                { "rule": "L6 vague-qualifier", "severity": "warning", "line": 46,
+                  "message": "vague qualifier 'may' — replace it with a definite rule or a measurable threshold" },
+                { "rule": "L5 sections", "severity": "warning", "line": null,
+                  "message": "no '## Workflow' section, which a top-level agent requires" }
+              ] } }
+```
+
+Any agent, built-in or user, loaded or broken (doc/AGENT_BUILDER.md §5.1–§5.2).
+`load: "error"` carries the reason the registry demoted the agent in `error`
+(the broken row's text). Every finding is a `"warning"`; `line` is the 1-based
+line in the file at `path`, frontmatter included, or `null` for something
+absent. Read-only: nothing is reloaded. `{ ok: false, name, error }` when no
+agent by that name is loaded or broken.
 
 **Every mutating message above reloads the registry before replying**, so a
 newly installed agent is selectable with no server restart and the ack's listing

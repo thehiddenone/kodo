@@ -21,7 +21,13 @@ import aiohttp
 import pytest
 from aiohttp.test_utils import TestServer
 
-from kodo.agents import KIND_AGENT, KIND_SUBAGENT, AgentLoadError, AgentRegistry
+from kodo.agents import (
+    KIND_AGENT,
+    KIND_SUBAGENT,
+    AgentLoadError,
+    AgentRegistry,
+    copy_sources,
+)
 from kodo.common import Envelope
 from kodo.llms.llamacpp import LlamaServer
 from kodo.security import add_global_rule
@@ -569,6 +575,126 @@ async def test_agents_reload_failure_keeps_the_previous_set_and_reports_it(
 
     after = await _request(ws, "top_agents.list")
     assert after["agents"] == before["agents"]
+
+
+# ---------------------------------------------------------------------------
+# agents.copy_scan / agents.copy / agents.validate (doc/AGENT_BUILDER.md)
+# ---------------------------------------------------------------------------
+
+
+def _copyable_top_agent() -> str:
+    return next(s.name for s in copy_sources() if s.kind == KIND_AGENT)
+
+
+async def test_agents_list_offers_the_copyable_builtins_and_counts_warnings(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
+) -> None:
+    directory = _write_user_agent(_temp_home, "helper")
+    (directory / "agent_helper.md").write_text(
+        "---\nname: helper\n---\nYou may help. Twice.\n", encoding="utf-8"
+    )
+    await _request(ws, "agents.reload")
+
+    listing = await _request(ws, "agents.list")
+
+    assert listing["builtins"] == [
+        {"name": s.name, "kind": s.kind, "label": s.label} for s in copy_sources()
+    ]
+    row = next(r for r in listing["agents"] if r["name"] == "helper")  # type: ignore[union-attr]
+    assert isinstance(row["warnings"], int) and row["warnings"] > 0
+
+
+async def test_agents_copy_scan_reports_the_plan_without_writing(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
+) -> None:
+    source = _copyable_top_agent()
+
+    reply = await _request(ws, "agents.copy_scan", name=source, prefix="acme_")
+
+    assert reply["ok"] is True
+    members = reply["members"]
+    assert isinstance(members, list)
+    assert members[0] == {
+        "source": source,
+        "name": "acme_" + source.removeprefix("kodo_"),
+        "kind": KIND_AGENT,
+        "installed_version": "",
+    }
+    assert reply["conflicts"] == ""
+    assert not (_temp_home / ".kodo" / "agents" / members[0]["name"]).exists()
+
+
+async def test_agents_copy_scan_of_a_bad_prefix_fails(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    reply = await _request(ws, "agents.copy_scan", name=_copyable_top_agent(), prefix="kodo_")
+    assert reply["ok"] is False
+    assert reply["error"]
+
+
+async def test_agents_copy_copies_and_the_copy_is_selectable(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    source = _copyable_top_agent()
+    copy = "acme_" + source.removeprefix("kodo_")
+
+    reply = await _request(ws, "agents.copy", name=source, prefix="acme_", replace=False)
+
+    assert reply["ok"] is True
+    assert copy in reply["copied"]  # type: ignore[operator]
+    assert reply["kept"] == []
+    assert reply["failed"] == []
+    assert copy in {r["name"] for r in reply["agents"]}  # type: ignore[union-attr]
+    picker = await _request(ws, "top_agents.list")
+    assert copy in {a["name"] for a in picker["agents"]}  # type: ignore[union-attr]
+
+    again = await _request(ws, "agents.copy_scan", name=source, prefix="acme_")
+    assert again["conflicts"] != ""
+
+
+async def test_agents_copy_refusal_writes_nothing(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
+) -> None:
+    reply = await _request(ws, "agents.copy", name="nobody", prefix="acme_", replace=True)
+    assert reply["ok"] is False
+    assert "nobody" in str(reply["error"])
+    assert "agents" not in reply
+
+
+async def test_agents_validate_reports_a_builtin(ws: aiohttp.ClientWebSocketResponse) -> None:
+    name = _copyable_top_agent()
+    reply = await _request(ws, "agents.validate", name=name)
+    assert reply["ok"] is True
+    report = reply["report"]
+    assert isinstance(report, dict)
+    assert report["name"] == name
+    assert report["load"] == "ok"
+    assert isinstance(report["findings"], list)
+
+
+async def test_agents_validate_reports_why_a_user_agent_does_not_load(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
+) -> None:
+    directory = _write_user_agent(_temp_home, "sloppy")
+    (directory / "agent_sloppy.md").write_text(
+        "---\nname: sloppy\n---\n{SHARED:no_such_block}\n", encoding="utf-8"
+    )
+    await _request(ws, "agents.reload")
+
+    reply = await _request(ws, "agents.validate", name="sloppy")
+
+    report = reply["report"]
+    assert isinstance(report, dict)
+    assert report["load"] == "error"
+    assert "no_such_block" in report["error"]
+
+
+async def test_agents_validate_of_an_unknown_name_fails(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    reply = await _request(ws, "agents.validate", name="nobody")
+    assert reply["ok"] is False
+    assert "nobody" in str(reply["error"])
 
 
 # ---------------------------------------------------------------------------

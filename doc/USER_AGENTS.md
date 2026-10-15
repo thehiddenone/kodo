@@ -293,13 +293,36 @@ subagent  scanner   1.6.0
 
 `--yes` answers the keep-or-replace question with *replace*.
 
+Two more commands work on the same root (doc/AGENT_BUILDER.md):
+
+```console
+$ python -m kodo --copy-agent kodo_problem_solver --prefix acme_
+agent     kodo_problem_solver -> acme_problem_solver
+subagent  kodo_investigator -> acme_investigator
+…
+copied acme_problem_solver
+copied acme_investigator
+
+$ python -m kodo --validate-agent acme_problem_solver
+agent acme_problem_solver
+load: ok
+  warning  L6 vague-qualifier        line 64    vague qualifier 'could' — …
+1 warning
+```
+
+`--copy-agent` copies a built-in with every sub-agent and critic it uses,
+renamed by the prefix, and asks keep-or-replace exactly as an install does.
+`--validate-agent` reports whether any agent loads and lints its prompt; it
+exits 1 only when the agent does not load.
+
 ### 4.3 From the Settings panel
 
-The **Agents** section lists what is installed with each entry's kind, version
-and description, and offers Install from a repository…, Install from a local
-folder…, and Reload. Both install buttons go through the same modal, so the
-keep-or-replace step is never skipped just because the source happened to be
-local.
+The **Agents** section lists what is installed with each entry's kind, version,
+lint warning count and description, and offers Copy a built-in agent…, Install
+from a repository…, Install from a local folder…, and Reload. Both install
+buttons go through the same modal, so the keep-or-replace step is never skipped
+just because the source happened to be local. Each row's 🩺 button opens its
+validation report; a finding with a line number opens the prompt there.
 
 ---
 
@@ -346,8 +369,8 @@ adopts its state only once that has validated. **A failed reload leaves the
 previous working set live**, so a broken edit cannot take the session you are in
 down with it.
 
-Reload is triggered by every mutating path — `agents.install`, `agents.delete`,
-and `agents.reload` for a bundle edited by hand — so a newly installed agent is
+Reload is triggered by every mutating path — `agents.install`, `agents.copy`,
+`agents.delete`, and `agents.reload` for a bundle edited by hand — so a newly installed agent is
 selectable immediately, with no server restart.
 
 No locking is needed: `get()` returns frozen dataclasses, so a session mid-turn
@@ -366,6 +389,9 @@ Control connection only; full payloads in
 | `agents.install` | Install it, with the user's keep-or-replace answer |
 | `agents.delete` | Delete one bundle, or one sub-agent's two files |
 | `agents.reload` | Rebuild the registry from both roots |
+| `agents.copy_scan` | Report what copying a built-in under a prefix would write |
+| `agents.copy` | Copy it, with the user's keep-or-replace answer |
+| `agents.validate` | One agent's load check and lint report |
 
 Every mutating ack carries the refreshed listing, so a client redraws its table
 from the response with no follow-up round trip.
@@ -414,6 +440,8 @@ run.
 |---|---|
 | Scanning the user root, broken rows, reserved names | [agents/_userstore.py](../src/kodo/agents/_userstore.py) |
 | Installing from a directory or a repo | [agents/_install.py](../src/kodo/agents/_install.py) |
+| Copying a built-in with its pipeline | [agents/_copy.py](../src/kodo/agents/_copy.py) |
+| The prompt lint and the per-agent report | [agents/_lint.py](../src/kodo/agents/_lint.py), [agents/_validate.py](../src/kodo/agents/_validate.py) |
 | Both roots, both regimes, `reload()` | [agents/_registry.py](../src/kodo/agents/_registry.py) |
 | The prompt parser (shared, unchanged) | [agents/_loader.py](../src/kodo/agents/_loader.py) |
 | A top-level agent's config | [agents/_topagent.py](../src/kodo/agents/_topagent.py) |

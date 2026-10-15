@@ -30,6 +30,23 @@ re-exporting it here would put one import away the very separation this
 layout exists to draw.
 """
 
+from ._builtin import (
+    COMPACTOR_AGENT,
+    DEPSMGR_AGENT,
+    ENGINE_DRIVEN_AGENTS,
+    PACKAGED_AGENTS_DIR,
+    WEB_SEARCH_AGENT,
+)
+from ._copy import (
+    AgentCopyError,
+    CopyMember,
+    CopyPlan,
+    CopyResult,
+    CopySource,
+    copy_agent,
+    copy_sources,
+    plan_copy,
+)
 from ._install import (
     KIND_AGENT,
     KIND_SUBAGENT,
@@ -43,7 +60,21 @@ from ._install import (
     require_git,
     scan_source,
 )
-from ._loader import ROLE_CRITIC, AgentLoadError, SubAgent, load_agent
+from ._lint import (
+    LINT_RULES,
+    RULE_PURPOSE,
+    RULE_SCHEMA_RESTATED,
+    RULE_SECTIONS,
+    RULE_SUBAGENT_NOT_LISTED,
+    RULE_TOOL_NOT_GRANTED,
+    RULE_UNKNOWN_AGENT,
+    RULE_VAGUE_QUALIFIER,
+    SEVERITY_WARNING,
+    LintContext,
+    LintFinding,
+    lint_prompt,
+)
+from ._loader import ROLE_CRITIC, AgentLoadError, SubAgent, load_agent, split_frontmatter
 from ._registry import (
     ALL_PHASES,
     PHASE_INITIAL,
@@ -73,9 +104,38 @@ from ._userstore import (
     UserAgentStore,
     reserved_name_error,
 )
+from ._validate import AgentReport, AgentValidator
 from .subagents import SubAgentSpec
 
 __all__: list[str] = [
+    "AgentCopyError",
+    "AgentReport",
+    "AgentValidator",
+    "COMPACTOR_AGENT",
+    "CopyMember",
+    "CopyPlan",
+    "CopyResult",
+    "CopySource",
+    "DEPSMGR_AGENT",
+    "ENGINE_DRIVEN_AGENTS",
+    "LINT_RULES",
+    "LintContext",
+    "LintFinding",
+    "PACKAGED_AGENTS_DIR",
+    "RULE_PURPOSE",
+    "RULE_SCHEMA_RESTATED",
+    "RULE_SECTIONS",
+    "RULE_SUBAGENT_NOT_LISTED",
+    "RULE_TOOL_NOT_GRANTED",
+    "RULE_UNKNOWN_AGENT",
+    "RULE_VAGUE_QUALIFIER",
+    "SEVERITY_WARNING",
+    "WEB_SEARCH_AGENT",
+    "copy_agent",
+    "copy_sources",
+    "lint_prompt",
+    "plan_copy",
+    "split_frontmatter",
     "scan_source",
     "require_git",
     "install_source",

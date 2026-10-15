@@ -34,9 +34,12 @@ import kodo.agents as subagents_pkg
 from kodo.agents import (
     KIND_AGENT,
     KIND_SUBAGENT,
+    PACKAGED_AGENTS_DIR,
+    RULE_VAGUE_QUALIFIER,
     SHARED_SUBAGENTS_DIRNAME,
     AgentLoadError,
     AgentRegistry,
+    copy_sources,
 )
 from kodo.llms import LocalLLMEntry, add_local_entry, get_cloud_registry, get_local_registry
 from kodo.llms.llamacpp import build_openai_tools
@@ -113,7 +116,7 @@ def _pin_assumptions() -> None:
 def test_module_targets_the_packaged_agents() -> None:
     """The CLI must read the installed agent files, not a copy or a fixture."""
     _pin_assumptions()
-    assert main_mod._AGENTS_DIR == _REAL_AGENTS_DIR
+    assert PACKAGED_AGENTS_DIR == _REAL_AGENTS_DIR
 
 
 # ---------------------------------------------------------------------------
@@ -1339,3 +1342,186 @@ def test_install_agent_exits_1_when_the_registry_cannot_load_afterwards(
     assert code == 1
     assert "installed reviewer" in out
     assert out.splitlines()[-1] == "error: packaged agent kodo_guide is corrupt"
+
+
+# ---------------------------------------------------------------------------
+# --copy-agent (doc/AGENT_BUILDER.md §3)
+# ---------------------------------------------------------------------------
+
+
+def _copyable_subagent() -> str:
+    """A copyable built-in sub-agent with a critic, so a copy has two members."""
+    registry = AgentRegistry(_REAL_AGENTS_DIR)
+    for source in copy_sources():
+        if source.kind == KIND_SUBAGENT and registry.get(source.name).critic:
+            return source.name
+    raise AssertionError("this test assumes a copyable built-in sub-agent with a critic ships")
+
+
+def _copy_names(source: str) -> tuple[str, str]:
+    critic = AgentRegistry(_REAL_AGENTS_DIR).get(source).critic
+    return "acme_" + source.removeprefix("kodo_"), "acme_" + critic.removeprefix("kodo_")
+
+
+def test_copy_agent_requires_a_prefix(home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main(["--copy-agent", _copyable_subagent()])
+    assert exc.value.code == 2
+    assert "--copy-agent requires --prefix" in capsys.readouterr().err
+
+
+def test_copy_agent_copies_the_closure_and_it_loads(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = _copyable_subagent()
+    copy, critic = _copy_names(source)
+    _no_input(monkeypatch)
+
+    code, out, _ = _run(capsys, "--copy-agent", source, "--prefix", "acme_")
+
+    assert code == 0
+    lines = out.splitlines()
+    assert f"subagent  {source} -> {copy}" in lines
+    assert f"copied {copy}" in lines
+    assert f"copied {critic}" in lines
+    assert (_agents_root(home) / "subagents" / copy / f"subagent_{copy}.md").is_file()
+
+
+def test_copy_agent_refusal_exits_1(home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    code, out, _ = _run(capsys, "--copy-agent", _copyable_subagent(), "--prefix", "kodo_")
+    assert code == 1
+    assert out.startswith("error: ")
+    assert not _agents_root(home).exists()
+
+
+def test_copy_agent_conflict_kept_on_request(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = _copyable_subagent()
+    copy, critic = _copy_names(source)
+    _run(capsys, "--copy-agent", source, "--prefix", "acme_")
+    prompt = _agents_root(home) / "subagents" / copy / f"subagent_{copy}.md"
+    prompt.write_text(prompt.read_text(encoding="utf-8") + "\nMine.\n", encoding="utf-8")
+    prompts = _answers(monkeypatch, "keep")
+
+    code, out, _ = _run(capsys, "--copy-agent", source, "--prefix", "acme_")
+
+    assert code == 0
+    assert len(prompts) == 1
+    assert "Already installed:" in out
+    assert f"kept the installed {copy}" in out.splitlines()
+    assert f"kept the installed {critic}" in out.splitlines()
+    assert "Mine." in prompt.read_text(encoding="utf-8")
+
+
+def test_copy_agent_conflict_replaced_without_asking_under_yes(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = _copyable_subagent()
+    copy, _ = _copy_names(source)
+    _run(capsys, "--copy-agent", source, "--prefix", "acme_")
+    prompt = _agents_root(home) / "subagents" / copy / f"subagent_{copy}.md"
+    prompt.write_text(prompt.read_text(encoding="utf-8") + "\nMine.\n", encoding="utf-8")
+    _no_input(monkeypatch)
+
+    code, out, _ = _run(capsys, "--copy-agent", source, "--prefix", "acme_", "--yes")
+
+    assert code == 0
+    assert f"copied {copy}" in out.splitlines()
+    assert "Mine." not in prompt.read_text(encoding="utf-8")
+
+
+def test_copy_agent_that_copies_but_cannot_load_exits_1(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A kept member that no longer fits the fresh copy makes the set fail to load."""
+    source = _copyable_subagent()
+    copy, critic = _copy_names(source)
+    critic_dir = _agents_root(home) / "subagents" / critic
+    _write_user_subagent(_agents_root(home), critic)
+    _answers(monkeypatch, "keep")
+
+    code, out, _ = _run(capsys, "--copy-agent", source, "--prefix", "acme_")
+
+    assert critic_dir.is_dir()
+    assert code == 1
+    assert "Copied, but Kōdo cannot load:" in out
+    assert f"  {copy}: " in out
+
+
+def test_copy_agent_exits_1_when_the_registry_cannot_load_afterwards(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(main_mod, "AgentRegistry", _raise_agent_load_error)
+
+    code, out, _ = _run(capsys, "--copy-agent", _copyable_subagent(), "--prefix", "acme_")
+
+    assert code == 1
+    assert out.splitlines()[-1] == "error: packaged agent kodo_guide is corrupt"
+
+
+# ---------------------------------------------------------------------------
+# --validate-agent (doc/AGENT_BUILDER.md §5.5)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_agent_reports_a_loading_agent_and_exits_0(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _agents_root(home)
+    _write_user_agent(root / "helper", "helper", body="You may help. Twice.")
+
+    code, out, _ = _run(capsys, "--validate-agent", "helper")
+
+    assert code == 0
+    lines = out.splitlines()
+    assert lines[0] == f"{KIND_AGENT} helper"
+    assert "load: ok" in lines
+    assert any(RULE_VAGUE_QUALIFIER in line for line in lines)
+    assert lines[-1].endswith("warnings")
+
+
+def test_validate_agent_exits_1_for_an_agent_that_does_not_load(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _agents_root(home)
+    _write_user_agent(root / "sloppy", "sloppy", body="{SHARED:no_such_block}")
+
+    code, out, _ = _run(capsys, "--validate-agent", "sloppy", "--json")
+
+    assert code == 1
+    report = json.loads(out)
+    assert report["name"] == "sloppy"
+    assert report["load"] == "error"
+    assert "no_such_block" in report["error"]
+
+
+def test_validate_agent_json_is_the_report_payload(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    builtin = copy_sources()[0].name
+
+    code, out, _ = _run(capsys, "--validate-agent", builtin, "--json")
+
+    assert code == 0
+    report = json.loads(out)
+    assert report["name"] == builtin
+    assert report["load"] == "ok"
+    assert set(report) == {"name", "kind", "load", "error", "path", "findings"}
+
+
+def test_validate_agent_of_an_unknown_name_exits_2(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, _, err = _run(capsys, "--validate-agent", "nobody")
+    assert code == 2
+    assert "nobody" in err
+
+
+def test_validate_agent_exits_2_when_a_packaged_agent_fails_to_load(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(main_mod, "AgentRegistry", _raise_agent_load_error)
+    code, _, err = _run(capsys, "--validate-agent", "nobody")
+    assert code == 2
+    assert "corrupt" in err
