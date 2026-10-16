@@ -1558,7 +1558,7 @@ Response:
 
 A `state` event follows, whose `top_agent` carries the **resolved** name — so a client that sent an alias sees the agent it actually got, not the value it typed.
 
-The flag was built for `kodo_judge`, the scoring agent of the now-removed `kodo.validator` (it opened a second, judge session over a finished run, and had no meaning in an interactive one); it was removed with the validator, and a stored `kodo_judge` selection is now treated like any other unknown agent. **Update 2026-10-05:** the one shipped non-selectable agent is `kodo_model_importer`, which is also non-interactive (§7.4h).
+The flag was built for `kodo_judge`, the scoring agent of the now-removed `kodo.validator` (it opened a second, judge session over a finished run, and had no meaning in an interactive one); it was removed with the validator, and a stored `kodo_judge` selection is now treated like any other unknown agent. **Update 2026-10-05:** the one shipped non-selectable agent is `kodo_model_importer`, which is also non-interactive (§7.4h). **Update 2026-10-15:** `kodo_agent_review` is the second (doc/AGENT_BUILDER.md §5.3).
 
 > Replaced `workflow.set {mode}` (removed, not deprecated — nothing accepts it). The old names live on only as read-time fallbacks for data already on disk: the `workflow_mode` key in a session's `transient.json` and the `entry_agent` tag on a `session.jsonl` line.
 
@@ -1730,6 +1730,12 @@ approve a call) and queues the prompt exactly as `prompt.submit` would.
 { "type": "agent.run", "name": "kodo_model_importer", "prompt": "unsloth/Qwen3.8-27B-GGUF" }
 ```
 
+Two shipped agents are started this way, each by one kodo-vsix Settings
+button: `kodo_model_importer` with a Hugging Face repo id (Local LLMs → "Add
+local LLM (GGUF) from huggingface.com", doc/LLM_REGISTRY.md §4.0b), and
+`kodo_agent_review` with a user agent's name (Agents → 🤖 "Review with AI",
+doc/AGENT_BUILDER.md §5.3).
+
 A `state` event with `top_agent: <name>`, `autonomous: true` and
 `interactive: false` (§5.1) is pushed, then the response:
 
@@ -1757,7 +1763,8 @@ session list or a server restart keeps the lock; there is no separate
 persisted flag to drift. The agent's turn runs and ends like any other —
 kodo-vsix notices the `phase` leaving `running` and sends
 `local_llm.registry_get` on the control connection (§7.6) so the Local LLMs
-list shows what the Model Importer wrote (doc/LLM_REGISTRY.md §4.0b).
+list shows what the Model Importer wrote (doc/LLM_REGISTRY.md §4.0b). An
+Agent Review session writes nothing, so nothing is refreshed after it.
 
 Only built-in agents may declare `interactive: false`; a user-installed one
 that does is demoted like any other broken agent (doc/USER_AGENTS.md).

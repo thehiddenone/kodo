@@ -40,7 +40,7 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
-from kodo.agents import AgentLoadError, AgentRegistry, SubAgent
+from kodo.agents import AgentLoadError, AgentRegistry, AgentWorkshop, SubAgent
 from kodo.binutils import find_util
 from kodo.common import ApiKeyProvider, Envelope, MessageSink
 from kodo.findings import (
@@ -355,9 +355,12 @@ class WorkflowEngine(
             has_workspace=self._has_workspace,
             root_paths=self._root_paths,
             local_catalog=self._local_catalog_service,
+            agent_workshop=self._agent_workshop_service,
         )
         # Created on first use: only the Model Importer's tools reach it.
         self._local_catalog: LocalCatalogService | None = None
+        # Likewise, only Agent Builder's tools reach this one.
+        self._agent_workshop: AgentWorkshop | None = None
 
     @property
     def session(self) -> SessionState:
@@ -373,6 +376,16 @@ class WorkflowEngine(
         if self._local_catalog is None:
             self._local_catalog = LocalCatalogService(kodo_user_dir())
         return self._local_catalog
+
+    def _agent_workshop_service(self) -> AgentWorkshop:
+        """The Agent Builder service over the process registry, created on first use.
+
+        It holds no state of its own beyond the registry, so one per engine is
+        only about not rebuilding it per call.
+        """
+        if self._agent_workshop is None:
+            self._agent_workshop = AgentWorkshop(self._registry)
+        return self._agent_workshop
 
     @property
     def gate(self) -> GateOrchestrator:

@@ -1025,6 +1025,16 @@ class AgentRegistry:
         return self.__broken
 
     @property
+    def user_dir(self) -> Path | None:
+        """The user agents root this registry scans, or ``None`` when it has none.
+
+        ``None`` only for a registry built over synthetic agents with no user
+        root (every test fixture that passes none); production registries scan
+        ``~/.kodo/agents``. What :class:`~kodo.agents.AgentWorkshop` writes into.
+        """
+        return self.__user_dir
+
+    @property
     def user_agent_names(self) -> frozenset[str]:
         """The names of the user-installed agents that loaded successfully.
 

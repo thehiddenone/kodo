@@ -21,6 +21,7 @@ from __future__ import annotations
 from ._add_local_llm_quant import AddLocalLlmQuantTool
 from ._ask_user import AskUserTool
 from ._context import (
+    AgentWorkshopLike,
     ApprovalLike,
     EditReviewFeedbackLike,
     EditReviewLike,
@@ -35,6 +36,7 @@ from ._context import (
     SessionLike,
     ToolContext,
 )
+from ._copy_builtin_agent import CopyBuiltinAgentTool
 from ._create_directory import CreateDirectoryTool
 from ._create_file import CreateFileTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
@@ -45,6 +47,7 @@ from ._dispatch import (
     tools_for_agent,
 )
 from ._document_status import document_status, status_from_state
+from ._edit_agent import EditAgentTool
 from ._edit_file import EditFileTool, compute_new_content
 from ._edit_review import should_review_edit
 from ._filesystem import FilesystemTool
@@ -56,7 +59,10 @@ from ._get_plan import GetPlanTool
 from ._get_root_paths import GetRootPathsTool
 from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
+from ._lint_agent import LintAgentTool
+from ._list_agents import ListAgentsTool
 from ._list_local_llms import ListLocalLlmsTool
+from ._list_tools import ListToolsTool
 from ._paths import (
     LogicalPathResolver,
     NoWorkspaceError,
@@ -67,6 +73,7 @@ from ._paths import (
 )
 from ._plan_step_forward import PlanStepForwardTool
 from ._query_search_engine import QuerySearchEngineTool
+from ._read_agent import ReadAgentTool
 from ._read_attachment import ReadAttachmentTool
 from ._read_file import ReadFileTool
 from ._read_gguf_header import ReadGgufHeaderTool
@@ -84,10 +91,14 @@ from ._toolchain_build import ToolchainBuildTool
 from ._toolchain_deps import ToolchainDepsTool
 from ._update_web_search_state import UpdateWebSearchStateTool
 from ._use_skill import UseSkillTool
+from ._validate_agent import ValidateAgentTool
 from ._wait import WaitTool
 from ._web_search import WebSearchTool
+from ._write_agent import WriteAgentTool
 
 __all__ = [
+    "AgentWorkshopLike",
+    "CopyBuiltinAgentTool",
     "DISPATCHABLE_TOOLS_BY_NAME",
     "ApprovalLike",
     "AddLocalLlmQuantTool",
@@ -95,6 +106,7 @@ __all__ = [
     "CreateDirectoryTool",
     "CreateFileTool",
     "DisableAutonomousModeTool",
+    "EditAgentTool",
     "EditFileTool",
     "EditReviewFeedbackLike",
     "EditReviewLike",
@@ -104,6 +116,9 @@ __all__ = [
     "FindFilesTool",
     "FindTextInFilesTool",
     "GateLike",
+    "LintAgentTool",
+    "ListAgentsTool",
+    "ListToolsTool",
     "LocalCatalogLike",
     "GetFindingsTool",
     "GetPlanTool",
@@ -118,6 +133,7 @@ __all__ = [
     "PermissionLike",
     "PermissionPartLike",
     "QuerySearchEngineTool",
+    "ReadAgentTool",
     "ReadAttachmentTool",
     "ReadFileTool",
     "ReadGgufHeaderTool",
@@ -141,8 +157,10 @@ __all__ = [
     "ToolchainDepsTool",
     "UpdateWebSearchStateTool",
     "UseSkillTool",
+    "ValidateAgentTool",
     "WaitTool",
     "WebSearchTool",
+    "WriteAgentTool",
     "compute_new_content",
     "document_status",
     "resolve_logical",

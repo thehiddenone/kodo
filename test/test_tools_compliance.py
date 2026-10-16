@@ -22,12 +22,13 @@ from pathlib import Path
 
 import pytest
 
+from kodo.agents import PACKAGED_AGENTS_DIR, AgentRegistry, AgentWorkshop
 from kodo.binutils import find_util
 from kodo.findings import apply_findings, read_findings
 from kodo.plan import create_plan, step_plan
 from kodo.project import kodo_user_dir
 from kodo.runtime import ApprovalResponse, SessionState
-from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, RootPath, ToolDispatcher
+from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, AgentWorkshopLike, RootPath, ToolDispatcher
 from kodo.toolspecs import (
     ALL_TOOLS,
     SCHEMA_COMPLIANCE_KEY,
@@ -132,6 +133,9 @@ class _FakeServices:
         self._has_workspace = has_workspace
         self._root_paths = root_paths
         self.catalog = _FakeCatalog()
+        # The real Agent Builder service, over a temp user root, for the tests
+        # that dispatch builder tools; left unset everywhere else.
+        self.workshop: AgentWorkshopLike | None = None
         # Every plan widget this dispatcher pushed, so a plan test can assert the
         # user was shown the same state the model was told.
         self.plan_states: list[tuple[dict[str, object], str]] = []
@@ -141,6 +145,10 @@ class _FakeServices:
 
     def local_catalog(self) -> _FakeCatalog:
         return self.catalog
+
+    def agent_workshop(self) -> AgentWorkshopLike:
+        assert self.workshop is not None, "set services.workshop before dispatching builder tools"
+        return self.workshop
 
     def root_paths(self) -> tuple[RootPath, ...]:
         return self._root_paths
@@ -1368,6 +1376,152 @@ async def test_model_importer_write_tools_compliance(tmp_path: Path) -> None:
         assert "error" in parsed, payload
 
 
+def _builder_dispatcher(tmp_path: Path) -> ToolDispatcher:
+    """A dispatcher whose builder tools reach a real workshop over a temp user root."""
+    services = _FakeServices()
+    registry = AgentRegistry(
+        PACKAGED_AGENTS_DIR, skills_dir=tmp_path / "skills", user_dir=tmp_path / "agents"
+    )
+    services.workshop = AgentWorkshop(registry)
+    return _make_dispatcher(tmp_path, agent_name="kodo_agent_builder", services=services)
+
+
+_DRAFT_SUBAGENT = """---
+name: acme_note_taker
+tools:
+  - read_file
+---
+# Note Taker
+
+You are **Note Taker**: you summarize one file into three bullet points.
+
+## Purpose
+
+Note Taker summarizes one file into three bullet points.
+
+## Inputs
+
+- **`instructions`** — the file to summarize.
+
+## Workflow
+
+1. Read the file with `read_file`.
+
+## Reporting
+
+Call `return_result` once, last.
+
+## What to Avoid
+
+- Free-form output in place of `return_result`.
+
+{SHARED:working_rules}
+
+{SHARED:security}
+"""
+
+_DRAFT_SPEC: dict[str, object] = {
+    "input_schema": {"shape": "raw", "schema": {"type": "object", "properties": {}}},
+    "output_schema": {"shape": "raw", "schema": {"type": "object", "properties": {}}},
+}
+
+
+@pytest.mark.asyncio
+async def test_agent_builder_read_tools_compliance(tmp_path: Path) -> None:
+    d = _builder_dispatcher(tmp_path)
+    listed = _assert_compliant("list_agents", await _dispatch(d, "list_agents", {}))
+    assert any(row["name"] == "kodo_guide" for row in listed["agents"])  # type: ignore[union-attr]
+    tools = _assert_compliant("list_tools", await _dispatch(d, "list_tools", {}))
+    assert "return_result" not in {row["name"] for row in tools["tools"]}  # type: ignore[union-attr]
+    read = _assert_compliant("read_agent", await _dispatch(d, "read_agent", {"name": "kodo_guide"}))
+    assert read["source"] == "builtin"
+    report = _assert_compliant(
+        "validate_agent", await _dispatch(d, "validate_agent", {"name": "kodo_guide"})
+    )
+    assert report["load"] == "ok"
+    lint = _assert_compliant(
+        "lint_agent",
+        await _dispatch(
+            d,
+            "lint_agent",
+            {"kind": "subagent", "name": "acme_note_taker", "prompt": _DRAFT_SUBAGENT},
+        ),
+    )
+    assert lint["findings"] == []
+    for name, payload in (
+        ("read_agent", {"name": "acme_missing"}),
+        ("read_agent", {}),
+        ("validate_agent", {"name": "acme_missing"}),
+        ("validate_agent", {}),
+        ("lint_agent", {"kind": "subagent", "name": "acme_x", "prompt": "no frontmatter"}),
+        ("lint_agent", {"kind": "subagent", "name": "acme_x"}),
+    ):
+        parsed = _assert_compliant(name, await _dispatch(d, name, payload))
+        assert "error" in parsed, (name, payload)
+
+
+@pytest.mark.asyncio
+async def test_agent_builder_write_tools_compliance(tmp_path: Path) -> None:
+    d = _builder_dispatcher(tmp_path)
+    written = _assert_compliant(
+        "write_agent",
+        await _dispatch(
+            d,
+            "write_agent",
+            {
+                "kind": "subagent",
+                "name": "acme_note_taker",
+                "prompt": _DRAFT_SUBAGENT,
+                "config": _DRAFT_SPEC,
+            },
+        ),
+    )
+    assert written["report"]["load"] == "ok"  # type: ignore[index]
+    edited = _assert_compliant(
+        "edit_agent",
+        await _dispatch(
+            d,
+            "edit_agent",
+            {
+                "name": "acme_note_taker",
+                "file": "prompt",
+                "old_string": "three bullet points.\n\n## Inputs",
+                "new_string": "five bullet points.\n\n## Inputs",
+            },
+        ),
+    )
+    assert edited["files"]
+    copied = _assert_compliant(
+        "copy_builtin_agent",
+        await _dispatch(
+            d, "copy_builtin_agent", {"name": "kodo_problem_solver", "prefix": "acme_"}
+        ),
+    )
+    assert copied["done"] is True
+    again = _assert_compliant(
+        "copy_builtin_agent",
+        await _dispatch(
+            d, "copy_builtin_agent", {"name": "kodo_problem_solver", "prefix": "acme_"}
+        ),
+    )
+    assert again["done"] is False
+    assert again["conflicts"]
+    for name, payload in (
+        ("write_agent", {"kind": "subagent", "name": "kodo_x", "prompt": "x", "config": {}}),
+        ("write_agent", {"kind": "subagent", "name": "acme_x", "prompt": "x"}),
+        ("edit_agent", {"name": "acme_note_taker", "file": "prompt", "old_string": "absent"}),
+        (
+            "edit_agent",
+            {"name": "acme_note_taker", "file": "prompt", "old_string": "absent", "new_string": ""},
+        ),
+        ("copy_builtin_agent", {"name": "kodo_compactor", "prefix": "acme_"}),
+        ("copy_builtin_agent", {"name": "kodo_guide", "prefix": "acme_", "replace": "yes"}),
+        ("copy_builtin_agent", {"name": "kodo_guide"}),
+    ):
+        parsed = _assert_compliant(name, await _dispatch(d, name, payload))
+        assert "error" in parsed, (name, payload)
+
+
 def test_all_dispatchable_tools_are_covered() -> None:
     """Fail if a new dispatchable tool is added without a compliance scenario."""
     covered = {
@@ -1407,6 +1561,14 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "read_gguf_header",
         "add_local_llm_quant",
         "set_mtp_heads",
+        "list_agents",
+        "read_agent",
+        "list_tools",
+        "copy_builtin_agent",
+        "write_agent",
+        "edit_agent",
+        "validate_agent",
+        "lint_agent",
     }
     assert set(DISPATCHABLE_TOOLS_BY_NAME) == covered, (
         "Dispatchable tools changed; add a compliance scenario for: "

@@ -30,9 +30,11 @@ from pathlib import Path
 from kodo.toolspecs import (
     ADD_LOCAL_LLM_QUANT,
     ASK_USER,
+    COPY_BUILTIN_AGENT,
     CREATE_DIRECTORY,
     CREATE_FILE,
     DISABLE_AUTONOMOUS_MODE,
+    EDIT_AGENT,
     EDIT_FILE,
     FILESYSTEM,
     FINALIZE_PROJECT,
@@ -44,11 +46,15 @@ from kodo.toolspecs import (
     GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
     INTENT_KEY,
+    LINT_AGENT,
+    LIST_AGENTS,
     LIST_LOCAL_LLMS,
+    LIST_TOOLS,
     MAX_ROUNDS_KEY,
     NO_PROJECT_ERROR,
     PLAN_STEP_FORWARD,
     QUERY_SEARCH_ENGINE,
+    READ_AGENT,
     READ_ATTACHMENT,
     READ_FILE,
     READ_GGUF_HEADER,
@@ -65,8 +71,10 @@ from kodo.toolspecs import (
     TOOLCHAIN_DEPS,
     UPDATE_WEB_SEARCH_STATE,
     USE_SKILL,
+    VALIDATE_AGENT,
     WAIT,
     WEB_SEARCH,
+    WRITE_AGENT,
     ToolSpec,
     requires_intent,
     subagent_from_tool_name,
@@ -82,9 +90,11 @@ from ._context import (
     SessionLike,
     ToolContext,
 )
+from ._copy_builtin_agent import CopyBuiltinAgentTool
 from ._create_directory import CreateDirectoryTool
 from ._create_file import CreateFileTool
 from ._disable_autonomous_mode import DisableAutonomousModeTool
+from ._edit_agent import EditAgentTool
 from ._edit_file import EditFileTool, compute_new_content
 from ._edit_review import should_review_edit
 from ._filesystem import FilesystemTool
@@ -96,10 +106,14 @@ from ._get_plan import GetPlanTool
 from ._get_root_paths import GetRootPathsTool
 from ._get_web_search_state import GetWebSearchStateTool
 from ._guided_dev_status import GuidedDevStatusTool
+from ._lint_agent import LintAgentTool
+from ._list_agents import ListAgentsTool
 from ._list_local_llms import ListLocalLlmsTool
+from ._list_tools import ListToolsTool
 from ._paths import PathResolver
 from ._plan_step_forward import PlanStepForwardTool
 from ._query_search_engine import QuerySearchEngineTool
+from ._read_agent import ReadAgentTool
 from ._read_attachment import ReadAttachmentTool
 from ._read_file import ReadFileTool
 from ._read_gguf_header import ReadGgufHeaderTool
@@ -117,8 +131,10 @@ from ._toolchain_build import ToolchainBuildTool
 from ._toolchain_deps import ToolchainDepsTool
 from ._update_web_search_state import UpdateWebSearchStateTool
 from ._use_skill import UseSkillTool
+from ._validate_agent import ValidateAgentTool
 from ._wait import WaitTool
 from ._web_search import WebSearchTool
+from ._write_agent import WriteAgentTool
 
 __all__ = [
     "DISPATCHABLE_TOOLS_BY_NAME",
@@ -168,6 +184,14 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (WAIT, WaitTool),
     (REMAINING_TIME, RemainingTimeTool),
     (USE_SKILL, UseSkillTool),
+    (LIST_AGENTS, ListAgentsTool),
+    (READ_AGENT, ReadAgentTool),
+    (LIST_TOOLS, ListToolsTool),
+    (COPY_BUILTIN_AGENT, CopyBuiltinAgentTool),
+    (WRITE_AGENT, WriteAgentTool),
+    (EDIT_AGENT, EditAgentTool),
+    (VALIDATE_AGENT, ValidateAgentTool),
+    (LINT_AGENT, LintAgentTool),
 )
 
 _CLASSES_BY_NAME: dict[str, type[Tool]] = {spec.name: cls for spec, cls in _TOOL_CLASSES}

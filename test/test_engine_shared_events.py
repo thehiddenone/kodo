@@ -31,7 +31,7 @@ from kodo.runtime._engine._events import EngineEmitters
 from kodo.runtime._engine._services import _EngineServices
 from kodo.runtime._engine._shared import _slugify_project_name, _unique_child_dir
 from kodo.runtime._session import SessionState
-from kodo.tools import LocalCatalogLike, RootPath
+from kodo.tools import AgentWorkshopLike, LocalCatalogLike, RootPath
 
 # ---------------------------------------------------------------------------
 # _shared._slugify_project_name
@@ -106,6 +106,7 @@ def _make_services(rec: _Recorder) -> _EngineServices:
         has_workspace=lambda: True,
         root_paths=lambda: (),
         local_catalog=lambda: _CATALOG,
+        agent_workshop=lambda: _WORKSHOP,
     )
 
 
@@ -115,6 +116,14 @@ _CATALOG = cast(LocalCatalogLike, object())
 
 def test_engine_services_local_catalog_returns_the_engine_service() -> None:
     assert _make_services(_Recorder()).local_catalog() is _CATALOG
+
+
+#: Stands in for the engine's Agent Builder service; the adapter only hands it back.
+_WORKSHOP = cast(AgentWorkshopLike, object())
+
+
+def test_engine_services_agent_workshop_returns_the_engine_service() -> None:
+    assert _make_services(_Recorder()).agent_workshop() is _WORKSHOP
 
 
 @pytest.mark.asyncio
@@ -261,6 +270,7 @@ def test_engine_services_has_workspace_root_paths_are_live_reads() -> None:
             (RootPath(name="proj", path="/tmp/proj"),) if box["has_workspace"] else ()
         ),
         local_catalog=lambda: _CATALOG,
+        agent_workshop=lambda: _WORKSHOP,
     )
 
     assert services.has_workspace() is False

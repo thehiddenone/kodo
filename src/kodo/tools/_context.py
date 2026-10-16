@@ -25,6 +25,7 @@ from kodo.project import session_temp_dir
 from ._paths import NoWorkspaceError, PathResolver
 
 __all__ = [
+    "AgentWorkshopLike",
     "ApprovalLike",
     "EditReviewFeedbackLike",
     "EditReviewLike",
@@ -416,6 +417,54 @@ class LocalCatalogLike(Protocol):
         ...
 
 
+class AgentWorkshopLike(Protocol):
+    """Structural shape of Agent Builder's agent service (doc/AGENT_BUILDER.md §6.2).
+
+    Backs the builder tools (``list_agents``, ``read_agent``,
+    ``copy_builtin_agent``, ``write_agent``, ``edit_agent``, ``validate_agent``,
+    ``lint_agent``; ``list_tools`` reads the spec catalog directly). The concrete
+    service (``kodo.agents.AgentWorkshop``) sits above ``kodo.tools`` in the
+    import graph, so the engine hands it over through
+    :meth:`EngineServices.agent_workshop`. Every method returns a
+    JSON-serialisable dict and raises :class:`ValueError` — with a message
+    written for the calling agent — for any request it refuses or cannot
+    complete; the tools turn that into ``{"error": ...}``. The service builds
+    every path itself, so no call can name a file outside the user agents root.
+    """
+
+    async def list_agents(self) -> dict[str, object]:
+        """Every built-in and user agent, loaded or broken."""
+        ...
+
+    async def read_agent(self, name: str) -> dict[str, object]:
+        """One agent's prompt and config or spec as written, and its frontmatter."""
+        ...
+
+    async def copy_builtin(self, name: str, prefix: str, replace: bool | None) -> dict[str, object]:
+        """Copy a built-in with its pipeline; ``replace=None`` asks before overwriting."""
+        ...
+
+    async def write_agent(
+        self, kind: str, name: str, prompt: str, config: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Create or overwrite one user agent, then report on it."""
+        ...
+
+    async def edit_agent(
+        self, name: str, file: str, old_string: str, new_string: str
+    ) -> dict[str, object]:
+        """Replace one exact string in one user agent file, then report on it."""
+        ...
+
+    async def validate_agent(self, name: str) -> dict[str, object]:
+        """The load check and lint for one agent."""
+        ...
+
+    async def lint_agent(self, kind: str, name: str, prompt: str) -> dict[str, object]:
+        """Lint a draft prompt that has not been written."""
+        ...
+
+
 class EngineServices(Protocol):
     """Structural shape of every engine-side operation a tool can trigger.
 
@@ -666,6 +715,14 @@ class EngineServices(Protocol):
 
         One instance per engine, created on first use, so the headers and repo
         snapshots it caches are shared by every importer tool call in the session.
+        """
+        ...
+
+    def agent_workshop(self) -> AgentWorkshopLike:
+        """The Agent Builder's agent service (:class:`AgentWorkshopLike`).
+
+        Bound to the process-wide agent registry, so an agent the builder writes
+        reaches every session and the picker as soon as the call returns.
         """
         ...
 

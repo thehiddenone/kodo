@@ -28,6 +28,7 @@ from kodo.agents import (
     load_top_agents,
 )
 from kodo.agents.subagents import SubAgentSpec
+from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME
 
 _REAL_AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents"
 
@@ -361,3 +362,25 @@ def test_construction_lists_several_problems_for_one_agent(agents_dir: Path) -> 
     assert "no_such_tool" in report  # unknown tool
     assert "{SHARED:editing}" in report  # file-modifying grant, no discipline
     assert "critic 'ghost' is not loaded" in report  # dangling critic
+
+
+# ---------------------------------------------------------------------------
+# Agent Builder and Agent Review (doc/AGENT_BUILDER.md §5.3, §6)
+# ---------------------------------------------------------------------------
+
+
+def test_agent_builder_is_in_the_picker_and_agent_review_is_run_only() -> None:
+    tops = {top.name: top for top in AgentRegistry(_REAL_AGENTS_DIR).top_agents()}
+
+    builder, review = tops["kodo_agent_builder"], tops["kodo_agent_review"]
+    assert builder.selectable and builder.interactive
+    assert not review.selectable and not review.interactive
+
+
+@pytest.mark.parametrize("name", ["kodo_agent_builder", "kodo_agent_critic", "kodo_agent_review"])
+def test_agent_builder_pipeline_needs_no_project(name: str) -> None:
+    """§6.1: the builder works with no project open, so neither it nor what it
+    reaches may hold a tool the dispatcher refuses until a project exists."""
+    agent = AgentRegistry(_REAL_AGENTS_DIR).get(name)
+    gated = sorted(t for t in agent.tools if DISPATCHABLE_TOOLS_BY_NAME[t].requires_project)
+    assert gated == [], f"{name} holds project-gated tools {gated}"

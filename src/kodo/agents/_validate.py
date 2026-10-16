@@ -67,15 +67,7 @@ class AgentReport:
             "load": "ok" if self.loads else "error",
             "error": self.load_error,
             "path": str(self.path) if self.path is not None else "",
-            "findings": [
-                {
-                    "rule": finding.rule,
-                    "severity": finding.severity,
-                    "line": finding.line,
-                    "message": finding.message,
-                }
-                for finding in self.findings
-            ],
+            "findings": [finding.as_payload() for finding in self.findings],
         }
 
 

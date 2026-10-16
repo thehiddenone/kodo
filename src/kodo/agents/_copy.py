@@ -83,6 +83,7 @@ __all__ = [
     "CopyPlan",
     "CopyResult",
     "CopySource",
+    "agent_name_error",
     "copy_agent",
     "copy_sources",
     "plan_copy",
@@ -447,18 +448,40 @@ def _check_prefix(prefix: str) -> None:
         )
 
 
-def _check_name(name: str) -> None:
-    """Refuse a copied name the user store or a tool name would not accept."""
+def agent_name_error(name: str) -> str:
+    """Why *name* cannot be a new user agent's name, or ``""`` when it can.
+
+    Stricter than :func:`~kodo.agents.reserved_name_error`, which is all the
+    store asks of a directory it finds: a name Kōdo *writes* also has the shape
+    of every built-in name, and fits in its ``run_subagent_<name>`` tool name.
+
+    Args:
+        name: The proposed agent or sub-agent name.
+
+    Returns:
+        str: A one-sentence reason, or ``""`` when the name is acceptable.
+    """
     reserved = reserved_name_error(name)
     if reserved:
-        raise AgentCopyError(reserved)
+        return reserved
     if not _NAME_RE.match(name):
-        raise AgentCopyError(f"{name!r} is not a valid agent name")
-    if len(_RUN_SUBAGENT_PREFIX + name) > _TOOL_NAME_LIMIT:
-        raise AgentCopyError(
-            f"{name!r} is too long: its run_subagent_{name} tool name would exceed "
-            f"{_TOOL_NAME_LIMIT} characters — choose a shorter prefix"
+        return (
+            f"{name!r} is not a valid agent name: it must start with a lowercase letter "
+            f"and hold only lowercase letters, digits and underscores"
         )
+    if len(_RUN_SUBAGENT_PREFIX + name) > _TOOL_NAME_LIMIT:
+        return (
+            f"{name!r} is too long: its run_subagent_{name} tool name would exceed "
+            f"{_TOOL_NAME_LIMIT} characters — choose a shorter name"
+        )
+    return ""
+
+
+def _check_name(name: str) -> None:
+    """Refuse a copied name the user store or a tool name would not accept."""
+    error = agent_name_error(name)
+    if error:
+        raise AgentCopyError(error)
 
 
 def _destination(root: Path, agent: SubAgent, prefix: str) -> Path:

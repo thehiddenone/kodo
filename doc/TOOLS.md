@@ -306,6 +306,17 @@ Protocols**, also defined in `_context.py`:
   `kodo.llms` type). The tools are thin on purpose: every field is validated
   and every factual claim checked against the GGUF header by the service
   (doc/LLM_REGISTRY.md §4.0b).
+  **Added 2026-10-15:** `agent_workshop()` returns **`AgentWorkshopLike`** —
+  Agent Builder's agent service (`kodo.agents.AgentWorkshop`, created on first
+  use, one per engine, bound to the process-wide `AgentRegistry`;
+  doc/AGENT_BUILDER.md §6.2). Its seven async methods back seven builder tools
+  one-to-one — `list_agents`, `read_agent`, `copy_builtin` (`copy_builtin_agent`),
+  `write_agent`, `edit_agent`, `validate_agent`, `lint_agent` — with the same
+  dict-or-`ValueError` contract (`AgentWorkshopError` subclasses it). The
+  service builds every path from an agent's kind and name, checks each file
+  with its strict loader before writing, and reloads the registry after every
+  write. The eighth builder tool, `list_tools`, needs no service: it reads
+  `kodo.toolspecs.ALL_TOOLS` directly.
   All three back the single `scaffold_new_project` tool, dispatched on which
   input the agent gave: no `path` and no workspace yet → `bootstrap_project`
   (resolves a workspace-home folder — interactively or, in autonomous mode,
@@ -497,6 +508,14 @@ run_subagent_kodo_coder(instructions, project_code, responsibility_code, max_rou
 `AgentRegistry.run_subagent_specs(caller)` mints them from the caller's
 `subagents:` allow-list. A **critic** (`role: critic`) is skipped: no caller
 ever spawns one, so no tool is minted for it.
+
+**Not project-gated (2026-10-15).** `run_subagent` is `requires_project=False`,
+so a spawn goes through with no project open — the user's decision when Agent
+Builder, which writes only under `~/.kodo/agents`, needed to reach its critic
+in a homeless session (doc/AGENT_BUILDER.md D36). Nothing a project provides is
+assumed by the spawn itself: input resolution refuses a callee whose required
+artifact roles cannot be met, work-product recording skips paths under no bound
+root, and each tool the callee holds keeps its own gate.
 
 What is *not* on that signature matters as much as what is. `input_paths` and
 `for_revision_paths` are stripped from every such tool
@@ -1121,7 +1140,7 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [toolspecs/_intent.py](../src/kodo/toolspecs/_intent.py) | The shared mandatory `intent` property for first-degree mutating tools + `requires_intent` (§8A). |
 | [toolspecs/_<tool>.py](../src/kodo/toolspecs/) | One `ToolSpec` constant per tool (pure data). |
 | [toolspecs/__init__.py](../src/kodo/toolspecs/__init__.py) | Re-exports specs + `ALL_TOOLS` (for prompt rendering). |
-| [tools/_context.py](../src/kodo/tools/_context.py) | `ToolContext` + the injected Protocols (`GateLike`, `SessionLike`, `EngineServices`, `LocalCatalogLike`, `ApprovalLike`). |
+| [tools/_context.py](../src/kodo/tools/_context.py) | `ToolContext` + the injected Protocols (`GateLike`, `SessionLike`, `EngineServices`, `LocalCatalogLike`, `AgentWorkshopLike`, `ApprovalLike`). |
 | [tools/_tool.py](../src/kodo/tools/_tool.py) | The `Tool` ABC: binds a `ToolContext` (read-only `context` property), declares abstract `handle`, and provides `resolve_path` (§5a — the ordinary resolver, or the session scratch directory when `temporary`). |
 | [tools/_&lt;tool&gt;.py](../src/kodo/tools/) | One `Tool` subclass per tool, with `handle(self, tool_input) -> str`. |
 | [tools/_dispatch.py](../src/kodo/tools/_dispatch.py) | `_TOOL_CLASSES` table, `ToolDispatcher`, `tools_for_agent`, `DISPATCHABLE_TOOLS_BY_NAME`. |
@@ -1137,6 +1156,7 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [llms/_interface.py](../src/kodo/llms/_interface.py) | `Message`, `ToolCallEvent`, `TurnEnd`, the `stream_query` contract. |
 | [runtime/_engine/](../src/kodo/runtime/_engine/) | `_make_dispatcher`, `_run_agent_turn` (the tool loop), the `_EngineServices` adapter. |
 | [llms/model_import/](../src/kodo/llms/model_import/) | `LocalCatalogService`, the `LocalCatalogLike` behind the five Model Importer tools (`list_local_llms`, `read_hf_model`, `read_gguf_header`, `add_local_llm_quant`, `set_mtp_heads`) — doc/LLM_REGISTRY.md §4.0b. |
+| [agents/_workshop.py](../src/kodo/agents/_workshop.py) | `AgentWorkshop`, the `AgentWorkshopLike` behind Agent Builder's tools (`list_agents`, `read_agent`, `copy_builtin_agent`, `write_agent`, `edit_agent`, `validate_agent`, `lint_agent`) — doc/AGENT_BUILDER.md §6.2. |
 | [runtime/_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator` (satisfies `GateLike`). |
 
 See also [INTERNALS.md §6A](INTERNALS.md) for the package's place in the

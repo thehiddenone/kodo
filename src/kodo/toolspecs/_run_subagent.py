@@ -110,7 +110,13 @@ RUN_SUBAGENT: ToolSpec = ToolSpec(
     # The result is the sub-agent's own dynamic output schema, so there are no
     # fixed output properties to assign per-key visibility to.
     output_visibility={},
-    requires_project=True,
+    # Not project-gated (2026-10-15, doc/AGENT_BUILDER.md §6.1): an agent that
+    # runs with no project open — Agent Builder, which writes only under
+    # ~/.kodo/agents — must still reach its sub-agents. What a project gives a
+    # spawn degrades on its own without one: input resolution refuses a callee
+    # whose required artifact roles cannot be met, recording skips paths under
+    # no bound root, and the callee's own tools keep their own gates.
+    requires_project=False,
 )
 
 

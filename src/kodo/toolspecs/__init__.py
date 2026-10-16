@@ -21,10 +21,12 @@ from ._compliance import (
     normalize_output,
     tool_result_succeeded,
 )
+from ._copy_builtin_agent import COPY_BUILTIN_AGENT
 from ._create_directory import CREATE_DIRECTORY
 from ._create_file import CREATE_FILE
 from ._describe import dense_output_schema, optional_output_paths, tool_description
 from ._disable_autonomous_mode import DISABLE_AUTONOMOUS_MODE
+from ._edit_agent import EDIT_AGENT
 from ._edit_file import EDIT_FILE
 from ._filesystem import FILESYSTEM
 from ._finalize_project import FINALIZE_PROJECT
@@ -36,9 +38,13 @@ from ._get_root_paths import GET_ROOT_PATHS
 from ._get_web_search_state import GET_WEB_SEARCH_STATE
 from ._guided_dev_status import GUIDED_DEV_STATUS
 from ._intent import INTENT_KEY, INTENT_PROPERTY, requires_intent
+from ._lint_agent import LINT_AGENT
+from ._list_agents import LIST_AGENTS
 from ._list_local_llms import LIST_LOCAL_LLMS
+from ._list_tools import LIST_TOOLS
 from ._plan_step_forward import PLAN_STEP_FORWARD
 from ._query_search_engine import QUERY_SEARCH_ENGINE
+from ._read_agent import READ_AGENT
 from ._read_attachment import READ_ATTACHMENT
 from ._read_file import READ_FILE
 from ._read_gguf_header import READ_GGUF_HEADER
@@ -73,9 +79,11 @@ from ._toolchain_build import TOOLCHAIN_BUILD
 from ._toolchain_deps import TOOLCHAIN_DEPS
 from ._update_web_search_state import UPDATE_WEB_SEARCH_STATE
 from ._use_skill import USE_SKILL
+from ._validate_agent import VALIDATE_AGENT
 from ._visibility import build_detail_rows, stringify_value
 from ._wait import WAIT
 from ._web_search import WEB_SEARCH
+from ._write_agent import WRITE_AGENT
 
 """The shared "no project bound" error every ``requires_project`` tool returns.
 
@@ -95,9 +103,11 @@ __all__ = [
     "ALL_TOOLS",
     "ADD_LOCAL_LLM_QUANT",
     "ASK_USER",
+    "COPY_BUILTIN_AGENT",
     "CREATE_DIRECTORY",
     "CREATE_FILE",
     "DISABLE_AUTONOMOUS_MODE",
+    "EDIT_AGENT",
     "EDIT_FILE",
     "FILESYSTEM",
     "FINALIZE_PROJECT",
@@ -108,6 +118,9 @@ __all__ = [
     "GET_ROOT_PATHS",
     "GET_WEB_SEARCH_STATE",
     "GUIDED_DEV_STATUS",
+    "LINT_AGENT",
+    "LIST_AGENTS",
+    "LIST_TOOLS",
     "PLAN_STEP_FORWARD",
     "INTENT_KEY",
     "INTENT_PROPERTY",
@@ -118,6 +131,7 @@ __all__ = [
     "NO_PROJECT_ERROR",
     "OUTPUT_VISIBILITY_DEFAULT",
     "QUERY_SEARCH_ENGINE",
+    "READ_AGENT",
     "READ_ATTACHMENT",
     "READ_FILE",
     "READ_GGUF_HEADER",
@@ -136,6 +150,7 @@ __all__ = [
     "TOOLCHAIN_DEPS",
     "UPDATE_WEB_SEARCH_STATE",
     "USE_SKILL",
+    "VALIDATE_AGENT",
     "VISIBILITY_ALWAYS",
     "VISIBILITY_HIDDEN",
     "VISIBILITY_VALUES",
@@ -157,6 +172,7 @@ __all__ = [
     "stringify_value",
     "tool_description",
     "tool_result_succeeded",
+    "WRITE_AGENT",
 ]
 
 # Every tool spec in the catalog. Agents' granted tools are validated against it
@@ -164,9 +180,11 @@ __all__ = [
 ALL_TOOLS: tuple[ToolSpec, ...] = (
     ADD_LOCAL_LLM_QUANT,
     ASK_USER,
+    COPY_BUILTIN_AGENT,
     CREATE_DIRECTORY,
     CREATE_FILE,
     DISABLE_AUTONOMOUS_MODE,
+    EDIT_AGENT,
     EDIT_FILE,
     FILESYSTEM,
     FINALIZE_PROJECT,
@@ -177,9 +195,13 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     FIND_TEXT_IN_FILES,
     GET_WEB_SEARCH_STATE,
     GUIDED_DEV_STATUS,
+    LINT_AGENT,
+    LIST_AGENTS,
     LIST_LOCAL_LLMS,
+    LIST_TOOLS,
     PLAN_STEP_FORWARD,
     QUERY_SEARCH_ENGINE,
+    READ_AGENT,
     READ_ATTACHMENT,
     READ_FILE,
     READ_GGUF_HEADER,
@@ -196,6 +218,8 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     TOOLCHAIN_DEPS,
     UPDATE_WEB_SEARCH_STATE,
     USE_SKILL,
+    VALIDATE_AGENT,
     WAIT,
     WEB_SEARCH,
+    WRITE_AGENT,
 )

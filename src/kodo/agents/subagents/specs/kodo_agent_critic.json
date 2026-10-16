@@ -1,0 +1,75 @@
+{
+  "name": "kodo_agent_critic",
+  "notes": "SubAgentSpec for `agent_critic` — Agent Builder's reviewer (doc/AGENT_BUILDER.md §5.3).\n\nA standalone sub-agent, deliberately not a `role: critic`: a Kōdo critic reviews a work product inside an engine-driven author loop and reports through the findings backlog, while this one is called directly — by `kodo_agent_builder` after each written agent, and by `kodo_agent_review` for the Settings panel's \"Review with AI\" — and returns its verdict to the caller. Its output is therefore a raw schema rather than `critic_output`. Each concern carries the quote it objects to, so a reviewer can be checked against the files.",
+  "input_schema": {
+    "shape": "raw",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "instructions": {
+          "type": "string",
+          "description": "What the agent is meant to do: its single purpose, its inputs and outputs, and its place in a pipeline. Empty when unknown — the review then checks the rules alone."
+        },
+        "name": {
+          "type": "string",
+          "description": "The agent to review, exactly as list_agents names it."
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  "output_schema": {
+    "shape": "raw",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "accept": {
+          "type": "boolean",
+          "description": "True exactly when `concerns` is empty."
+        },
+        "concerns": {
+          "type": "array",
+          "description": "One entry per problem, in file order; empty when accepted.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "rule": {
+                "type": "string",
+                "description": "A lint rule ID (`L4 purpose`), `load`, `intent`, or `<skill name>: <section heading>`."
+              },
+              "quote": {
+                "type": "string",
+                "description": "The exact text objected to, copied from the file; empty only for something missing."
+              },
+              "location": {
+                "type": "string",
+                "description": "`<file name>:<line>`, `<file name>: <key>` for JSON, or `## <section>` for a missing section."
+              },
+              "fix": {
+                "type": "string",
+                "description": "The change that resolves the concern, as a definite instruction."
+              }
+            },
+            "required": [
+              "rule",
+              "quote",
+              "location",
+              "fix"
+            ]
+          }
+        },
+        "summary": {
+          "type": "string",
+          "description": "One line: the verdict and the number of concerns."
+        }
+      },
+      "required": [
+        "accept",
+        "concerns",
+        "summary"
+      ]
+    }
+  }
+}

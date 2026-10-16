@@ -43,6 +43,7 @@ from ._copy import (
     CopyPlan,
     CopyResult,
     CopySource,
+    agent_name_error,
     copy_agent,
     copy_sources,
     plan_copy,
@@ -113,12 +114,26 @@ from ._userstore import (
     reserved_name_error,
 )
 from ._validate import AgentReport, AgentValidator
+from ._workshop import (
+    AGENT_FILE_CONFIG,
+    AGENT_FILE_PROMPT,
+    AGENT_FILE_SPEC,
+    SOURCE_BUILTIN,
+    SOURCE_USER,
+    AgentWorkshop,
+    AgentWorkshopError,
+)
 from .subagents import SubAgentSpec
 
 __all__: list[str] = [
+    "AGENT_FILE_CONFIG",
+    "AGENT_FILE_PROMPT",
+    "AGENT_FILE_SPEC",
     "AgentCopyError",
     "AgentReport",
     "AgentValidator",
+    "AgentWorkshop",
+    "AgentWorkshopError",
     "COMPACTOR_AGENT",
     "CopyMember",
     "CopyPlan",
@@ -139,7 +154,10 @@ __all__: list[str] = [
     "RULE_UNKNOWN_AGENT",
     "RULE_VAGUE_QUALIFIER",
     "SEVERITY_WARNING",
+    "SOURCE_BUILTIN",
+    "SOURCE_USER",
     "WEB_SEARCH_AGENT",
+    "agent_name_error",
     "copy_agent",
     "copy_sources",
     "lint_prompt",

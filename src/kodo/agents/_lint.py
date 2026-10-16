@@ -131,6 +131,20 @@ class LintFinding:
     message: str
     line: int | None = None
 
+    def as_payload(self) -> dict[str, object]:
+        """The finding as JSON-ready data, the shape every report and tool returns.
+
+        Returns:
+            dict[str, object]: ``{rule, severity, line, message}``, ``line``
+            being ``null`` for a finding about something absent.
+        """
+        return {
+            "rule": self.rule,
+            "severity": self.severity,
+            "line": self.line,
+            "message": self.message,
+        }
+
 
 @dataclass(frozen=True)
 class LintContext:

@@ -1,0 +1,9 @@
+{
+  "name": "kodo_agent_review",
+  "notes": "Started only by kodo-vsix's Settings → Agents 'Review with AI' button, through agent.run with the agent's name as its one prompt (doc/AGENT_BUILDER.md §5.3). `interactive: false` makes agent.run the only way onto it and locks its session, which is why it must also be non-selectable. Read-only: it holds validate_agent and kodo_agent_critic, which hold no writing tool.",
+  "label": "Agent Review",
+  "description": "Reviews one of your agents against Kōdo's prompt-writing rules and lists each concern.",
+  "rank": 91,
+  "selectable": false,
+  "interactive": false
+}

@@ -1,0 +1,7 @@
+{
+  "name": "kodo_agent_builder",
+  "notes": "Agent Builder (doc/AGENT_BUILDER.md §6): designs and writes user agents in ~/.kodo/agents with the user, through the builder tools only — it holds no create_file/edit_file/run_command, so it cannot write anywhere else. Needs no open project; its one sub-agent, kodo_agent_critic, is reachable without one because run_subagent is not project-gated. Ranked after the two working agents, since a user meets it only once they want an agent of their own.",
+  "label": "Agent Builder",
+  "description": "Designs, writes and reviews a new Kōdo agent or sub-agent with you.",
+  "rank": 30
+}

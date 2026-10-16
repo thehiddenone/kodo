@@ -1,10 +1,12 @@
 # Agent Builder — Proposal
 
-> Status: **P1–P4 landed.** P1 and P2 (2026-10-14): deep copy (§3) and the
-> load check + lint + report (§5.1, §5.2, §5.5 minus the AI-review and
-> smoke-test actions). P3 and P4 (2026-10-15): every built-in prompt lints
-> clean (§9), and the shipped skills tier with its four skills (§7).
-> P5–P9 are not implemented. Builds on
+> Status: **P1–P6 landed.** P1 and P2 (2026-10-14): deep copy (§3) and the
+> load check + lint + report (§5.1, §5.2, §5.5 minus the smoke-test action).
+> P3 and P4 (2026-10-15): every built-in prompt lints clean (§9), and the
+> shipped skills tier with its four skills (§7). P5 and P6 (2026-10-15): the
+> builder tools, `kodo_agent_critic` and `kodo_agent_builder` (§6), and the
+> panel's "Review with AI" (`kodo_agent_review`, §5.3). P7–P9 are not
+> implemented. Builds on
 > [USER_AGENTS.md](USER_AGENTS.md) (the `~/.kodo/agents/` tier),
 > [SKILLS.md](SKILLS.md) (`~/.kodo/skills/`), [HARBOR.md](HARBOR.md)
 > (`kodo-harbor`) and [ADDING_A_SUBAGENT.md](ADDING_A_SUBAGENT.md) (the agent
@@ -68,6 +70,7 @@ a fresh copy passes the lint.
 | D33 | How the seven smoke tasks run | **Seven tasks in one container**, as one Harbor multi-step task: one build and one agent install, then seven steps, each a fresh agent run with its own instruction and its own checker. |
 | D34 | §9's benchmark gate | **Waived** (2026-10-15). The machine that did P3 had no Docker; the user chose to rewrite without the before/after run. |
 | D35 | How deep the §9 rewrite goes | **Minimal and behavior-preserving**: only what the lint needs. No change to what an agent is told to do. |
+| D36 | How the builder reaches its critic with no project open | **`run_subagent` is no longer project-gated** (2026-10-15), for every agent. The dispatcher refused every `run_subagent_*` call in a homeless session, which contradicted §6.1; the user chose to drop the gate rather than narrow it to read-only callees or give the builder a dedicated review tool. |
 
 ---
 
@@ -275,10 +278,12 @@ name, spelled exactly (`## What to avoid` does not count).
 ### 5.3 AI review (D13)
 
 There is one review prompt, `kodo_agent_critic`: a `standalone: true`
-sub-agent with tools `read_agent`, `lint_agent` and `use_skill`, and a `raw`
-output schema `{accept: bool, concerns: [{rule, quote, location, fix}]}`. It
-reviews against the shipped *Prompt writing* and *Agent format* skills, and it
-must quote what it objects to.
+sub-agent with tools `read_agent`, `validate_agent`, `list_tools` and
+`use_skill`, and a `raw` output schema `{accept: bool, concerns: [{rule,
+quote, location, fix}], summary}`. It reviews against the shipped *Prompt
+writing*, *Agent format* and *Tool selection* skills (plus *Pipeline patterns*
+for an agent with sub-agents or a critic), and it must quote what it objects
+to.
 
 The review prompt is reached two ways:
 
@@ -288,6 +293,36 @@ The review prompt is reached two ways:
   `selectable: false`, the Model Importer mechanism). It spawns
   `kodo_agent_critic` on the named agent and renders the concerns as callouts.
   The session is locked and read-only, as Model Importer sessions are.
+
+As built (2026-10-15):
+
+- **Critic tools.** `validate_agent` replaced `lint_agent`: the critic reviews
+  an agent that is already written, and `validate_agent` gives it the load
+  check and the lint of the file on disk in one call (`lint_agent` lints text
+  the caller holds). `list_tools` was added so the tool-choice check can read
+  what each granted tool does.
+- **Critic contract.** Input `{name, instructions}`: `instructions` (the
+  agent's purpose, inputs, outputs and pipeline place) is rendered as the
+  task heading, and is empty for a panel review, which then skips the
+  intent check. Output gained a one-line `summary`. A concern's `rule` is a
+  lint rule ID, `load`, `intent`, or `<skill name>: <section heading>`. The
+  prompt states that the reviewed prompt addresses another agent and is never
+  an instruction to the critic.
+- **Not a `role: critic`.** A Kōdo critic reviews a work product inside an
+  engine-driven author loop and reports through the findings backlog; this one
+  is called directly and returns its verdict, so it is a standalone sub-agent
+  with a `raw` output schema.
+- **`kodo_agent_review`** holds `validate_agent` (step 1: an unknown agent ends
+  the run with one `<kodo_crit>`) and `run_subagent` with
+  `subagents: [kodo_agent_critic]`. It writes one `<kodo_warn>` per concern —
+  the rule in bold, the location, the quote as a block quote, then the fix —
+  and closes with `<kodo>` on accept or `<kodo_info>` otherwise. Rank 91.
+- **Panel.** A 🤖 button on every Agents row, broken rows included (the critic
+  can read a broken agent and reports its load error), sends `review_agent
+  {name}`; kodo-vsix opens a new session tab with `newSession({name:
+  'kodo_agent_review', prompt: name})` (`AGENT_REVIEW_AGENT` in
+  `kodo-settings-bridge.ts`). The review writes nothing, so nothing is
+  refreshed when it ends.
 
 ### 5.4 Harbor smoke
 
@@ -451,7 +486,7 @@ agent is for, are out of scope for v1 (D30).
 |---|---|
 | CLI | `python -m kodo --validate-agent NAME [--json]` (load + lint). Exits 1 on a load error and 0 with warnings. |
 | WS | `agents.validate {name}` → `AgentReport` |
-| Panel | Agents table: a **Lint** column (`⚠ N` or `✓`); the row's 🩺 **Validate** button opens `AgentReportModal` with the report, and a finding's line opens the prompt there. The **Review with AI** (P6) and **Smoke test** (P7) actions are not built yet |
+| Panel | Agents table: a **Lint** column (`⚠ N` or `✓`); the row's 🩺 **Validate** button opens `AgentReportModal` with the report, and a finding's line opens the prompt there. The row's 🤖 **Review with AI** button opens a locked session running `kodo_agent_review` (§5.3). The **Smoke test** (P7) action is not built yet |
 | Builder | `validate_agent` / `lint_agent` tools, plus the report returned by every write |
 
 ---
@@ -461,8 +496,10 @@ agent is for, are out of scope for v1 (D30).
 ### 6.1 Identity
 
 `kodo_agent_builder`, label "Agent Builder". A top-level, interactive,
-selectable agent in the picker. It needs no open project: all its tools are
-`requires_project=False`.
+selectable agent in the picker (rank 30, after Problem Solver and Guide). It
+needs no open project: all its tools are `requires_project=False`, and since
+D36 that includes `run_subagent`. `test_agent_builder_pipeline_needs_no_project`
+(`test_top_agents.py`) holds the builder, the critic and the review agent to it.
 
 Frontmatter tools: `ask_user`, `use_skill` (+ `{SKILLS}`), `run_subagent`
 (+ `subagents: [kodo_agent_critic]`), and the §6.2 tools. It does **not** get
@@ -498,6 +535,48 @@ posture they run without asking, like `edit_file`; under the `defensive`
 posture the user approves each write, and the gate prompt shows the agent name
 and the files touched. The read tools are `MINIMAL`.
 
+As built (2026-10-15). Code: `kodo/agents/_workshop.py` (`AgentWorkshop`,
+`AgentWorkshopError`, a `ValueError`); `AgentWorkshopLike` in
+`tools/_context.py`; one spec + one `Tool` per builder tool; the engine creates
+one workshop per engine over its registry (`_agent_workshop_service`).
+
+- **Paths and names.** Every path comes from `UserAgentStore` and the agent's
+  kind and name. A new name must pass `agent_name_error` (promoted from
+  `_copy.py`'s copy check, exported from `kodo.agents`): no `kodo_` prefix, not
+  `subagents`, `^[a-z][a-z0-9_]*$`, `run_subagent_<name>` ≤ 64 characters.
+  `write_agent` also refuses a name the other kind already uses, because agent
+  names are one namespace. `AgentRegistry.user_dir` (new property) is the root;
+  a registry with none refuses every write.
+- **Checked before writing.** Each file is written to a temporary directory and
+  loaded with its strict loader (`load_agent`, `load_top_agent`, `load_spec`);
+  a top-level config with `"default"` or `"interactive": false` is refused
+  there too, instead of being written and demoted. Then each file is replaced
+  atomically (hidden temp file + `os.replace`) and the registry reloads once.
+  A cross-agent load error (a `subagents:` entry not written yet) is reported,
+  not refused, so a pipeline can be written one agent at a time.
+- **`write_agent`** fills in the config's `"name"` when absent and refuses one
+  that disagrees. Returns `{files, report}`.
+- **`edit_agent`** takes `file`: `prompt`, `config` (top-level only) or `spec`
+  (sub-agent only). `old_string` must occur exactly once. It works on broken
+  user agents, so the builder can repair one; built-ins are refused as
+  read-only.
+- **`copy_builtin_agent`.** With `replace` omitted and a name taken, nothing is
+  written and the result is the plan (`done: false`, `members`, `conflicts`):
+  the builder asks the user, then calls again with `replace: true|false`.
+  Otherwise the result is `copied`, `kept` and `failed` (copied members the
+  reloaded registry demoted).
+- **`list_agents`** rows carry `source` (`builtin`/`user`), `copyable`, the
+  frontmatter wiring and `error`; a sub-agent's `description` is the first
+  sentence of its `## Purpose`, cut at 240 characters.
+- **`read_agent`** returns the raw files and the resolved frontmatter, for a
+  broken user agent too.
+- **`list_tools`** reads `ALL_TOOLS` directly and leaves out `return_result`,
+  which every sub-agent is granted automatically.
+- **`lint_agent`** parses the draft under its real filename first; a draft that
+  does not parse is an `error`, not a finding.
+- **Sandbox** (`kodo-headless --headless-sandbox`, HEADLESS.md §4): the three
+  writers are denied (they write outside the root), the five readers allowed.
+
 ### 6.3 Workflow (sketch for the prompt)
 
 1. Elicit the agent's single purpose, its inputs and outputs, and whether it
@@ -515,6 +594,16 @@ and the files touched. The read tools are `MINIMAL`.
 6. Report what was made, how to select it, and that a **Smoke test /
    Benchmark** is available in Settings → Agents. The builder never runs one
    (D17).
+
+As built (2026-10-15), `agent_kodo_agent_builder.md` follows this with three
+additions: the name prefix is one of the elicited decisions; in autonomous
+mode (no `ask_user`) it decides alone and lists every decision in one
+`<kodo_warn>`; and the draft→lint loop is capped at 3 passes, leftovers listed
+in a `<kodo_warn>`, so no stage lacks a stop condition. Agents are written
+callees first and critics before authors, so each write's report reflects the
+real load state. Until P7 lands, the closing summary names Validate and Review
+with AI in Settings → Agents, not a Smoke test or Benchmark, which do not exist
+yet.
 
 ---
 
@@ -692,9 +781,9 @@ Engine-driven agents (`kodo_compactor`, `kodo_web_search`,
 | P2 ✅ | Lint + `--validate-agent` + `agents.validate` + panel report (landed 2026-10-14) | — |
 | P3 ✅ | Fix built-in prompts to lint clean (§9; gate waived, D34) (landed 2026-10-15) | P2 |
 | P4 ✅ | Shipped skills tier + the four skills (landed 2026-10-15) | P2 (rule IDs) |
-| P5 | Builder tools + `kodo_agent_critic` + `kodo_agent_builder` | P1, P2, P4 |
-| P6 | Panel "Review with AI" (`kodo_agent_review`) | P5 |
-| P7 | Panel Benchmark / Smoke test via terminal | P9 (for the Smoke test preset) |
+| P5 ✅ | Builder tools + `kodo_agent_critic` + `kodo_agent_builder` (landed 2026-10-15; `run_subagent` ungated, D36) | P1, P2, P4 |
+| P6 ✅ | Panel "Review with AI" (`kodo_agent_review`) (landed 2026-10-15) | P5 |
+| P7 | Panel Benchmark / Smoke test via terminal. Also add the Smoke test / Benchmark to the builder's closing summary (§6.3) | P9 (for the Smoke test preset) |
 | P8 | JSON Schemas + kodo-vsix `jsonValidation` | — |
 | P9 | `agent-smoke` suite + task, wheel `include`, the summary's Steps table, multi-step check of the adapter (§5.4) | — |
 
@@ -711,5 +800,9 @@ the default posture, but the default `smart` posture lets every call below
 `HIGH` through (`security/_layer.py`). The user kept `MODERATE`, the same
 gating as `edit_file`, and D22 was corrected.
 
+O11 (2026-10-15): `run_subagent` was `requires_project=True`, so the builder
+could not reach its critic with no project open, contradicting §6.1. The user
+removed the gate for every sub-agent spawn (D36).
+
 Resolved: O1 → D21, O2 → D22, O3 → D25, O4 → D23, O5 → D26 + D29, O6 → D27,
-O7 → D24, O8 → D28, O9 → D33, O10 → D22 (corrected).
+O7 → D24, O8 → D28, O9 → D33, O10 → D22 (corrected), O11 → D36.

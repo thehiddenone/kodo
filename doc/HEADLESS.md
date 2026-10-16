@@ -310,7 +310,11 @@ Command Control and Autonomous mode are ignored.
   `disable_autonomous_mode` (no user to hand control to), and the Model
   Importer's two writers `add_local_llm_quant` / `set_mtp_heads` (they write
   `~/.kodo/local_llms/`, outside the root). Its three readers
-  (`list_local_llms`, `read_hf_model`, `read_gguf_header`) are allowed. Any tool without an
+  (`list_local_llms`, `read_hf_model`, `read_gguf_header`) are allowed. Agent
+  Builder's three writers `copy_builtin_agent` / `write_agent` / `edit_agent`
+  are denied for the same reason (they write `~/.kodo/agents/`), and its readers
+  (`list_agents`, `read_agent`, `list_tools`, `validate_agent`, `lint_agent`)
+  are allowed. Any tool without an
   explicit policy is also denied: `test_every_dispatchable_tool_has_an_explicit_sandbox_policy`
   forces a decision whenever a tool is added.
 

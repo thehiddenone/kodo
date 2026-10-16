@@ -174,6 +174,7 @@ def _make_dispatcher(
     answer: str = "",
     autonomous: bool = False,
     has_workspace: bool = True,
+    services: _StubServices | None = None,
 ) -> ToolDispatcher:
     session = SessionState()
     session.autonomous = autonomous
@@ -184,7 +185,7 @@ def _make_dispatcher(
         resolver=_FakeResolver(tmp_path),
         gate=_make_gate(answer),
         session=session,
-        services=_StubServices(has_workspace=has_workspace, root_paths=root_paths),
+        services=services or _StubServices(has_workspace=has_workspace, root_paths=root_paths),
         agent_name=agent_name,
         session_id="sess-test",
     )
@@ -1047,6 +1048,36 @@ async def test_requires_project_tool_rejected_without_workspace(
     dispatcher = _make_dispatcher(tmp_path, has_workspace=False)
     result = json.loads(await dispatcher.dispatch(tool_name, {}))
     assert result == {"error": NO_PROJECT_ERROR}, tool_name
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_reaches_the_engine_without_a_project(tmp_path: Path) -> None:
+    """A sub-agent spawn is not project-gated (doc/AGENT_BUILDER.md §6.1): Agent
+    Builder runs with no project open and must still reach its critic."""
+    spawned: list[str] = []
+
+    class _Recording(_StubServices):
+        async def run_subagent(
+            self,
+            caller: str,
+            name: str,
+            task_input: dict[str, object],
+            max_rounds: int | None = None,
+        ) -> dict[str, object]:
+            spawned.append(name)
+            return {"accept": True, "concerns": [], "summary": "no concerns"}
+
+    dispatcher = _make_dispatcher(
+        tmp_path, has_workspace=False, services=_Recording(has_workspace=False)
+    )
+    result = json.loads(
+        await dispatcher.dispatch(
+            "run_subagent", {"name": "kodo_agent_critic", "task_input": {"name": "acme_x"}}
+        )
+    )
+
+    assert result != {"error": NO_PROJECT_ERROR}
+    assert spawned == ["kodo_agent_critic"]
 
 
 @pytest.mark.asyncio

@@ -63,9 +63,13 @@ _ALLOWED_TOOLS = frozenset(
         "get_root_paths",
         "get_web_search_state",
         "guided_dev_status",
+        "lint_agent",
+        "list_agents",
         "list_local_llms",
+        "list_tools",
         "plan_step_forward",
         "query_search_engine",
+        "read_agent",
         "read_attachment",
         "read_file",
         "read_gguf_header",
@@ -77,6 +81,7 @@ _ALLOWED_TOOLS = frozenset(
         "run_subagent",
         "update_web_search_state",
         "use_skill",
+        "validate_agent",
         "wait",
         "web_search",
     }
@@ -95,6 +100,15 @@ _DENIED_TOOLS: dict[str, str] = {
     ),
     "set_mtp_heads": (
         "A sandboxed run cannot change the local-LLM catalog, which lives outside the sandbox root."
+    ),
+    "copy_builtin_agent": (
+        "A sandboxed run cannot change the user agents, which live outside the sandbox root."
+    ),
+    "write_agent": (
+        "A sandboxed run cannot change the user agents, which live outside the sandbox root."
+    ),
+    "edit_agent": (
+        "A sandboxed run cannot change the user agents, which live outside the sandbox root."
     ),
 }
 
