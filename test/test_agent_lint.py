@@ -341,6 +341,21 @@ def test_a_builtin_gets_a_report_that_says_it_loads(user_root: Path) -> None:
     assert report.path is not None and report.path.is_file()
 
 
+def test_every_builtin_lints_clean(user_root: Path) -> None:
+    # AGENT_BUILDER §9: a fresh copy of any built-in must pass the lint, so a
+    # built-in prompt edit that brings back a warning fails here.
+    validator = _validator(user_root)
+    names = sorted(validator.context.agent_names)
+    assert names, "no built-in agents loaded"
+    warnings: dict[str, list[str]] = {}
+    for name in names:
+        report = validator.validate(name)
+        assert report is not None and report.loads, name
+        if report.findings:
+            warnings[name] = [f"{f.rule} line {f.line}: {f.message}" for f in report.findings]
+    assert warnings == {}
+
+
 def test_a_healthy_user_agent_reports_its_lint_findings(user_root: Path) -> None:
     _write_user_agent(user_root, "helper", "# Helper\n\nYou may help. Twice.\n")
     report = _validator(user_root).validate("helper")

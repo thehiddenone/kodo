@@ -3,7 +3,8 @@
 > Status: implemented (2026-08-19; installer added 2026-08-20). User-installed
 > instruction packs under `~/.kodo/skills`, surfaced to agents by progressive
 > disclosure and managed from the Kōdo Settings panel's **Skills** section or
-> `python -m kodo`.
+> `python -m kodo`. Since 2026-10-15 Kōdo also **ships** four read-only skills
+> of its own, listed beside the user's (§9).
 >
 > A skill teaches an agent how to do a kind of task. To install a whole
 > **agent** instead — one that appears in the picker — see
@@ -240,7 +241,7 @@ file…"** button above a table of every installed skill:
 |---|---|
 | Skill | The directory name — the skill's identity. |
 | Description | Its `description`, or the load error for a broken skill. |
-| (actions) | 📁 Open · 🗑 Delete |
+| (actions) | 📁 Open · 🗑 Delete — or, for a shipped skill (a *built-in* pill under its name), 👁 View and a disabled 🗑 |
 
 - **Install from a repository…** opens a modal: a repo URL field, then (after
   scanning) one checkbox per valid skill found — name, description, and an
@@ -262,6 +263,9 @@ file…"** button above a table of every installed skill:
   ordinary editor.
 - **🗑 Delete** confirms with a native modal dialog and then removes the whole
   directory, recursively and irreversibly.
+- **👁 View** (shipped skills only) opens the skill's `SKILL.md` in a read-only
+  editor. It lives inside the installed package, where an edit would be lost
+  on the next upgrade (§9).
 
 **Broken skills are listed, not hidden.** A directory whose `SKILL.md` is
 missing, has no frontmatter, or declares no `description` appears with its
@@ -359,7 +363,8 @@ half added alone.
 | File | Role |
 |---|---|
 | [skills/_skill.py](../src/kodo/skills/_skill.py) | `Skill` (frozen) + `load_skill` — the never-raising SKILL.md parser and its own third-party-tolerant frontmatter reader. Its `name` argument lets a caller install-target-name a skill discovered somewhere other than directly under the skills root. |
-| [skills/_store.py](../src/kodo/skills/_store.py) | `SkillStore` — `entries()` (all, broken included), `usable()`, `get()`, `delete()`, `ensure_root()`, and the containment guard. |
+| [skills/_store.py](../src/kodo/skills/_store.py) | `SkillStore` — `entries()` (all, broken included, both roots), `usable()`, `get()`, `delete()` (user root only), `ensure_root()`, and the containment guard. |
+| [skills/builtin/](../src/kodo/skills/builtin/) | The shipped skills (§9): `BUILTIN_SKILLS_DIR`. A data directory, deliberately not a Python package — a `__pycache__/` there would list as a broken skill. |
 | [skills/_install.py](../src/kodo/skills/_install.py) | `require_git`, `scan_repository`, `install_skills`, `install_local_skill`, `InstallResult` — cloning a repo and copying selected skills out of it, or installing one from a local path with no clone at all (§2). |
 | [skills/_catalog.py](../src/kodo/skills/_catalog.py) | `render_catalog` — the `## Available skills` block substituted for `{SKILLS}`. |
 | [project/_layout.py](../src/kodo/project/_layout.py) | `kodo_skills_dir()` — `~/.kodo/skills`. |
@@ -377,3 +382,44 @@ half added alone.
 the skills root as a `SkillStore` constructor argument — so `tools` (T2.5),
 `subagents` (T3) and `server` can all use it without breaching the import
 ceiling (doc/INTERNALS.md §6A, CLAUDE.md).
+
+---
+
+## 9. Shipped skills (the `kodo-` tier)
+
+Kōdo ships skills of its own in the package
+([skills/builtin/](../src/kodo/skills/builtin/), `BUILTIN_SKILLS_DIR`), added
+for Agent Builder ([AGENT_BUILDER.md](AGENT_BUILDER.md) §7):
+
+| Skill | Teaches |
+|---|---|
+| `kodo-agent-format` | The files of a Kōdo agent: layout, names, every frontmatter key, the `<name>.json` config, the spec JSON and its shapes, the prompt tokens, what makes an agent broken. |
+| `kodo-prompt-writing` | The prompt-writing rules and the lint rules L1–L7 (AGENT_BUILDER §5.2). |
+| `kodo-pipeline-patterns` | Which frontmatter and spec fields to combine for a plain sub-agent, an author ↔ critic loop, user sign-off, a planner, a standalone specialist, a per-component stage. |
+| `kodo-tool-selection` | How to choose an agent's tools. It holds no catalog; it points at the `list_tools` builder tool for that. |
+
+- **One store, two roots.** `SkillStore(root)` reads the shipped root as well
+  (`builtin_root=` overrides it; `None` reads the user root alone, as the
+  store's own unit tests do). `entries()` sorts both together and marks the
+  shipped ones `Skill.builtin`; `skills.list` sends that as `builtin`.
+- **Reserved prefix `kodo-`**, the agents' `kodo_` rule applied to skills. A
+  user skill whose name starts `kodo-` (any case) loads as broken, naming the
+  rule. `load_skill` is the one place that rule lives, so the same check stops
+  `install_local_skill` (refused) and the repo flow (never offered by the
+  scan, never installed). No name is in both roots, so neither shadows the
+  other.
+- **Read-only.** `delete()` touches only the user root and refuses a shipped
+  name; it still removes a user directory that took one, so a broken imposter
+  can be cleaned up.
+- **Everywhere `use_skill` is.** Shipped skills appear in `{SKILLS}` for every
+  agent that holds the tool, so the "No skills are installed." block now only
+  renders for a store built with `builtin_root=None`.
+- **A description is rendered into every such prompt.** It must not contain
+  token syntax: a literal `{SKILLS}` there survived expansion as text (found by
+  the registry test while writing these). A test checks every shipped
+  description for `{`.
+- **Kept in sync by tests** (`test_skills.py`): `kodo-agent-format` must name
+  every `FRONTMATTER_KEYS`, `TOP_AGENT_KEYS`, `SPEC_KEYS` and `SPEC_SHAPES`
+  entry and every shared block, `{SKILLS}` and both phase tokens;
+  `kodo-prompt-writing` must cite every `LINT_RULES` ID.
+

@@ -414,7 +414,8 @@ def _run_list_skills() -> int:
         return 0
     for skill in skills:
         if skill.usable:
-            print(f"{skill.name}: {skill.description}")
+            tag = "[built-in] " if skill.builtin else ""
+            print(f"{skill.name}: {tag}{skill.description}")
         else:
             print(f"{skill.name}: [broken] {skill.error}")
     return 0

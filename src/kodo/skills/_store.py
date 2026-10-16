@@ -1,10 +1,16 @@
-"""The skills store — scan, look up, and delete skills under one root.
+"""The skills store — scan, look up, and delete skills under two roots.
 
-One :class:`SkillStore` per root directory (``~/.kodo/skills`` in production,
-a temp dir in tests). The root is taken as a constructor argument rather than
-read from :func:`kodo.project.kodo_skills_dir` inside, matching
+One :class:`SkillStore` per user root (``~/.kodo/skills`` in production, a
+temp dir in tests). The user root is taken as a constructor argument rather
+than read from :func:`kodo.project.kodo_skills_dir` inside, matching
 ``kodo.websearch``'s store convention and keeping this package a leaf that
 imports nothing from ``kodo``.
+
+The store also reads a second, read-only root: the **shipped skills** packaged
+with Kōdo (:data:`~kodo.skills.BUILTIN_SKILLS_DIR`, doc/AGENT_BUILDER.md §7).
+Shipped skill names start ``kodo-`` and no user skill may, so a name is never
+in both roots and neither shadows the other. A user directory that takes the
+prefix anyway is listed as broken, and stays deletable.
 
 The store is **stateless between calls**: every :meth:`SkillStore.entries` re-scans
 the directory. Skills are installed by hand — the user drops a directory in
@@ -16,7 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ._skill import Skill, load_skill
+from ._skill import BUILTIN_SKILLS_DIR, Skill, load_skill
 
 __all__ = ["SkillDeleteError", "SkillStore"]
 
@@ -26,17 +32,21 @@ class SkillDeleteError(Exception):
 
 
 class SkillStore:
-    """Read and delete the skills installed under one root directory.
+    """Read the shipped skills, and read and delete the user's own.
 
     Args:
-        root: The skills root (``~/.kodo/skills``). Need not exist — a missing
-            root simply means no skills are installed.
+        root: The user skills root (``~/.kodo/skills``). Need not exist — a
+            missing root simply means the user has installed no skills.
+        builtin_root: The read-only shipped skills root. Defaults to the one
+            packaged with Kōdo; ``None`` reads the user root alone.
     """
 
     __root: Path
+    __builtin_root: Path | None
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, builtin_root: Path | None = BUILTIN_SKILLS_DIR) -> None:
         self.__root = root
+        self.__builtin_root = builtin_root
 
     @property
     def root(self) -> Path:
@@ -55,7 +65,7 @@ class SkillStore:
         return self.__root
 
     def entries(self) -> list[Skill]:
-        """Every skill directory under the root, name-sorted, broken ones included.
+        """Every skill directory under both roots, name-sorted, broken ones included.
 
         A non-directory entry (a stray ``README.md``, a ``.DS_Store``) is not a
         skill and is skipped silently; a *directory* that fails to load is
@@ -63,15 +73,12 @@ class SkillStore:
         show the user what is wrong and offer to delete it.
 
         Returns:
-            list[Skill]: Sorted by :attr:`Skill.name` (case-insensitive).
+            list[Skill]: Sorted by :attr:`Skill.name` (case-insensitive), shipped
+            and user skills together.
         """
-        if not self.__root.is_dir():
-            return []
-        try:
-            entries = sorted(self.__root.iterdir(), key=lambda p: p.name.lower())
-        except OSError:
-            return []
-        return [load_skill(entry) for entry in entries if entry.is_dir()]
+        found = [load_skill(entry, builtin=True) for entry in _directories(self.__builtin_root)]
+        found += [load_skill(entry) for entry in _directories(self.__root)]
+        return sorted(found, key=lambda skill: skill.name.lower())
 
     def usable(self) -> list[Skill]:
         """The subset of :meth:`entries` an agent may actually be offered."""
@@ -87,6 +94,10 @@ class SkillStore:
         Args:
             name: Skill directory name, as listed in the prompt catalog.
         """
+        shipped = self.__resolve_builtin(name)
+        if shipped is not None:
+            builtin = load_skill(shipped, builtin=True)
+            return builtin if builtin.usable else None
         resolved = self.__resolve(name)
         if resolved is None or not resolved.is_dir():
             return None
@@ -94,20 +105,28 @@ class SkillStore:
         return skill if skill.usable else None
 
     def delete(self, name: str) -> None:
-        """Delete the skill directory named *name*, recursively.
+        """Delete the user skill directory named *name*, recursively.
+
+        Only the user root is ever touched. A user directory that shares a
+        shipped skill's name is deleted (it is broken, having taken the
+        reserved prefix); a shipped skill itself is refused.
 
         Args:
             name: Skill directory name.
 
         Raises:
             SkillDeleteError: *name* is not a direct child directory of the
-                root (empty, separator-bearing, ``..``, a symlink pointing
-                out), or the removal itself failed.
+                user root (empty, separator-bearing, ``..``, a symlink pointing
+                out), is a shipped skill, or the removal itself failed.
         """
         resolved = self.__resolve(name)
         if resolved is None:
             raise SkillDeleteError(f"{name!r} is not a skill in {self.__root}.")
         if not resolved.is_dir():
+            if self.__resolve_builtin(name) is not None:
+                raise SkillDeleteError(
+                    f"{name!r} is a built-in skill that ships with Kōdo and cannot be deleted."
+                )
             raise SkillDeleteError(f"No skill named {name!r} is installed.")
         # Imported lazily: this is the only call in the package that mutates
         # the filesystem, and keeping the import next to it makes that obvious.
@@ -118,8 +137,15 @@ class SkillStore:
         except OSError as exc:
             raise SkillDeleteError(f"Could not delete {name!r}: {exc.strerror or exc}") from exc
 
+    def __resolve_builtin(self, name: str) -> Path | None:
+        """The shipped skill directory named *name*, or ``None``."""
+        if self.__builtin_root is None:
+            return None
+        resolved = _contained(self.__builtin_root, name)
+        return resolved if resolved is not None and resolved.is_dir() else None
+
     def __resolve(self, name: str) -> Path | None:
-        """*name* as an absolute path directly under the root, or ``None``.
+        """*name* as an absolute path directly under the user root, or ``None``.
 
         The containment guard for both :meth:`get` and :meth:`delete`, and the
         reason ``delete`` cannot be talked into removing something outside the
@@ -129,16 +155,31 @@ class SkillStore:
         after ``resolve()`` — which follows symlinks — its parent must still be
         the resolved root.
         """
-        candidate = name.strip()
-        if not candidate or candidate in (".", ".."):
-            return None
-        if "/" in candidate or "\\" in candidate or Path(candidate).name != candidate:
-            return None
-        try:
-            root = self.__root.resolve()
-            resolved = (root / candidate).resolve()
-        except OSError:
-            return None
-        if resolved.parent != root:
-            return None
-        return resolved
+        return _contained(self.__root, name)
+
+
+def _directories(root: Path | None) -> list[Path]:
+    """Every directory directly under *root*; empty when it cannot be listed."""
+    if root is None or not root.is_dir():
+        return []
+    try:
+        return [entry for entry in root.iterdir() if entry.is_dir()]
+    except OSError:
+        return []
+
+
+def _contained(root: Path, name: str) -> Path | None:
+    """*name* as an absolute path directly under *root*, or ``None`` (see ``__resolve``)."""
+    candidate = name.strip()
+    if not candidate or candidate in (".", ".."):
+        return None
+    if "/" in candidate or "\\" in candidate or Path(candidate).name != candidate:
+        return None
+    try:
+        resolved_root = root.resolve()
+        resolved = (resolved_root / candidate).resolve()
+    except OSError:
+        return None
+    if resolved.parent != resolved_root:
+        return None
+    return resolved

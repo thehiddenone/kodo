@@ -716,7 +716,9 @@ async def test_skills_install_reports_git_missing_with_the_listing(
     assert reply["ok"] is False
     assert reply["error"]
     assert reply["root"] == str(_temp_home / ".kodo" / "skills")
-    assert reply["skills"] == []
+    rows = reply["skills"]
+    assert isinstance(rows, list)
+    assert [row for row in rows if not row["builtin"]] == [], "no user skill was installed"
 
 
 # ---------------------------------------------------------------------------

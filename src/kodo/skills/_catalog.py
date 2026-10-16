@@ -25,13 +25,13 @@ __all__ = ["render_catalog"]
 _HEADING = "## Available skills"
 
 _PREAMBLE = (
-    "A **skill** is a set of expert instructions for one kind of task, installed "
-    "by the user. Each is listed below by name, followed by the situations it is "
-    "for. When a task matches one, call `use_skill` with that name **before "
-    "planning your approach** — the skill's instructions supersede your own "
-    "default way of doing that task. Consult at most one skill at a time, and "
-    "only when its description genuinely covers the work in front of you; "
-    "nothing here is required reading."
+    "A **skill** is a set of expert instructions for one kind of task, shipped "
+    "with Kōdo or installed by the user. Each is listed below by name, followed "
+    "by the situations it is for. When a task matches one, call `use_skill` "
+    "with that name **before planning your approach** — the skill's "
+    "instructions supersede your own default way of doing that task. Consult "
+    "at most one skill at a time, and only when its description genuinely "
+    "covers the work in front of you; nothing here is required reading."
 )
 
 _EMPTY = (

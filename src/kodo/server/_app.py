@@ -1050,12 +1050,15 @@ def _skill_row(skill: Skill) -> dict[str, object]:
     ``error`` is empty for a healthy skill and carries the load failure for a
     directory that could not be parsed — those are listed deliberately, so a
     broken skill is visible and deletable instead of silently missing.
+    ``builtin`` marks a skill shipped with Kōdo, which the panel offers to view
+    but never to delete.
     """
     return {
         "name": skill.name,
         "description": skill.description,
         "path": str(skill.root),
         "error": skill.error,
+        "builtin": skill.builtin,
     }
 
 

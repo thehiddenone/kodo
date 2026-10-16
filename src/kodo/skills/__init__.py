@@ -1,4 +1,4 @@
-"""Agent Skills — user-installed instruction packs under ``~/.kodo/skills``.
+"""Agent Skills — instruction packs shipped with Kōdo or installed under ``~/.kodo/skills``.
 
 A skill is a directory holding a ``SKILL.md`` in the open Agent Skill format
 (YAML frontmatter with ``name``/``description``, then the instruction body)
@@ -8,6 +8,11 @@ directory into the skills root), with :func:`install_local_skill` (a local
 :func:`install_skills`, which pull one (or several) from a git repository —
 see doc/SKILLS.md §2. Either way, Kōdo only reads, installs, and deletes
 them; it never writes to one on its own.
+
+Kōdo also **ships** skills of its own (doc/AGENT_BUILDER.md §7), packaged
+read-only in :data:`BUILTIN_SKILLS_DIR`. Their names start
+:data:`BUILTIN_SKILL_PREFIX` (``kodo-``), a prefix no user skill may take, and
+:class:`SkillStore` lists both roots together.
 
 Reaching an agent is a two-step, progressive-disclosure contract (doc/SKILLS.md):
 :func:`render_catalog` puts every installed skill's *name and description* into
@@ -28,10 +33,12 @@ from ._install import (
     install_skills,
     scan_repository,
 )
-from ._skill import SKILL_FILE, Skill, load_skill
+from ._skill import BUILTIN_SKILL_PREFIX, BUILTIN_SKILLS_DIR, SKILL_FILE, Skill, load_skill
 from ._store import SkillDeleteError, SkillStore
 
 __all__ = [
+    "BUILTIN_SKILLS_DIR",
+    "BUILTIN_SKILL_PREFIX",
     "SKILL_FILE",
     "GitNotAvailableError",
     "InstallResult",

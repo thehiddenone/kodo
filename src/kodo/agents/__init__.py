@@ -74,7 +74,14 @@ from ._lint import (
     LintFinding,
     lint_prompt,
 )
-from ._loader import ROLE_CRITIC, AgentLoadError, SubAgent, load_agent, split_frontmatter
+from ._loader import (
+    FRONTMATTER_KEYS,
+    ROLE_CRITIC,
+    AgentLoadError,
+    SubAgent,
+    load_agent,
+    split_frontmatter,
+)
 from ._registry import (
     ALL_PHASES,
     PHASE_INITIAL,
@@ -89,6 +96,7 @@ from ._registry import (
     shared_token,
 )
 from ._topagent import (
+    TOP_AGENT_KEYS,
     TOP_AGENT_SUFFIX,
     TopAgent,
     TopAgentLoadError,
@@ -118,6 +126,7 @@ __all__: list[str] = [
     "CopySource",
     "DEPSMGR_AGENT",
     "ENGINE_DRIVEN_AGENTS",
+    "FRONTMATTER_KEYS",
     "LINT_RULES",
     "LintContext",
     "LintFinding",
@@ -157,6 +166,7 @@ __all__: list[str] = [
     "SKILLS_TOKEN",
     "SUBAGENTS_SUBDIR",
     "SUBAGENT_SPECS_BY_NAME",
+    "TOP_AGENT_KEYS",
     "TOP_AGENT_SUFFIX",
     "AgentLoadError",
     "AgentRegistry",

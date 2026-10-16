@@ -15,7 +15,21 @@ from pathlib import Path
 
 import pytest
 
+from kodo.agents import (
+    ALL_PHASES,
+    FRONTMATTER_KEYS,
+    LINT_RULES,
+    PACKAGED_AGENTS_DIR,
+    SHARED_FILE_PREFIX,
+    SKILLS_TOKEN,
+    TOP_AGENT_KEYS,
+    phase_token,
+    shared_token,
+)
+from kodo.agents.subagents import SPEC_KEYS, SPEC_SHAPES
 from kodo.skills import (
+    BUILTIN_SKILL_PREFIX,
+    BUILTIN_SKILLS_DIR,
     SKILL_FILE,
     GitNotAvailableError,
     Skill,
@@ -48,6 +62,11 @@ def _install(root: Path, name: str, text: str) -> Path:
 
 def _skill_md(name: str, description: str, body: str = "Do the thing.") -> str:
     return f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"
+
+
+def _user_store(root: Path) -> SkillStore:
+    """A store over *root* alone, without the shipped skills tier."""
+    return SkillStore(root, builtin_root=None)
 
 
 def _git_repo(tmp_path: Path, dirname: str, files: dict[str, str]) -> Path:
@@ -189,7 +208,7 @@ def test_load_skill_ignores_unrelated_frontmatter_keys(tmp_path: Path) -> None:
 def test_store_lists_skills_name_sorted(tmp_path: Path) -> None:
     _install(tmp_path, "zebra", _skill_md("zebra", "Z."))
     _install(tmp_path, "alpha", _skill_md("alpha", "A."))
-    assert [s.name for s in SkillStore(tmp_path).entries()] == ["alpha", "zebra"]
+    assert [s.name for s in _user_store(tmp_path).entries()] == ["alpha", "zebra"]
 
 
 def test_store_skips_stray_files_but_lists_broken_directories(tmp_path: Path) -> None:
@@ -197,19 +216,19 @@ def test_store_skips_stray_files_but_lists_broken_directories(tmp_path: Path) ->
     _install(tmp_path, "broken", "junk\n")
     (tmp_path / "README.md").write_text("not a skill", encoding="utf-8")
 
-    entries = SkillStore(tmp_path).entries()
+    entries = _user_store(tmp_path).entries()
 
     assert [s.name for s in entries] == ["broken", "good"]
-    assert [s.name for s in SkillStore(tmp_path).usable()] == ["good"]
+    assert [s.name for s in _user_store(tmp_path).usable()] == ["good"]
 
 
 def test_store_on_a_missing_root_is_empty_not_an_error(tmp_path: Path) -> None:
-    assert SkillStore(tmp_path / "nope").entries() == []
+    assert _user_store(tmp_path / "nope").entries() == []
 
 
 def test_store_ensure_root_creates_the_directory(tmp_path: Path) -> None:
     root = tmp_path / "skills"
-    store = SkillStore(root)
+    store = _user_store(root)
     assert store.ensure_root() == root
     assert root.is_dir()
     store.ensure_root()  # idempotent
@@ -218,13 +237,13 @@ def test_store_ensure_root_creates_the_directory(tmp_path: Path) -> None:
 def test_store_get_returns_none_for_a_broken_skill(tmp_path: Path) -> None:
     """A broken skill exists for the panel and not at all for an agent."""
     _install(tmp_path, "broken", "junk\n")
-    assert SkillStore(tmp_path).get("broken") is None
+    assert _user_store(tmp_path).get("broken") is None
 
 
 @pytest.mark.parametrize("name", ["", "   ", ".", "..", "../etc", "sub/skill", "sub\\skill"])
 def test_store_get_refuses_a_name_that_is_not_a_direct_child(tmp_path: Path, name: str) -> None:
     _install(tmp_path, "pdf", _skill_md("pdf", "P."))
-    assert SkillStore(tmp_path).get(name) is None
+    assert _user_store(tmp_path).get(name) is None
 
 
 def test_store_delete_removes_the_whole_directory(tmp_path: Path) -> None:
@@ -232,7 +251,7 @@ def test_store_delete_removes_the_whole_directory(tmp_path: Path) -> None:
     (directory / "scripts").mkdir()
     (directory / "scripts" / "run.py").write_text("print(1)", encoding="utf-8")
 
-    SkillStore(tmp_path).delete("pdf")
+    _user_store(tmp_path).delete("pdf")
 
     assert not directory.exists()
 
@@ -240,7 +259,7 @@ def test_store_delete_removes_the_whole_directory(tmp_path: Path) -> None:
 def test_store_delete_removes_a_broken_skill_too(tmp_path: Path) -> None:
     """Deleting is how a user fixes a broken skill, so it must not need a valid one."""
     directory = _install(tmp_path, "broken", "junk\n")
-    SkillStore(tmp_path).delete("broken")
+    _user_store(tmp_path).delete("broken")
     assert not directory.exists()
 
 
@@ -253,14 +272,14 @@ def test_store_delete_refuses_to_escape_the_store(tmp_path: Path, name: str) -> 
     (victim / "keepme.txt").write_text("important", encoding="utf-8")
 
     with pytest.raises(SkillDeleteError):
-        SkillStore(root).delete(name)
+        _user_store(root).delete(name)
 
     assert (victim / "keepme.txt").exists()
 
 
 def test_store_delete_of_an_unknown_name_raises(tmp_path: Path) -> None:
     with pytest.raises(SkillDeleteError, match="ghost"):
-        SkillStore(tmp_path).delete("ghost")
+        _user_store(tmp_path).delete("ghost")
 
 
 def test_store_delete_does_not_follow_a_symlink_out_of_the_store(tmp_path: Path) -> None:
@@ -276,13 +295,13 @@ def test_store_delete_does_not_follow_a_symlink_out_of_the_store(tmp_path: Path)
         pytest.skip("symlinks unavailable on this platform/account")
 
     with pytest.raises(SkillDeleteError):
-        SkillStore(root).delete("sneaky")
+        _user_store(root).delete("sneaky")
 
     assert (outside / "keepme.txt").exists()
 
 
 def test_store_exposes_its_root(tmp_path: Path) -> None:
-    assert SkillStore(tmp_path / "skills").root == tmp_path / "skills"
+    assert _user_store(tmp_path / "skills").root == tmp_path / "skills"
 
 
 def test_store_entries_is_empty_when_the_root_cannot_be_listed(
@@ -294,7 +313,7 @@ def test_store_entries_is_empty_when_the_root_cannot_be_listed(
         raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(Path, "iterdir", _deny)
-    assert SkillStore(tmp_path).entries() == []
+    assert _user_store(tmp_path).entries() == []
 
 
 def test_store_delete_wraps_a_removal_failure(
@@ -307,7 +326,7 @@ def test_store_delete_wraps_a_removal_failure(
 
     monkeypatch.setattr(shutil, "rmtree", _fail)
     with pytest.raises(SkillDeleteError, match="Permission denied"):
-        SkillStore(tmp_path).delete("pdf")
+        _user_store(tmp_path).delete("pdf")
     assert directory.exists()
 
 
@@ -320,7 +339,127 @@ def test_store_get_returns_none_when_the_name_cannot_be_resolved(
         raise OSError("resolve failed")
 
     monkeypatch.setattr(Path, "resolve", _fail)
-    assert SkillStore(tmp_path).get("pdf") is None
+    assert _user_store(tmp_path).get("pdf") is None
+
+
+# ---------------------------------------------------------------------------
+# The shipped skills tier (doc/AGENT_BUILDER.md §7)
+# ---------------------------------------------------------------------------
+
+_SHIPPED = (
+    "kodo-agent-format",
+    "kodo-pipeline-patterns",
+    "kodo-prompt-writing",
+    "kodo-tool-selection",
+)
+
+
+def _two_roots(tmp_path: Path) -> tuple[Path, Path, SkillStore]:
+    """A user root and a stand-in shipped root, and a store over both."""
+    user, shipped = tmp_path / "user", tmp_path / "shipped"
+    user.mkdir()
+    shipped.mkdir()
+    return user, shipped, SkillStore(user, builtin_root=shipped)
+
+
+def test_store_lists_shipped_and_user_skills_together(tmp_path: Path) -> None:
+    user, shipped, store = _two_roots(tmp_path)
+    _install(user, "pdf", _skill_md("pdf", "P."))
+    _install(shipped, "kodo-guide", _skill_md("kodo-guide", "G."))
+
+    rows = {skill.name: skill.builtin for skill in store.entries()}
+
+    assert rows == {"kodo-guide": True, "pdf": False}
+    assert [skill.name for skill in store.usable()] == ["kodo-guide", "pdf"]
+
+
+def test_a_user_skill_cannot_take_the_reserved_prefix(tmp_path: Path) -> None:
+    user, _, store = _two_roots(tmp_path)
+    name = f"{BUILTIN_SKILL_PREFIX}mine"
+    _install(user, name, _skill_md(name, "Mine."))
+
+    (row,) = store.entries()
+
+    assert not row.usable and not row.builtin
+    assert BUILTIN_SKILL_PREFIX in row.error
+    assert store.get(name) is None
+
+
+def test_a_user_skill_that_took_the_prefix_can_still_be_deleted(tmp_path: Path) -> None:
+    user, shipped, store = _two_roots(tmp_path)
+    name = f"{BUILTIN_SKILL_PREFIX}guide"
+    _install(shipped, name, _skill_md(name, "G."))
+    stray = _install(user, name, _skill_md(name, "Imposter."))
+
+    store.delete(name)
+
+    assert not stray.exists()
+    assert (shipped / name).is_dir()
+    shipped_skill = store.get(name)
+    assert shipped_skill is not None and shipped_skill.builtin
+
+
+def test_a_shipped_skill_is_found_by_name(tmp_path: Path) -> None:
+    _, shipped, store = _two_roots(tmp_path)
+    _install(shipped, "kodo-guide", _skill_md("kodo-guide", "G.", "Shipped body."))
+    skill = store.get("kodo-guide")
+    assert skill is not None
+    assert skill.builtin
+    assert skill.body == "Shipped body."
+
+
+def test_a_shipped_skill_cannot_be_deleted(tmp_path: Path) -> None:
+    _, shipped, store = _two_roots(tmp_path)
+    directory = _install(shipped, "kodo-guide", _skill_md("kodo-guide", "G."))
+    with pytest.raises(SkillDeleteError, match="built-in"):
+        store.delete("kodo-guide")
+    assert directory.is_dir()
+
+
+def test_install_local_skill_refuses_the_reserved_prefix(tmp_path: Path) -> None:
+    name = f"{BUILTIN_SKILL_PREFIX}mine"
+    source = _install(tmp_path / "src", name, _skill_md(name, "Mine."))
+    with pytest.raises(SkillInstallError, match=BUILTIN_SKILL_PREFIX):
+        install_local_skill(str(source), tmp_path / "skills", overwrite=False)
+    assert not (tmp_path / "skills" / name).exists()
+
+
+def test_kodo_ships_exactly_the_four_builder_skills() -> None:
+    store = SkillStore(Path("/nonexistent-user-root"))
+    shipped = [skill for skill in store.entries() if skill.builtin]
+    assert tuple(skill.name for skill in shipped) == _SHIPPED
+    broken = {skill.name: skill.error for skill in shipped if not skill.usable}
+    assert broken == {}
+    # A description is rendered into every agent's prompt, so a token-like
+    # "{SKILLS}" in one would survive expansion as literal text.
+    assert [skill.name for skill in shipped if "{" in skill.description] == []
+    assert all(skill.root.parent == BUILTIN_SKILLS_DIR for skill in shipped)
+
+
+def _shipped_body(name: str) -> str:
+    return (BUILTIN_SKILLS_DIR / name / SKILL_FILE).read_text(encoding="utf-8")
+
+
+def test_the_agent_format_skill_documents_every_key_shape_and_block() -> None:
+    body = _shipped_body("kodo-agent-format")
+    names = FRONTMATTER_KEYS | TOP_AGENT_KEYS | SPEC_KEYS | SPEC_SHAPES
+    missing = sorted(name for name in names if f"`{name}`" not in body)
+    shared = sorted(
+        path.stem.removeprefix(SHARED_FILE_PREFIX)
+        for path in PACKAGED_AGENTS_DIR.glob(f"{SHARED_FILE_PREFIX}*.md")
+    )
+    missing += [shared_token(name) for name in shared if shared_token(name) not in body]
+    missing += [
+        phase_token(phase) for phase in sorted(ALL_PHASES) if phase_token(phase) not in body
+    ]
+    if SKILLS_TOKEN not in body:
+        missing.append(SKILLS_TOKEN)
+    assert missing == []
+
+
+def test_the_prompt_writing_skill_cites_every_lint_rule() -> None:
+    body = _shipped_body("kodo-prompt-writing")
+    assert [rule for rule in LINT_RULES if f"`{rule}`" not in body] == []
 
 
 # ---------------------------------------------------------------------------
@@ -415,8 +554,14 @@ async def test_use_skill_names_the_alternatives_when_the_skill_is_unknown(
 
 
 @pytest.mark.asyncio
-async def test_use_skill_reports_an_empty_store_clearly(skills_home: Path) -> None:
-    assert "none installed" in str((await _use_skill("pdf"))["error"])
+async def test_use_skill_with_no_user_skills_still_names_the_shipped_ones(
+    skills_home: Path,
+) -> None:
+    error = str((await _use_skill("pdf"))["error"])
+    shipped = [skill.name for skill in SkillStore(skills_home).usable()]
+    assert shipped, "Kōdo ships skills"
+    for name in shipped:
+        assert name in error
 
 
 @pytest.mark.asyncio
@@ -491,6 +636,23 @@ def test_scan_repository_finds_multiple_skills_and_skips_broken_ones(tmp_path: P
     assert set(found) == {"pdf", "docx"}
     assert found["pdf"].description == "Work with PDF files."
     assert all(s.usable for s in found.values())
+
+
+@pytestmark_git
+def test_scan_repository_never_offers_a_skill_with_the_reserved_prefix(tmp_path: Path) -> None:
+    reserved = f"{BUILTIN_SKILL_PREFIX}fake"
+    repo = _git_repo(
+        tmp_path,
+        "skillpack",
+        {
+            "pdf/SKILL.md": _skill_md("pdf", "Work with PDF files."),
+            f"{reserved}/SKILL.md": _skill_md(reserved, "Pretends to ship with Kōdo."),
+        },
+    )
+    assert [s.name for s in scan_repository(str(repo))] == ["pdf"]
+    result = install_skills(str(repo), {reserved: True}, tmp_path / "skills")
+    assert result.installed == []
+    assert not (tmp_path / "skills" / reserved).exists()
 
 
 @pytestmark_git

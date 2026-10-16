@@ -30,6 +30,7 @@ from kodo.runtime import WorkflowEngine
 from kodo.runtime._engine import _titling as _titling_module
 from kodo.server import Config, create_app
 from kodo.server import _app as _app_module
+from kodo.skills import SkillStore
 
 _AGENTS_DIR = Path(__file__).resolve().parents[1] / "src" / "kodo" / "agents"
 
@@ -1801,6 +1802,40 @@ async def _skills_request(
     return (await _recv_response(ws, req.id)).payload
 
 
+def _user_skills(payload: dict[str, object]) -> list[dict[str, object]]:
+    """The listing's user-installed rows — every row but the shipped skills."""
+    rows = cast(list[dict[str, object]], payload["skills"])
+    return [row for row in rows if row["builtin"] is False]
+
+
+def _shipped_skills(payload: dict[str, object]) -> list[dict[str, object]]:
+    rows = cast(list[dict[str, object]], payload["skills"])
+    return [row for row in rows if row["builtin"] is True]
+
+
+async def test_skills_list_includes_the_shipped_skills_marked_builtin(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
+) -> None:
+    await _control_hello(ws)
+    payload = await _skills_request(ws, "skills.list")
+    shipped = _shipped_skills(payload)
+    assert [row["name"] for row in shipped] == [s.name for s in SkillStore(_temp_home).usable()]
+    assert all(row["error"] == "" for row in shipped)
+
+
+async def test_skills_delete_refuses_a_shipped_skill(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
+) -> None:
+    await _control_hello(ws)
+    name = str(_shipped_skills(await _skills_request(ws, "skills.list"))[0]["name"])
+
+    payload = await _skills_request(ws, "skills.delete", name=name)
+
+    assert payload["ok"] is False
+    assert "built-in" in str(payload["error"])
+    assert name in [row["name"] for row in _shipped_skills(payload)]
+
+
 async def test_server_creates_the_skills_root_on_startup(
     server: TestServer, _temp_home: Path
 ) -> None:
@@ -1820,12 +1855,13 @@ async def test_skills_list_returns_installed_skills_and_the_root(
 
     assert payload["type"] == "skills.list.ack"
     assert payload["root"] == str(_temp_home / ".kodo" / "skills")
-    skills = cast(list[dict[str, object]], payload["skills"])
+    skills = _user_skills(payload)
     assert len(skills) == 1
     assert skills[0]["name"] == "pdf"
     assert skills[0]["description"] == "Work with PDF files."
     assert skills[0]["path"] == str(_temp_home / ".kodo" / "skills" / "pdf")
     assert skills[0]["error"] == ""
+    assert skills[0]["builtin"] is False
 
 
 async def test_skills_list_includes_broken_skills_with_an_error(
@@ -1835,7 +1871,7 @@ async def test_skills_list_includes_broken_skills_with_an_error(
     _install_skill(_temp_home, "halfbaked", "no frontmatter here\n")
     await _control_hello(ws)
 
-    skills = cast(list[dict[str, object]], (await _skills_request(ws, "skills.list"))["skills"])
+    skills = _user_skills(await _skills_request(ws, "skills.list"))
 
     assert len(skills) == 1
     assert skills[0]["name"] == "halfbaked"
@@ -1856,7 +1892,7 @@ async def test_skills_delete_removes_the_directory_and_returns_the_new_listing(
     assert payload["type"] == "skills.delete.ack"
     assert payload["ok"] is True
     assert not doomed.exists(), "the whole directory goes, companion files included"
-    skills = cast(list[dict[str, object]], payload["skills"])
+    skills = _user_skills(payload)
     assert [s["name"] for s in skills] == ["keeper"], "the ack carries the refreshed listing"
 
 
@@ -1872,7 +1908,7 @@ async def test_skills_delete_of_an_unknown_name_fails_without_closing_the_socket
     assert "ghost" in str(payload["error"])
     # The failure ack still carries the listing, which is what lets the panel
     # correct itself when it was showing something already gone from disk.
-    assert [s["name"] for s in cast(list[dict[str, object]], payload["skills"])] == ["keeper"]
+    assert [s["name"] for s in _user_skills(payload)] == ["keeper"]
 
 
 async def test_skills_delete_cannot_escape_the_skills_root(
@@ -1978,7 +2014,7 @@ async def test_skills_install_copies_selected_skills_and_refreshes_the_listing(
     assert payload["missing"] == []
     assert (_temp_home / ".kodo" / "skills" / "pdf" / "SKILL.md").is_file()
     assert not (_temp_home / ".kodo" / "skills" / "docx").exists()
-    skills = cast(list[dict[str, object]], payload["skills"])
+    skills = _user_skills(payload)
     assert [s["name"] for s in skills] == ["pdf"], "the ack carries the refreshed listing"
 
 
@@ -1998,7 +2034,7 @@ async def test_skills_install_reports_conflict_without_overwrite(
 
     assert payload["installed"] == []
     assert payload["conflicts"] == ["pdf"]
-    skills = cast(list[dict[str, object]], payload["skills"])
+    skills = _user_skills(payload)
     assert skills[0]["description"] == "Old.", (
         "an unconfirmed conflict must not touch the existing skill"
     )
@@ -2019,7 +2055,7 @@ async def test_skills_install_overwrites_when_confirmed(
     )
 
     assert payload["installed"] == ["pdf"]
-    skills = cast(list[dict[str, object]], payload["skills"])
+    skills = _user_skills(payload)
     assert skills[0]["description"] == "New."
 
 
@@ -2057,7 +2093,7 @@ async def test_skills_install_local_from_a_skill_md_path(
     assert payload["conflicts"] == []
     assert payload["missing"] == []
     assert (_temp_home / ".kodo" / "skills" / "pdf" / "SKILL.md").is_file()
-    skills = cast(list[dict[str, object]], payload["skills"])
+    skills = _user_skills(payload)
     assert [s["name"] for s in skills] == ["pdf"], "the ack carries the refreshed listing"
 
 
@@ -2087,7 +2123,7 @@ async def test_skills_install_local_reports_conflict_without_overwrite(
     assert payload["ok"] is True
     assert payload["installed"] == []
     assert payload["conflicts"] == ["pdf"]
-    skills = cast(list[dict[str, object]], payload["skills"])
+    skills = _user_skills(payload)
     assert skills[0]["description"] == "Old.", (
         "an unconfirmed conflict must not touch the existing skill"
     )
@@ -2103,7 +2139,7 @@ async def test_skills_install_local_overwrites_when_confirmed(
     payload = await _skills_request(ws, "skills.install_local", path=str(source), overwrite=True)
 
     assert payload["installed"] == ["pdf"]
-    skills = cast(list[dict[str, object]], payload["skills"])
+    skills = _user_skills(payload)
     assert skills[0]["description"] == "New."
 
 
@@ -2120,7 +2156,7 @@ async def test_skills_install_local_fails_without_touching_the_socket_for_a_bad_
     assert "does not exist" in str(payload["error"])
     # The failure ack still carries the (empty) listing, same contract as
     # skills.install's failure ack.
-    assert cast(list[dict[str, object]], payload["skills"]) == []
+    assert _user_skills(payload) == []
 
 
 async def test_skills_install_local_does_not_scan_recursively(

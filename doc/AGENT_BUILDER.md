@@ -1,8 +1,10 @@
 # Agent Builder — Proposal
 
-> Status: **P1 and P2 landed** (2026-10-14): deep copy (§3) and the load check
-> + lint + report (§5.1, §5.2, §5.5 minus the AI-review and smoke-test actions).
-> P3–P9 are not implemented. Builds on
+> Status: **P1–P4 landed.** P1 and P2 (2026-10-14): deep copy (§3) and the
+> load check + lint + report (§5.1, §5.2, §5.5 minus the AI-review and
+> smoke-test actions). P3 and P4 (2026-10-15): every built-in prompt lints
+> clean (§9), and the shipped skills tier with its four skills (§7).
+> P5–P9 are not implemented. Builds on
 > [USER_AGENTS.md](USER_AGENTS.md) (the `~/.kodo/agents/` tier),
 > [SKILLS.md](SKILLS.md) (`~/.kodo/skills/`), [HARBOR.md](HARBOR.md)
 > (`kodo-harbor`) and [ADDING_A_SUBAGENT.md](ADDING_A_SUBAGENT.md) (the agent
@@ -52,7 +54,7 @@ a fresh copy passes the lint.
 | D19 | How a benchmark runs | **In a VS Code integrated terminal**, running the `kodo-harbor` command the panel builds. No server-side job management. |
 | D20 | GPU clash with the server's llama-server | **Warn, and let the user decide.** |
 | D21 | Labels of copies | **Suffixed from the prefix:** "Guide" → "Guide (acme)", on every copied member's `label`/`display_name`. |
-| D22 | Gating of the builder's write tools | **Ask, like `edit_file`.** `SecurityImpact.MODERATE`, so the user approves each write under the default posture. |
+| D22 | Gating of the builder's write tools | **Like `edit_file`:** `SecurityImpact.MODERATE`. Under the default `smart` posture that does not ask; the `defensive` posture asks before each write. (Corrected 2026-10-15, O10: the original text said MODERATE asks under the default posture.) |
 | D23 | Which agents can be benchmarked from the panel | **Every selectable top-level agent**, built-in or user. |
 | D24 | Copied pipeline vs. project state | **Shared is fine.** A copy produces the same artifact roles, so it continues a project the built-in started, and the reverse. |
 | D25 | How JSON Schemas reach VS Code | **The server writes them to `~/.kodo/etc/agent_schemas/`, and kodo-vsix registers them in the user's `json.schemas` setting.** |
@@ -64,6 +66,8 @@ a fresh copy passes the lint.
 | D31 | What the smoke checker sees | **Only the final workspace files.** It is blind to which tools ran: no transcript, no harness logs, no tool names. |
 | D32 | Comparison arm for the smoke test | **None.** Scores are reported alone. |
 | D33 | How the seven smoke tasks run | **Seven tasks in one container**, as one Harbor multi-step task: one build and one agent install, then seven steps, each a fresh agent run with its own instruction and its own checker. |
+| D34 | §9's benchmark gate | **Waived** (2026-10-15). The machine that did P3 had no Docker; the user chose to rewrite without the before/after run. |
+| D35 | How deep the §9 rewrite goes | **Minimal and behavior-preserving**: only what the lint needs. No change to what an agent is told to do. |
 
 ---
 
@@ -239,8 +243,9 @@ appears only as the BROKEN row text.
 
 `kodo/agents/_lint.py` (`lint_prompt`, `LintContext`, `LintFinding`), pure
 functions over a parsed agent and its file text. All findings are warnings.
-The lint runs over **user agents and built-ins alike**, and a test asserts
-every built-in lints clean once §9 has landed. Line numbers count from the top
+The lint runs over **user agents and built-ins alike**, and
+`test_every_builtin_lints_clean` (`test_agent_lint.py`) asserts every built-in
+lints clean. Line numbers count from the top
 of the file, frontmatter included. The lint reads the prompt as written,
 before `{SHARED:…}` expansion: shared prose is Kōdo's, not the author's.
 
@@ -488,9 +493,10 @@ No delete tool (D12). `write_agent`/`edit_agent` refuse a `kodo_*` name,
 service builds every path itself.
 
 **Gating (D22):** the three writing tools are `SecurityImpact.MODERATE`, the
-same level as `edit_file` and `add_local_llm_quant`. Under the default posture
-the user approves each write, and the gate prompt shows the agent name and the
-files touched. The read tools are `MINIMAL`.
+same level as `edit_file` and `add_local_llm_quant`. Under the default `smart`
+posture they run without asking, like `edit_file`; under the `defensive`
+posture the user approves each write, and the gate prompt shows the agent name
+and the files touched. The read tools are `MINIMAL`.
 
 ### 6.3 Workflow (sketch for the prompt)
 
@@ -518,7 +524,7 @@ files touched. The read tools are `MINIMAL`.
 
 ```text
 src/kodo/skills/builtin/
-  kodo-agent-format/SKILL.md        (+ companion files)
+  kodo-agent-format/SKILL.md
   kodo-prompt-writing/SKILL.md
   kodo-pipeline-patterns/SKILL.md
   kodo-tool-selection/SKILL.md
@@ -534,11 +540,33 @@ src/kodo/skills/builtin/
   in `skills.list` with `builtin: true`. The panel shows a *built-in* pill and
   **View** (open read-only) instead of Delete. `skills.delete` refuses them.
 
+As built (2026-10-15; details in SKILLS.md §9):
+
+- `SkillStore(root, *, builtin_root=BUILTIN_SKILLS_DIR)`; `builtin_root=None`
+  reads the user root alone. `Skill.builtin` marks a shipped row.
+- The prefix check lives in `load_skill` (`builtin=False` + a `kodo-` name, any
+  case → broken), so the store, `install_local_skill` and the repo scan share
+  it.
+- `skills.delete` acts on the user root only: it refuses a shipped name, but
+  still deletes a user directory that took one (otherwise a broken imposter
+  could never be cleaned up).
+- `builtin/` is a data directory, not a Python package: a `__pycache__/` in it
+  would list as a broken skill. The wheel's `src/kodo/**/*.md` include already
+  ships the `SKILL.md` files.
+- Panel: the pill sits under the name; **👁 View** opens `SKILL.md` and runs
+  `workbench.action.files.setActiveEditorReadonlyInSession`; the trash icon is
+  shown disabled so the action column stays aligned. The 📁 Open-folder action
+  is not offered for a shipped skill, since it would invite edits inside the
+  installed package.
+- A skill **description** must not contain token syntax: it is rendered into
+  every `use_skill` agent's prompt, where a literal `{SKILLS}` survived
+  expansion as text. A test checks every shipped description for `{`.
+
 ### 7.2 Content
 
 | Skill | Content | Kept in sync by |
 |---|---|---|
-| `kodo-agent-format` | Bundle layout, frontmatter keys, `<name>.json`, spec JSON + shapes, `{SHARED}`/`{SKILLS}`/`{PHASE}`, strict vs relaxed rules | Test: every frontmatter key, shape name and shared-block name in code appears in the skill |
+| `kodo-agent-format` | Bundle layout, frontmatter keys, `<name>.json`, spec JSON + shapes, `{SHARED}`/`{SKILLS}`/`{PHASE}`, strict vs relaxed rules | Test: every `FRONTMATTER_KEYS`, `TOP_AGENT_KEYS` (`kodo.agents`), `SPEC_KEYS` and `SPEC_SHAPES` (`kodo.agents.subagents`) entry, every shared block, `{SKILLS}` and both phase tokens appear in the skill. The four constants were added for this test; `FRONTMATTER_KEYS` is hand-kept beside `load_agent`, which ignores unknown keys. |
 | `kodo-prompt-writing` | The CLAUDE.md "Prompts" rules, generalized for user agents: purpose sentence, section order, no vague qualifiers, quote sources, name tools and never restate schemas, no free-form output for anything a reporting tool covers | Lint rule IDs (§5.2) are cited in the skill; a test checks every rule ID appears |
 | `kodo-pipeline-patterns` | ADDING_A_SUBAGENT §5 recipes: plain, author↔critic, `user_review`, `planner`, `standalone`, per-component stage | Review only |
 | `kodo-tool-selection` | How to choose tools: least privilege, `modifies_files` ⇒ `{SHARED:editing}`, read-only investigators, critics hold no writing tools. Points to `list_tools` for the live catalog. | Review only |
@@ -594,7 +622,7 @@ L6 from 0 to 6 per prompt (`kodo_guide`, `kodo_narrative_author` 6); L1 on
 `kodo_guide` (the placeholder `run_subagent_X`). Totals range from 1
 (six agents, e.g. `kodo_architect`) to 13 (`kodo_guide`).
 
-The rewrite is behavior-risky, so it is gated:
+The plan was to gate the rewrite, because it is behavior-risky:
 
 1. Re-measure with the final L6 (D29). The counts above use a naive word list with no exemptions.
 2. Baseline: `kodo-harbor run --suite terminal-bench-sample` on a fixed model
@@ -602,6 +630,39 @@ The rewrite is behavior-risky, so it is gated:
 3. Rewrite in small batches (one pipeline stage per commit). After each
    batch, the built-in lint test is green for that batch.
 4. Re-run the baseline. A drop beyond noise blocks the batch.
+
+**What happened (2026-10-15).** Step 1 found 95 warnings over 25 agents
+(only `kodo_model_importer` was clean), the same pattern as the 2026-10-14
+measurement. Steps 2 and 4 were waived (D34), and the rewrite was minimal
+(D35), so the only check on behavior is the diff itself:
+
+- **L4:** the opening paragraph was split after its first sentence, merging
+  "You are **X**. You do Y." into "You are **X**: you do Y." where the first
+  sentence named no purpose.
+- **L5:** headings renamed to the exact names (`## Procedure` → `## Workflow`,
+  `## What to avoid` → `## What to Avoid`, the guide's `## Deciding the Next
+  Step` → `## Workflow`, the compactor's `## What You May Remove` → `## What You
+  Can Remove`). Missing sections were added from what the agent already
+  receives: `## Inputs` from the spec's input fields (`kodo_architect_critic`,
+  `kodo_requirements_critic`, `kodo_investigator`, `kodo_planner`,
+  `kodo_toolchain_builder`), and `## Reporting` by moving the existing
+  "call `return_result` once …" step text (`kodo_developer`,
+  `kodo_investigator`, `kodo_planner`, `kodo_toolchain_builder`).
+- **L6:** permission `may` → `can`, hypothetical `could` → `can`/`did`, and a
+  definite statement where the word hid one (`almost always implies` → `implies
+  … unless the sub-narrative states otherwise`).
+- **L1/L2:** tools another agent holds are named in plain words
+  (`toolchain_build` → "toolchain build tool"), and the guide's placeholder
+  `run_subagent_X` became "X's `run_subagent_<name>` tool".
+
+The ADDING_A_SUBAGENT §3.5 worked example was brought up to the rules too. It
+also did not **load**: it granted `run_command`, which changes files, without
+`{SHARED:editing}`, while the text claimed it held no file-changing tool.
+`run_command` was dropped, since its workflow never runs a command.
+
+One finding was left as it is: `kodo_requirements_critic`'s spec consumes
+`narrative`, while its prompt says it does not see the Narrative. The new
+`## Inputs` lists only what the prompt already claimed.
 
 Engine-driven agents (`kodo_compactor`, `kodo_web_search`,
 `kodo_toolchain_depsmgr`) cannot be copied (§3.1) and are exempt from L5
@@ -629,8 +690,8 @@ Engine-driven agents (`kodo_compactor`, `kodo_web_search`,
 |---|---|---|
 | P1 ✅ | Deep copy: `_copy.py`, CLI, WS, panel modal (landed 2026-10-14) | — |
 | P2 ✅ | Lint + `--validate-agent` + `agents.validate` + panel report (landed 2026-10-14) | — |
-| P3 | Fix built-in prompts to lint clean, gated by benchmarks (§9) | P2 |
-| P4 | Shipped skills tier + the four skills | P2 (rule IDs) |
+| P3 ✅ | Fix built-in prompts to lint clean (§9; gate waived, D34) (landed 2026-10-15) | P2 |
+| P4 ✅ | Shipped skills tier + the four skills (landed 2026-10-15) | P2 (rule IDs) |
 | P5 | Builder tools + `kodo_agent_critic` + `kodo_agent_builder` | P1, P2, P4 |
 | P6 | Panel "Review with AI" (`kodo_agent_review`) | P5 |
 | P7 | Panel Benchmark / Smoke test via terminal | P9 (for the Smoke test preset) |
@@ -645,5 +706,10 @@ P1, P2, P8 and P9 are independent of each other.
 
 None.
 
+O10 (2026-10-15): D22 said `MODERATE` makes the user approve each write under
+the default posture, but the default `smart` posture lets every call below
+`HIGH` through (`security/_layer.py`). The user kept `MODERATE`, the same
+gating as `edit_file`, and D22 was corrected.
+
 Resolved: O1 → D21, O2 → D22, O3 → D25, O4 → D23, O5 → D26 + D29, O6 → D27,
-O7 → D24, O8 → D28, O9 → D33.
+O7 → D24, O8 → D28, O9 → D33, O10 → D22 (corrected).

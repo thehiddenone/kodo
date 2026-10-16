@@ -65,6 +65,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
+    "TOP_AGENT_KEYS",
     "TOP_AGENT_SUFFIX",
     "TopAgent",
     "TopAgentLoadError",
@@ -132,6 +133,9 @@ TOP_AGENT_SUFFIX = ".json"
 _KEYS = frozenset(
     {"name", "notes", "label", "description", "rank", "selectable", "default", "interactive"}
 )
+
+#: Every key a top-level agent's ``<name>.json`` may hold.
+TOP_AGENT_KEYS: frozenset[str] = _KEYS
 
 
 class TopAgentLoadError(Exception):

@@ -22,11 +22,37 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-__all__ = ["ROLE_CRITIC", "SubAgent", "AgentLoadError", "load_agent", "split_frontmatter"]
+__all__ = [
+    "FRONTMATTER_KEYS",
+    "ROLE_CRITIC",
+    "SubAgent",
+    "AgentLoadError",
+    "load_agent",
+    "split_frontmatter",
+]
 
 # The one recognized ``role:`` value. See ``SubAgent.role``.
 ROLE_CRITIC = "critic"
 _ROLES: frozenset[str] = frozenset({"", ROLE_CRITIC})
+
+#: Every frontmatter key :func:`load_agent` reads. Any other key is ignored.
+#: The shipped ``kodo-agent-format`` skill documents each one, and a test holds
+#: it to that, so a key added to the loader must be added here too.
+FRONTMATTER_KEYS: frozenset[str] = frozenset(
+    {
+        "name",
+        "display_name",
+        "capability",
+        "tools",
+        "subagents",
+        "role",
+        "critic",
+        "standalone",
+        "user_review",
+        "planner",
+        "version",
+    }
+)
 
 _FRONT_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 

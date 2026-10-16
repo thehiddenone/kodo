@@ -26,6 +26,7 @@ from kodo.plan import (
     PLAN_TASK_TITLE_FIELD,
     PLAN_TASKS_FIELD,
 )
+from kodo.skills import SkillStore
 from kodo.toolspecs import ALL_TOOLS, USE_SKILL, ToolSpec
 
 # ---------------------------------------------------------------------------
@@ -882,8 +883,8 @@ def test_registry_expands_the_skills_token_from_the_live_store(tmp_path: Path) -
     assert "**pdf** — Work with PDF files." in prompt
 
 
-def test_registry_renders_an_empty_catalog_when_no_skills_are_installed(tmp_path: Path) -> None:
-    """An empty store still renders a block — that is what stops an invented name."""
+def test_registry_lists_the_shipped_skills_when_the_user_has_none(tmp_path: Path) -> None:
+    """Kōdo's own skills reach every agent that holds use_skill, with no user skill installed."""
     agents = tmp_path / "agents"
     agents.mkdir()
     _write_preamble(agents)
@@ -896,7 +897,10 @@ def test_registry_renders_an_empty_catalog_when_no_skills_are_installed(tmp_path
 
     prompt = AgentRegistry(agents, tmp_path / "nonexistent").get("skilled").system_prompt
 
-    assert "No skills are installed." in prompt
+    shipped = SkillStore(tmp_path / "nonexistent").usable()
+    assert shipped
+    for skill in shipped:
+        assert f"**{skill.name}**" in prompt
 
 
 def test_registry_skills_tool_without_the_token_raises(tmp_path: Path) -> None:

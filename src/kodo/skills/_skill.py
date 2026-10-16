@@ -23,13 +23,22 @@ sequences — and ignores anything else rather than guessing.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-__all__ = ["SKILL_FILE", "Skill", "load_skill"]
+__all__ = ["BUILTIN_SKILLS_DIR", "BUILTIN_SKILL_PREFIX", "SKILL_FILE", "Skill", "load_skill"]
 
 # The one file that makes a directory a skill.
 SKILL_FILE = "SKILL.md"
+
+#: The shipped skills tier (doc/AGENT_BUILDER.md §7): packaged with Kōdo,
+#: read-only, and listed for every agent alongside the user's own skills.
+BUILTIN_SKILLS_DIR = Path(__file__).parent / "builtin"
+
+#: The name prefix reserved for shipped skills, as ``kodo_`` is for built-in
+#: agents. No user skill may carry it, which keeps the two roots
+#: collision-free with no shadowing rule.
+BUILTIN_SKILL_PREFIX = "kodo-"
 
 _FRONT_RE = re.compile(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n", re.DOTALL)
 
@@ -67,6 +76,8 @@ class Skill:
             explanation of why it is not usable. Broken skills are still listed
             (so the panel can show and delete them) but are never offered to an
             agent.
+        builtin: Whether this is a shipped skill from
+            :data:`BUILTIN_SKILLS_DIR`: read-only, and never deleted.
     """
 
     name: str
@@ -74,6 +85,7 @@ class Skill:
     root: Path
     body: str
     error: str = ""
+    builtin: bool = False
 
     @property
     def usable(self) -> bool:
@@ -86,7 +98,7 @@ class Skill:
         return self.root / SKILL_FILE
 
 
-def load_skill(directory: Path, *, name: str | None = None) -> Skill:
+def load_skill(directory: Path, *, name: str | None = None, builtin: bool = False) -> Skill:
     """Load the skill in *directory*, never raising.
 
     Args:
@@ -100,6 +112,9 @@ def load_skill(directory: Path, *, name: str | None = None) -> Skill:
             the *install-target* name here instead, since ``directory.name``
             there is a throwaway clone-relative path segment, not the name
             the skill will be known by once installed.
+        builtin: Load it as a shipped skill. Only a shipped skill may carry a
+            name starting with :data:`BUILTIN_SKILL_PREFIX`; any other such
+            skill is broken, which is also what stops one being installed.
 
     Returns:
         Skill: Populated on success; carrying a non-empty
@@ -107,6 +122,20 @@ def load_skill(directory: Path, *, name: str | None = None) -> Skill:
             directory holds no readable, well-formed ``SKILL.md``.
     """
     name = name if name is not None else directory.name
+    if builtin:
+        return replace(_load(directory, name), builtin=True)
+    if name.lower().startswith(BUILTIN_SKILL_PREFIX):
+        return _broken(
+            name,
+            directory,
+            f"Skill names starting `{BUILTIN_SKILL_PREFIX}` are reserved for Kōdo's "
+            f"built-in skills — rename this one.",
+        )
+    return _load(directory, name)
+
+
+def _load(directory: Path, name: str) -> Skill:
+    """Parse the skill in *directory* under the identity *name*, never raising."""
     path = directory / SKILL_FILE
 
     if not path.is_file():

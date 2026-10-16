@@ -64,7 +64,7 @@ from .._artifacts import Need
 from .._subagentspec import SubAgentSpec
 from ._shapes import author_output, critic_output, pipeline_input
 
-__all__ = ["SPEC_SUFFIX", "SpecLoadError", "load_spec", "load_specs"]
+__all__ = ["SPEC_KEYS", "SPEC_SHAPES", "SPEC_SUFFIX", "SpecLoadError", "load_spec", "load_specs"]
 
 #: Extension of a spec definition file. The glob that finds them.
 SPEC_SUFFIX = ".json"
@@ -82,6 +82,9 @@ _TOP_LEVEL_KEYS = frozenset(
 )
 _CONSUMES_KEYS = frozenset({"role", "scope", "required"})
 
+#: Every top-level key a spec file may hold.
+SPEC_KEYS: frozenset[str] = _TOP_LEVEL_KEYS
+
 #: Shape name -> the argument names that shape accepts. ``raw`` is not a
 #: builder: it carries a literal schema under ``schema``.
 _SHAPE_ARGS: dict[str, frozenset[str]] = {
@@ -98,6 +101,9 @@ _SHAPE_ARGS: dict[str, frozenset[str]] = {
     "critic_output": frozenset(),
     "raw": frozenset({"schema"}),
 }
+
+#: Every schema shape a spec's ``input_schema``/``output_schema`` may name.
+SPEC_SHAPES: frozenset[str] = frozenset(_SHAPE_ARGS)
 
 
 class SpecLoadError(Exception):

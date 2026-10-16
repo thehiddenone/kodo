@@ -676,11 +676,15 @@ def _no_input(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_list_skills_reports_an_empty_store(home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_list_skills_with_no_user_skills_lists_only_the_shipped_ones(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     code, out, err = _run(capsys, "--list-skills")
     assert code == 0
     assert err == ""
-    assert out == "No skills installed.\n"
+    lines = out.splitlines()
+    assert lines
+    assert all(": [built-in] " in line for line in lines)
 
 
 def test_list_skills_prints_usable_and_broken_skills(
@@ -746,7 +750,7 @@ def test_running_the_package_as_a_script_exits_with_mains_code(
         with pytest.raises(SystemExit) as excinfo:
             runpy.run_module("kodo", run_name="__main__")
     assert excinfo.value.code == 0
-    assert capsys.readouterr().out == "No skills installed.\n"
+    assert ": [built-in] " in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

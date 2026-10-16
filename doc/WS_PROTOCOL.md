@@ -2338,7 +2338,8 @@ non-actionable outcome as a network failure.
 
 Control connection only, same framing as §7.6c — backs the **Kōdo Settings**
 panel's "Skills" section (kodo-vsix `SkillsSection.tsx`). Reads and deletes the
-skills the user has installed under `~/.kodo/skills` (doc/SKILLS.md).
+skills the user has installed under `~/.kodo/skills` (doc/SKILLS.md), and lists
+the read-only skills shipped with Kōdo beside them (doc/AGENT_BUILDER.md §7).
 
 ```json
 { "type": "skills.list" }
@@ -2349,11 +2350,14 @@ skills the user has installed under `~/.kodo/skills` (doc/SKILLS.md).
 ```json
 { "root": "/home/u/.kodo/skills",
   "skills": [
-    { "name": "pdf", "description": "Use this skill whenever …",
-      "path": "/home/u/.kodo/skills/pdf", "error": "" },
     { "name": "halfbaked", "description": "",
       "path": "/home/u/.kodo/skills/halfbaked",
-      "error": "SKILL.md has no `---` YAML frontmatter block." }
+      "error": "SKILL.md has no `---` YAML frontmatter block.", "builtin": false },
+    { "name": "kodo-agent-format", "description": "The file format of a Kōdo agent …",
+      "path": "/…/site-packages/kodo/skills/builtin/kodo-agent-format",
+      "error": "", "builtin": true },
+    { "name": "pdf", "description": "Use this skill whenever …",
+      "path": "/home/u/.kodo/skills/pdf", "error": "", "builtin": false }
   ] }
 ```
 
@@ -2369,6 +2373,12 @@ those — `use_skill` and the prompt catalog both read only the usable subset.
 Non-directory entries in the skills root (a stray `README.md`) are not skills
 and are omitted entirely.
 
+`builtin: true` marks a skill **shipped with Kōdo**. Its `path` is inside the
+installed package, and its name starts `kodo-`, a prefix reserved for shipped
+skills: a user directory that takes it is listed as a broken row
+(`builtin: false`, an `error` naming the rule). Shipped and user rows are sorted
+together. `root` is always the user root.
+
 ```json
 { "type": "skills.delete", "name": "pdf" }
 ```
@@ -2380,7 +2390,9 @@ the post-deletion listing — same refresh-from-response contract as
 carries the listing: the most likely failure is the panel showing a skill
 someone already removed from disk, and a refreshed table is what makes that
 obvious. kodo-vsix confirms with a native modal before sending; the server
-performs no confirmation of its own.
+performs no confirmation of its own. A shipped skill is refused with `ok: false`
+(the panel offers no Delete for one); `skills.delete` only ever touches the user
+root, so it does remove a user directory that took a shipped skill's name.
 
 Deletion is recursive and irreversible (the whole skill directory, companion
 files included). `name` is re-validated server-side regardless of what the
