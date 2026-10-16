@@ -23,6 +23,7 @@ import pytest
 
 from kodo.harbor import (
     CONTAINER_HOST,
+    HARBOR_VERSION,
     HarborInvocation,
     HarborRunError,
     HostLlama,
@@ -50,6 +51,9 @@ class _Processes:
         self.build_code = 0
         self.build_writes_wheel = True
         self.ip: str | BaseException = ""
+        self.datasets: dict[str, list[str]] = {}
+        self.download_dirs: list[Path] = []
+        self.download_interrupt = False
 
     def __call__(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         args = [str(a) for a in argv]
@@ -62,6 +66,8 @@ class _Processes:
             return _done(args, 0, stdout=self.ip)
         if args[1:3] == ["info", "--format"]:
             return _done(args, self.docker_code, stderr="Cannot connect to the Docker daemon")
+        if args[1:3] == ["tool", "run"] and args[-6:-4] == ["datasets", "download"]:
+            return self.__download(args)
         if args[1:3] == ["tool", "run"]:
             if isinstance(self.harbor, BaseException):
                 raise self.harbor
@@ -76,6 +82,21 @@ class _Processes:
     def commands(self, word: str) -> list[list[str]]:
         """Every recorded argv that contains *word*."""
         return [call for call in self.calls if word in call]
+
+    def __download(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        # ``harbor datasets download REF --export -o DIR`` → DIR/<dataset>/<task>/task.toml.
+        reference, out_dir = args[-4], Path(args[-1])
+        self.download_dirs.append(out_dir)
+        if self.download_interrupt:
+            out_dir.mkdir(parents=True)
+            raise KeyboardInterrupt
+        if reference not in self.datasets:
+            return _done(args, 1, stdout=f"Error: Dataset {reference!r} not found")
+        dataset_dir = out_dir / reference.partition("@")[0].split("/")[-1]
+        for task in self.datasets[reference]:
+            (dataset_dir / task).mkdir(parents=True)
+            (dataset_dir / task / "task.toml").write_text("", encoding="utf-8")
+        return _done(args, 0, stdout="Successfully downloaded")
 
     def __llamaserver(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         command = args[args.index("kodo.llamaserver") + 1]
@@ -521,8 +542,135 @@ def test_an_editable_checkout_is_built_into_the_measured_wheel(
 
 
 def test_suites_are_listed_as_text(home: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["suites"]) == 0
+    assert main(["list-suites"]) == 0
     assert any(line.startswith("smoke\t") for line in capsys.readouterr().out.splitlines())
+
+
+def _suite_file(directory: Path, body: dict[str, object]) -> Path:
+    path = directory / f"{body['name']}.json"
+    path.write_text(json.dumps(body), encoding="utf-8")
+    return path
+
+
+def test_list_tasks_downloads_each_dataset_lists_it_and_deletes_the_download(
+    home: Path, processes: _Processes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    processes.datasets = {
+        "terminal-bench-sample@2.0": ["regex-log", "chess-best-move"],
+        "swebench-verified@1.0": ["astropy__astropy-12907"],
+    }
+
+    code = main(
+        ["list-tasks", "--suite", "terminal-bench-sample", "--dataset", "swebench-verified@1.0"]
+    )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "terminal-bench-sample@2.0 (2 tasks)\n  chess-best-move\n  regex-log\n"
+        "\n"
+        "swebench-verified@1.0 (1 task)\n  astropy__astropy-12907\n"
+    )
+    assert "downloading terminal-bench-sample@2.0" in captured.err
+    downloads = processes.commands("download")
+    assert all(f"harbor=={HARBOR_VERSION}" in call and "--export" in call for call in downloads)
+    assert len(processes.download_dirs) == 2
+    assert not any(directory.parent.exists() for directory in processes.download_dirs)
+
+
+def test_list_tasks_ignores_a_suites_filters(
+    home: Path, processes: _Processes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    processes.datasets = {"terminal-bench@2.0": ["fix-git", "regex-log", "sqlite-with-gcov"]}
+    suite = _suite_file(
+        home,
+        {
+            "name": "slice",
+            "datasets": [
+                {
+                    "name": "terminal-bench",
+                    "version": "2.0",
+                    "task_names": ["fix-*"],
+                    "exclude_task_names": ["sqlite-*"],
+                    "n_tasks": 1,
+                }
+            ],
+        },
+    )
+
+    assert main(["list-tasks", "--suite", str(suite), "--json"]) == 0
+
+    assert json.loads(capsys.readouterr().out) == [
+        {"source": "terminal-bench@2.0", "tasks": ["fix-git", "regex-log", "sqlite-with-gcov"]}
+    ]
+
+
+def test_list_tasks_reads_local_datasets_and_single_tasks_without_downloading(
+    home: Path, processes: _Processes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for task in ("alpha", "beta"):
+        (home / "mine" / task).mkdir(parents=True)
+        (home / "mine" / task / "task.toml").write_text("", encoding="utf-8")
+    (home / "mine" / "not-a-task").mkdir()
+    suite = _suite_file(
+        home,
+        {
+            "name": "local",
+            "datasets": [{"path": "mine"}],
+            "tasks": [{"name": "acme/one-task", "ref": "latest"}, {"path": "mine/alpha"}],
+        },
+    )
+
+    assert main(["list-tasks", "--suite", str(suite), "--json"]) == 0
+
+    assert json.loads(capsys.readouterr().out) == [
+        {"source": str((home / "mine").resolve()), "tasks": ["alpha", "beta"]},
+        {"source": "tasks", "tasks": ["acme/one-task", "alpha"]},
+    ]
+    assert processes.commands("download") == []
+
+
+def test_a_failed_download_is_reported_and_still_deleted(
+    home: Path, processes: _Processes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    processes.datasets = {"terminal-bench-sample@2.0": ["regex-log"]}
+
+    code = main(["list-tasks", "--dataset", "terminal-bench-sample@2.0", "--dataset", "nope@1.0"])
+
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "Downloading dataset nope@1.0 failed" in captured.err
+    assert "'nope@1.0' not found" in captured.err
+    assert captured.out == ""
+    assert not any(directory.parent.exists() for directory in processes.download_dirs)
+
+
+def test_ctrl_c_during_a_download_still_deletes_it(
+    home: Path, processes: _Processes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    processes.download_interrupt = True
+
+    assert main(["list-tasks", "--suite", "terminal-bench"]) == 130
+    assert capsys.readouterr().out == ""
+    (out_dir,) = processes.download_dirs
+    assert not out_dir.parent.exists()
+
+
+def test_a_download_with_no_task_directories_is_an_error(
+    home: Path, processes: _Processes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    processes.datasets = {"empty@1.0": []}
+
+    assert main(["list-tasks", "--dataset", "empty@1.0"]) == 2
+    assert "downloaded no tasks for dataset empty@1.0" in capsys.readouterr().err
+
+
+def test_list_tasks_needs_a_suite_or_a_dataset(
+    home: Path, processes: _Processes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["list-tasks"]) == 2
+    assert "at least one --suite or --dataset" in capsys.readouterr().err
+    assert processes.calls == []
 
 
 def test_listing_local_models_says_when_none_is_installed(

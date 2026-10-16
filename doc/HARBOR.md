@@ -88,11 +88,15 @@ uvx --from harbor==0.23.0 harbor datasets download terminal-bench@2.0 -o tasks
 kodo-harbor run --model anthropic/claude-sonnet-5 --path tasks/terminal-bench/regex-log
 ```
 
-- **Finding task names:** `harbor datasets download` writes one directory per
-  task, named after the task (`<dir>/<dataset>/<task>/`).
+- **Finding task names:** `kodo-harbor list-tasks --suite NAME` or
+  `--dataset NAME[@VER]` prints every task the dataset holds (§2.7). Names are
+  exact: Terminal-Bench's is `regex-log`, not `regex_log`.
 - **A misspelled name** isn't caught by the preflight checks or by
   `--dry-run`. Harbor rejects it when it expands the dataset, with
-  `No tasks matched the filter(s) …` and five example task names.
+  `No tasks matched the filter(s) …` and five example task names. Those
+  examples come from the dataset the run named, so names like
+  `astropy__astropy-12907` mean the run pointed at SWE-bench Verified, not at
+  the dataset the task belongs to.
 - `--include` applies to **every** dataset in the run (§2.2). To filter
   datasets differently, use separate runs or a suite with per-dataset
   `task_names` (§3).
@@ -160,7 +164,8 @@ kodo-harbor run --model (VENDOR/MODEL_ID | ENTRY) [--agent kodo_problem_solver]
     [--llama-port 8090] [--llama-bind ADDR] [--keep-llama]
     [--dry-run] [-- HARBOR_RUN_ARGS...]
 kodo-harbor summarize JOB_DIR [--json]
-kodo-harbor suites [--json]
+kodo-harbor list-suites [--json]
+kodo-harbor list-tasks (--suite NAME|FILE | --dataset NAME[@VER])... [--json]
 kodo-harbor list-models [local|cloud] [--json]
 ```
 
@@ -292,6 +297,43 @@ openrouter/<MODEL_ID>            no key     any model id it serves
   makes (§2.1). OpenRouter and Bedrock fetch their catalogs at runtime, so
   each gets one `VENDOR/<MODEL_ID>` placeholder row.
 
+### 2.7 Which task names a suite or dataset holds — `list-tasks`
+
+Harbor works out a dataset's task names only when it expands the dataset at
+run time. `kodo-harbor list-tasks` prints them up front, so you can pick an
+`--include` name or a suite's `task_names`:
+
+```
+$ kodo-harbor list-tasks --suite terminal-bench-sample --dataset hello-world@1.0
+kodo-harbor: downloading terminal-bench-sample@2.0
+kodo-harbor: downloading hello-world@1.0
+terminal-bench-sample@2.0 (10 tasks)
+  build-cython-ext
+  chess-best-move
+  …
+  regex-log
+  sqlite-with-gcov
+
+hello-world@1.0 (1 task)
+  hello-world
+```
+
+- `--suite` and `--dataset` repeat and combine. `--json` prints
+  `{source, tasks}` rows, one per dataset. The "downloading" lines go to
+  stderr.
+- **Every task is listed.** A suite's `task_names`, `exclude_task_names` and
+  `n_tasks` are ignored, so the list is the full set a filter can pick from.
+- **Downloads are temporary.** Each registry or package dataset is downloaded
+  with the pinned Harbor (`harbor datasets download REF --export`) into a new
+  directory under the system temp dir. That directory is deleted before the
+  command returns, also after a failed download or Ctrl+C. Export mode writes
+  nothing to Harbor's `~/.cache/harbor`. A local `path` dataset is read in
+  place, and a suite's single `tasks` entries are listed by name under
+  `tasks`, without downloading anything.
+- A failed download exits `2` and shows the end of Harbor's output, e.g.
+  `Dataset 'nope' (version: '1.0') not found`. Nothing is cached between
+  runs, so every `list-tasks` downloads again.
+
 ## 3. Suites
 
 A suite is a named, reusable list of Harbor datasets and tasks in one JSON
@@ -317,6 +359,8 @@ file:
   `terminal-bench-sample` (10 tasks), `terminal-bench` (Terminal-Bench 2.0, 89
   tasks). Your own go in `~/.kodo/harbor/suites/*.json`; one with a built-in's
   name shadows it. `--suite` also takes a path to any suite file.
+  `kodo-harbor list-suites` lists them, and `list-tasks --suite NAME` the
+  tasks each one holds (§2.7).
 
 ## 4. The Harbor agent — `kodo.harbor.agent:KodoAgent`
 

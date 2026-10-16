@@ -12,7 +12,8 @@
         [--llama-port 8090] [--llama-bind ADDR] [--keep-llama]
         [--dry-run] [-- HARBOR_RUN_ARGS...]
     kodo-harbor summarize JOB_DIR [--json]
-    kodo-harbor suites [--json]
+    kodo-harbor list-suites [--json]
+    kodo-harbor list-tasks (--suite NAME|FILE | --dataset NAME[@VER])... [--json]
     kodo-harbor list-models [local|cloud] [--json]
 
 ``run`` checks everything it can before Docker starts (the model, its
@@ -22,7 +23,9 @@ local model, writes ``<job>/kodo-job.json``, runs Harbor on it, and writes
 Exit code: Harbor's, or ``2`` when the run could not start (doc/HARBOR.md).
 ``list-models`` prints the ``--model`` values ``run`` can run: installed local
 models, and the cloud catalog marked with whether this shell has each
-vendor's credential.
+vendor's credential. ``list-tasks`` prints every task each suite or dataset
+holds (the names ``--include`` matches), downloading each dataset into a
+temporary directory it deletes afterwards.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ from ._runner import HarborInvocation, KodoSource, check_docker, find_uv
 from ._selection import Selection
 from ._suites import SuiteCatalog
 from ._summary import JobSummary
+from ._tasks import TaskGroup, TaskLister
 
 __all__ = ["main"]
 
@@ -113,8 +117,15 @@ def _parser() -> argparse.ArgumentParser:
     summarize.add_argument("job_dir", type=Path)
     summarize.add_argument("--json", action="store_true", help="Print JSON instead.")
 
-    suites = commands.add_parser("suites", help="List the benchmark suites.")
+    suites = commands.add_parser("list-suites", help="List the benchmark suites.")
     suites.add_argument("--json", action="store_true", help="Machine-readable output.")
+
+    tasks = commands.add_parser(
+        "list-tasks", help="List every task a suite or dataset holds (downloads, then deletes)."
+    )
+    tasks.add_argument("--suite", action="append", default=[], help="Suite name or JSON file.")
+    tasks.add_argument("--dataset", action="append", default=[], help="NAME[@VERSION].")
+    tasks.add_argument("--json", action="store_true", help="Machine-readable output.")
 
     models = commands.add_parser("list-models", help="List the models --model accepts.")
     models.add_argument(
@@ -139,8 +150,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     catalog = SuiteCatalog(kodo_user_dir() / "harbor" / "suites")
     try:
-        if args.command == "suites":
-            return _suites(catalog, args.json)
+        if args.command == "list-suites":
+            return _list_suites(catalog, args.json)
+        if args.command == "list-tasks":
+            return _list_tasks(args, catalog)
         if args.command == "list-models":
             return _list_models(args.kind, args.json)
         if args.command == "summarize":
@@ -151,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
         return _STARTUP_FAILURE
 
 
-def _suites(catalog: SuiteCatalog, as_json: bool) -> int:
+def _list_suites(catalog: SuiteCatalog, as_json: bool) -> int:
     suites = catalog.all()
     if as_json:
         rows = [{"name": s.name, "description": s.description, "path": str(s.path)} for s in suites]
@@ -160,6 +173,40 @@ def _suites(catalog: SuiteCatalog, as_json: bool) -> int:
     for suite in suites:
         print(f"{suite.name}\t{suite.description}")
     return 0
+
+
+def _list_tasks(args: argparse.Namespace, catalog: SuiteCatalog) -> int:
+    if not args.suite and not args.dataset:
+        raise HarborRunError("list-tasks needs at least one --suite or --dataset")
+    selection = Selection()
+    for name in args.suite:
+        suite = catalog.find(name)
+        selection.add_entries(suite.datasets, suite.tasks, f"suite {suite.name}")
+    for reference in args.dataset:
+        selection.add_dataset(reference)
+    lister = TaskLister(
+        find_uv(kodo_user_dir()),
+        lambda reference: print(f"kodo-harbor: downloading {reference}", file=sys.stderr),
+    )
+    try:
+        groups = lister.collect(selection)
+    except KeyboardInterrupt:
+        return _INTERRUPTED
+    if args.json:
+        print(json.dumps([group.to_dict() for group in groups], indent=2))
+        return 0
+    for index, group in enumerate(groups):
+        if index:
+            print()
+        _print_group(group)
+    return 0
+
+
+def _print_group(group: TaskGroup) -> None:
+    names = group.names
+    print(f"{group.source} ({len(names)} task{'' if len(names) == 1 else 's'})")
+    for name in names:
+        print(f"  {name}")
 
 
 def _list_models(kind: str | None, as_json: bool) -> int:

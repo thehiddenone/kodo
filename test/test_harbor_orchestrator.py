@@ -563,10 +563,10 @@ def test_run_errors_are_reported_not_raised(
     assert "Unknown cloud vendor" in capsys.readouterr().err
 
 
-def test_suites_command_lists_the_builtins(
+def test_list_suites_command_lists_the_builtins(
     cli_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert main(["suites", "--json"]) == 0
+    assert main(["list-suites", "--json"]) == 0
     names = {row["name"] for row in json.loads(capsys.readouterr().out)}
     assert "terminal-bench" in names
 

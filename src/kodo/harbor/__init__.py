@@ -31,6 +31,7 @@ from ._runner import HARBOR_VERSION, HarborInvocation, KodoSource, check_docker,
 from ._selection import Selection
 from ._suites import BUILTIN_SUITES_DIR, Suite, SuiteCatalog
 from ._summary import JobSummary, sign_test_p_value
+from ._tasks import TaskGroup, TaskLister
 
 __all__ = [
     "BUILTIN_SUITES_DIR",
@@ -52,6 +53,8 @@ __all__ = [
     "Selection",
     "Suite",
     "SuiteCatalog",
+    "TaskGroup",
+    "TaskLister",
     "check_docker",
     "find_uv",
     "main",
