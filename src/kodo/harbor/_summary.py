@@ -18,6 +18,14 @@ ran are compared by their mean reward over attempts: Kodo better, worse, or
 tied. The p-value is a two-sided exact sign test over the untied tasks — the
 task is the unit, never the attempt, because attempts of one task are not
 independent samples.
+
+**Multi-step tasks** (Harbor ``[[steps]]``, e.g. ``agent-basics``): Harbor
+records each step's agent run in ``step_results`` and leaves the trial-level
+``agent_result`` empty, so tokens, cost, agent time, errors and Kodo's
+metadata are summed over the steps' runs. Each arm also gets a **Steps**
+table: one row per step, the mean over trials of every reward key that step
+writes (a step with no verifier result counts as 0, like an unscored trial).
+It is generic — nothing in it knows any one task.
 """
 
 from __future__ import annotations
@@ -59,11 +67,12 @@ class _Trial:
     __arm: str
     __is_kodo: bool
     __reward: float | None
-    __exception: str | None
+    __exceptions: tuple[str, ...]
     __tokens: tuple[int, int, int]
     __cost: float
     __seconds: float | None
-    __kodo: dict[str, object]
+    __kodo_runs: tuple[dict[str, object], ...]
+    __steps: tuple[tuple[str, dict[str, float] | None], ...]
 
     def __init__(self, data: dict[str, object]) -> None:
         self.__task = str(data.get("task_name", ""))
@@ -78,25 +87,41 @@ class _Trial:
             str(part) for part in (model_info.get("provider"), model_info.get("name")) if part
         )
         self.__arm = f"{agent} @ {model or '?'}"
-        rewards = _dict(_dict(data.get("verifier_result")).get("rewards"))
-        value = rewards.get("reward", next(iter(rewards.values()), None))
-        self.__reward = float(value) if isinstance(value, (int, float)) else None
-        self.__exception = (
-            str(_dict(data.get("exception_info")).get("exception_type"))
-            if data.get("exception_info")
-            else None
+        rewards = _rewards(data)
+        value = rewards.get("reward", next(iter(rewards.values()), None)) if rewards else None
+        self.__reward = float(value) if value is not None else None
+        # A multi-step trial records one agent run per step and none at the
+        # trial level; a single-step trial is its own one run.
+        step_results = [_dict(step) for step in _list(data.get("step_results"))]
+        runs = [data] if data.get("agent_result") or not step_results else step_results
+        self.__exceptions = tuple(
+            str(_dict(source.get("exception_info")).get("exception_type"))
+            for source in (data, *step_results)
+            if source.get("exception_info")
         )
-        result = _dict(data.get("agent_result"))
+        results = [_dict(run.get("agent_result")) for run in runs]
         self.__tokens = (
-            _int(result.get("n_input_tokens")),
-            _int(result.get("n_cache_tokens")),
-            _int(result.get("n_output_tokens")),
+            sum(_int(result.get("n_input_tokens")) for result in results),
+            sum(_int(result.get("n_cache_tokens")) for result in results),
+            sum(_int(result.get("n_output_tokens")) for result in results),
         )
-        cost = result.get("cost_usd")
-        self.__cost = float(cost) if isinstance(cost, (int, float)) else 0.0
-        self.__kodo = _dict(_dict(result.get("metadata")).get(_KODO))
-        timing = _dict(data.get("agent_execution"))
-        self.__seconds = _seconds(timing.get("started_at"), timing.get("finished_at"))
+        self.__cost = sum(_float(result.get("cost_usd")) for result in results)
+        self.__kodo_runs = tuple(
+            _dict(_dict(result.get("metadata")).get(_KODO)) for result in results
+        )
+        seconds = [
+            _seconds(timing.get("started_at"), timing.get("finished_at"))
+            for timing in (_dict(run.get("agent_execution")) for run in runs)
+        ]
+        known = [value for value in seconds if value is not None]
+        self.__seconds = sum(known) if known else None
+        self.__steps = tuple(
+            (
+                str(step.get("step_name", "?")),
+                _rewards(step) if step.get("verifier_result") else None,
+            )
+            for step in step_results
+        )
 
     @property
     def task(self) -> str:
@@ -115,8 +140,9 @@ class _Trial:
         return self.__reward
 
     @property
-    def exception(self) -> str | None:
-        return self.__exception
+    def exceptions(self) -> tuple[str, ...]:
+        """The trial's exception type, then each step's, in order."""
+        return self.__exceptions
 
     @property
     def tokens(self) -> tuple[int, int, int]:
@@ -131,8 +157,16 @@ class _Trial:
         return self.__seconds
 
     @property
-    def kodo(self) -> dict[str, object]:
-        return dict(self.__kodo)
+    def kodo_runs(self) -> list[dict[str, object]]:
+        """Kodo's metadata for each agent run: one, or one per step."""
+        return [dict(run) for run in self.__kodo_runs]
+
+    @property
+    def steps(self) -> list[tuple[str, dict[str, float] | None]]:
+        """Each step's name and rewards (``None``: the verifier gave none)."""
+        return [
+            (name, None if rewards is None else dict(rewards)) for name, rewards in self.__steps
+        ]
 
 
 class JobSummary:
@@ -254,6 +288,26 @@ class JobSummary:
                         f"| {name} | {int(row['calls'])} | {int(row['input_tokens']):,} / "
                         f"{int(row['output_tokens']):,} | ${row['usd']:.2f} |"
                     )
+        for arm, stats in arms.items():
+            steps = stats.get("steps")
+            if not isinstance(steps, dict):
+                continue
+            rows = cast(dict[str, dict[str, float]], steps)
+            keys = sorted(
+                {key for row in rows.values() for key in row if key != "runs"},
+                key=lambda k: (k != "reward", k),
+            )
+            lines += [
+                "",
+                f"## Steps — {arm}",
+                "",
+                "| Step | " + " | ".join(keys) + " |",
+                "|---|" + "---|" * len(keys),
+            ]
+            for name, row in rows.items():
+                runs = int(row["runs"])
+                cells = [_step_cell(row.get(key, 0.0), runs) for key in keys]
+                lines.append(f"| {name} | " + " | ".join(cells) + " |")
         return "\n".join([*lines, ""])
 
     # ------------------------------------------------------------------
@@ -268,8 +322,8 @@ class JobSummary:
         rewards = [t.reward for t in trials]
         errors: dict[str, int] = {}
         for t in trials:
-            if t.exception:
-                errors[t.exception] = errors.get(t.exception, 0) + 1
+            for exception in t.exceptions:
+                errors[exception] = errors.get(exception, 0) + 1
         seconds = [t.seconds for t in trials if t.seconds is not None]
         stats: dict[str, object] = {
             "trials": len(trials),
@@ -285,6 +339,9 @@ class JobSummary:
         }
         if trials[0].is_kodo:
             stats["kodo"] = _kodo_stats(trials)
+        steps = _step_stats(trials)
+        if steps:
+            stats["steps"] = steps
         return stats
 
     def __comparisons(self) -> list[dict[str, object]]:
@@ -319,12 +376,34 @@ class JobSummary:
         return rows
 
 
+def _step_stats(trials: list[_Trial]) -> dict[str, dict[str, float]]:
+    """Per step, in task order: ``runs`` plus the mean of every reward key."""
+    collected: dict[str, list[dict[str, float]]] = {}
+    for t in trials:
+        for name, rewards in t.steps:
+            collected.setdefault(name, []).append(rewards or {})
+    stats: dict[str, dict[str, float]] = {}
+    for name, rows in collected.items():
+        keys = sorted({key for row in rows for key in row}, key=lambda k: (k != "reward", k))
+        stats[name] = {"runs": len(rows)}
+        for key in keys:
+            stats[name][key] = sum(row.get(key, 0.0) for row in rows) / len(rows)
+    return stats
+
+
+def _step_cell(mean: float, runs: int) -> str:
+    """``passed/runs`` when every score was 0 or 1, else the mean."""
+    passed = mean * runs
+    if abs(passed - round(passed)) < 1e-9 and 0.0 <= mean <= 1.0:
+        return f"{round(passed)}/{runs}"
+    return f"{mean:.2f}"
+
+
 def _kodo_stats(trials: list[_Trial]) -> dict[str, object]:
     outcomes: dict[str, int] = {}
     totals = {"questions_asked": 0, "tool_calls": 0, "tool_denials": 0, "nudges": 0}
     per_agent: dict[str, dict[str, float]] = {}
-    for t in trials:
-        meta = t.kodo
+    for meta in (run for t in trials for run in t.kodo_runs):
         outcome = str(meta.get("outcome", "no_record"))
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
         for key in totals:
@@ -343,6 +422,24 @@ def _kodo_stats(trials: list[_Trial]) -> dict[str, object]:
 
 def _dict(value: object) -> dict[str, object]:
     return cast(dict[str, object], value) if isinstance(value, dict) else {}
+
+
+def _list(value: object) -> list[object]:
+    return cast(list[object], value) if isinstance(value, list) else []
+
+
+def _rewards(source: dict[str, object]) -> dict[str, float]:
+    """The numeric rewards of a trial's or step's ``verifier_result``."""
+    raw = _dict(_dict(source.get("verifier_result")).get("rewards"))
+    return {
+        key: float(value)
+        for key, value in raw.items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    }
+
+
+def _float(value: object) -> float:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
 def _int(value: object) -> int:

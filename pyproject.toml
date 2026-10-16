@@ -39,7 +39,12 @@ packages = ["src/kodo"]
 # (``kodo/agents/subagents/specs/*.json``) and the top-level agent configs
 # (``kodo/agents/*.json``). All are read from the installed package
 # directory at startup, so a wheel without them cannot build its AgentRegistry.
-include = ["src/kodo/**/*.md", "src/kodo/**/*.json"]
+#
+# ``kodo/harbor/tasks/**`` is the agent-basics Harbor task (doc/AGENT_BUILDER.md
+# §5.4): its ``task.toml``, ``Dockerfile`` and container scripts are none of
+# the above, and ``kodo-harbor`` hands the directory to Harbor from the
+# installed package.
+include = ["src/kodo/**/*.md", "src/kodo/**/*.json", "src/kodo/harbor/tasks/**"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src/kodo/**/*.md", "src/kodo/**/*.json", "src", "test", "doc", "scripts"]
@@ -57,6 +62,9 @@ dependencies = [
     # kodo-harbor runs the same pin through `uv tool run` (doc/HARBOR.md).
     # Keep in lockstep with kodo.harbor.HARBOR_VERSION.
     "harbor==0.23.0",
+    # Dev-only: test_agent_schemas.py validates files against the generated
+    # agent JSON Schemas. The server only writes them; VS Code validates.
+    "jsonschema>=4.0",
 ]
 
 [tool.hatch.envs.default.scripts]
@@ -80,6 +88,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.12"
 strict = true
 files = ["src"]
+# The agent-basics Harbor task's scripts run in a container, not in kodo: two
+# identical make_fixture.py copies are not a package (doc/AGENT_BUILDER.md §5.4).
+exclude = ["^src/kodo/harbor/tasks/"]
 
 # boto3/botocore ship no type information (no py.typed, no bundled stubs), and
 # the optional boto3-stubs package generates per-service types that would have

@@ -601,7 +601,17 @@ def test_list_models_local_shows_only_what_run_can_serve(
     # A fresh home has downloaded nothing, so no catalog entry is installed,
     # and a custom_server_url entry is not a model kodo-llama-server launches.
     assert rows == [
-        {"model": "my-gguf", "kind": "local", "description": "Mine.", "credential": None}
+        {
+            "model": "my-gguf",
+            "kind": "local",
+            "description": "Mine.",
+            "credential": None,
+            "vendor": "",
+            "credential_env": [],
+            "thinking_tiers": [],
+            "default_thinking_tier": "",
+            "control": False,
+        }
     ]
     assert BenchModel.resolve("my-gguf", {}, kodo_dir).is_local
 
@@ -727,6 +737,85 @@ def test_summary_scores_each_arm_and_pairs_kodo_with_the_control(tmp_path: Path)
     markdown = JobSummary.load(job).to_markdown()
     assert "kodo[kodo_guide] @ anthropic/claude-sonnet-5" in markdown
     assert "Sandbox denials: 8" in markdown
+
+
+def _multi_step_trial(
+    job: Path, name: str, steps: list[tuple[str, dict[str, float] | None]]
+) -> None:
+    """A multi-step ``TrialResult``: every agent run lives in ``step_results``."""
+    step_results = [
+        {
+            "step_name": step,
+            "agent_result": {
+                "n_input_tokens": 10,
+                "n_cache_tokens": 0,
+                "n_output_tokens": 1,
+                "cost_usd": 0.25,
+                "metadata": {"kodo": {"outcome": "completed", "tool_calls": 3}},
+            },
+            "verifier_result": {"rewards": rewards} if rewards is not None else None,
+            "exception_info": None if rewards is not None else {"exception_type": "VerifierError"},
+            "agent_execution": {
+                "started_at": "2026-10-16T10:00:00+00:00",
+                "finished_at": "2026-10-16T10:00:30+00:00",
+            },
+        }
+        for step, rewards in steps
+    ]
+    scored = [rewards for _, rewards in steps if rewards is not None]
+    result: dict[str, object] = {
+        "trial_name": name,
+        "task_name": "kodo/agent-basics-instruction-following",
+        "agent_info": {"name": "kodo", "version": "1", "model_info": {"name": "m"}},
+        "config": {"agent": {"kwargs": {"agent": "acme_solver"}}},
+        "verifier_result": {"rewards": {"reward": sum(r["reward"] for r in scored) / len(scored)}},
+        "agent_result": None,
+        "step_results": step_results,
+    }
+    (job / name).mkdir(parents=True)
+    (job / name / "result.json").write_text(json.dumps(result), encoding="utf-8")
+
+
+def test_summary_of_a_multi_step_task_sums_its_runs_and_scores_each_step(
+    tmp_path: Path,
+) -> None:
+    job = tmp_path / "job"
+    passed = {"reward": 1.0, "outcome": 1.0, "scope": 1.0}
+    out_of_scope = {"reward": 0.0, "outcome": 1.0, "scope": 0.0}
+    _multi_step_trial(job, "k0", [("s1", passed), ("s2", out_of_scope)])
+    _multi_step_trial(job, "k1", [("s1", passed), ("s2", None)])
+
+    summary = JobSummary.load(job)
+    arm = cast(dict[str, dict[str, object]], summary.to_dict()["arms"])["kodo[acme_solver] @ m"]
+
+    # Four agent runs over two trials, not two empty trial-level records.
+    assert (arm["input_tokens"], arm["output_tokens"], arm["cost_usd"]) == (40, 4, 1.0)
+    assert arm["mean_agent_seconds"] == 60.0
+    assert arm["errors"] == {"VerifierError": 1}
+    details = cast(dict[str, object], arm["kodo"])
+    assert (details["outcomes"], details["tool_calls"]) == ({"completed": 4}, 12)
+    # A step the verifier did not score counts as 0 on every key.
+    assert arm["steps"] == {
+        "s1": {"runs": 2, "reward": 1.0, "outcome": 1.0, "scope": 1.0},
+        "s2": {"runs": 2, "reward": 0.0, "outcome": 0.5, "scope": 0.0},
+    }
+    markdown = summary.to_markdown()
+    assert "## Steps — kodo[acme_solver] @ m" in markdown
+    assert "| Step | reward | outcome | scope |" in markdown
+    assert "| s2 | 0/2 | 1/2 | 0/2 |" in markdown
+
+
+def test_a_single_step_job_has_no_steps_table(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    _trial(job, "k0", "a", "kodo", 1.0, kodo={"outcome": "completed"})
+    summary = JobSummary.load(job)
+    assert (
+        "steps"
+        not in cast(dict[str, dict[str, object]], summary.to_dict()["arms"])[
+            "kodo[kodo_guide] @ anthropic/claude-sonnet-5"
+        ]
+    )
+    assert "## Steps" not in summary.to_markdown()
 
 
 def test_summarize_command_writes_the_report_next_to_the_job(

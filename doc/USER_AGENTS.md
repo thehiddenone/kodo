@@ -81,6 +81,12 @@ release is **not** read (a clean break, like the prefix rename in §1).
 
 ## 3. What goes in the files
 
+Both JSON files — a top-level agent's `<name>.json` and a sub-agent's spec —
+have a JSON Schema. The server writes them to `~/.kodo/etc/agent_schemas/` on
+every start, and the Kōdo extension maps them onto `~/.kodo/agents/**` in your
+user `json.schemas` setting, so VS Code completes keys and underlines mistakes
+as you edit by hand ([AGENT_BUILDER.md](AGENT_BUILDER.md) §4).
+
 ### 3.1 A top-level agent
 
 `agent_<name>.md` is an ordinary Kōdo agent prompt: YAML frontmatter, then the

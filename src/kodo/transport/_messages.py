@@ -504,6 +504,18 @@ MSG_AGENTS_COPY = "agents.copy"
 # section). ``{ok: false, name, error}`` when no agent by that name exists.
 MSG_AGENTS_VALIDATE = "agents.validate"
 
+# Client → Server. Control connection only. What the Settings panel's Benchmark
+# and Basics test modal can offer (doc/AGENT_BUILDER.md §8). Payload: ``{}``.
+# Replies ``harbor.options.ack`` ``{ok: true, models: [{model, kind, description,
+# credential, vendor, credential_env, thinking_tiers, default_thinking_tier,
+# control}, ...], suites: [{name, description}, ...], basics_suite, controls,
+# jobs_dir, llama_running, llama_model}``. ``models`` are ``kodo-harbor
+# list-models --json`` rows; ``credential`` is judged by the *server's*
+# environment, and the client adds what it holds itself. ``llama_running`` /
+# ``llama_model`` describe the server's own llama-server, for the GPU warning
+# (D20). ``{ok: false, error}`` when a suite file does not load.
+MSG_HARBOR_OPTIONS = "harbor.options"
+
 MSG_SKILLS_LIST = "skills.list"
 
 # Client → Server. Control connection only. Delete one installed skill's whole

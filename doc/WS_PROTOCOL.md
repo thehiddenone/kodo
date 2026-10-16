@@ -2540,14 +2540,20 @@ built-ins `agents.copy` accepts as a source.
   "agents": [
     { "name": "reviewer", "kind": "agent", "version": "3.1.0",
       "label": "Reviewer", "description": "Audits an existing codebase…",
-      "path": "/home/u/.kodo/agents/reviewer", "error": "", "warnings": 3 },
+      "path": "/home/u/.kodo/agents/reviewer", "error": "", "warnings": 3,
+      "selectable": true },
     { "name": "scanner", "kind": "subagent", "version": "1.6.0",
       "label": "Scanner", "description": "",
-      "path": "/home/u/.kodo/agents/subagents/scanner", "error": "", "warnings": 0 }
+      "path": "/home/u/.kodo/agents/subagents/scanner", "error": "", "warnings": 0,
+      "selectable": false }
   ],
   "builtins": [
     { "name": "kodo_problem_solver", "kind": "agent", "label": "Problem Solver" },
     { "name": "kodo_coder", "kind": "subagent", "label": "Coder" }
+  ],
+  "top_builtins": [
+    { "name": "kodo_problem_solver", "label": "Problem Solver",
+      "description": "One generalist agent tackles your request end to end." }
   ] }
 ```
 
@@ -2555,7 +2561,11 @@ built-ins `agents.copy` accepts as a source.
 (doc/AGENT_BUILDER.md §5.2) — `agents.validate` returns them. It is counted for
 a broken row too whenever its prompt still parses. `builtins` lists every
 built-in `agents.copy` accepts, top-level agents first: never an engine-driven
-sub-agent and never an `interactive: false` agent.
+sub-agent and never an `interactive: false` agent. `selectable` is true for a
+top-level agent the picker offers (false for a sub-agent and a broken row):
+those are the rows the panel's Benchmark and Basics test run
+(doc/AGENT_BUILDER.md §8). `top_builtins` lists every selectable built-in
+top-level agent, for the panel's read-only "Built-in agents" list.
 
 `kind` is `"agent"` (a top-level agent the user selects) or `"subagent"` (one
 another agent delegates to). A non-empty `error` is a bundle that failed to
@@ -2708,6 +2718,47 @@ is already current. `ok: false` from a reload means the rebuild failed on a
 previous working set is still live and the session the user is in keeps working.
 
 ---
+
+### 7.6l1 `harbor.options` — what the Benchmark / Basics test modal can offer
+
+Control connection only. Backs the Settings panel's Benchmark and Basics test
+modal (kodo-vsix `BenchmarkModal.tsx`, doc/AGENT_BUILDER.md §8). The panel
+never runs a benchmark through the server: kodo-vsix builds a `kodo-harbor run`
+command from this reply and runs it in an integrated terminal.
+
+```json
+{ "type": "harbor.options" }
+```
+
+→ `harbor.options.ack`:
+
+```json
+{ "ok": true,
+  "models": [
+    { "model": "qwen38-9b-distill-q4", "kind": "local", "description": "…",
+      "credential": null, "vendor": "", "credential_env": [],
+      "thinking_tiers": ["low", "medium", "high", "unlimited"],
+      "default_thinking_tier": "medium", "control": false },
+    { "model": "anthropic/claude-sonnet-5", "kind": "cloud", "description": "Claude Sonnet 5",
+      "credential": false, "vendor": "anthropic", "credential_env": ["ANTHROPIC_API_KEY"],
+      "thinking_tiers": ["low", "medium", "high"], "default_thinking_tier": "medium",
+      "control": true }
+  ],
+  "suites": [ { "name": "agent-basics", "description": "Seven small tasks…" } ],
+  "basics_suite": "agent-basics",
+  "controls": ["terminus-2"],
+  "jobs_dir": "/home/u/.kodo/harbor/jobs",
+  "llama_running": false,
+  "llama_model": "" }
+```
+
+`models` are `kodo-harbor list-models --json` rows (doc/HARBOR.md §2.6), read
+through `kodo.harbor`; `credential` reflects the **server's** environment, and
+kodo-vsix widens it with the keys it keeps in VS Code's secret storage, which
+it passes to the terminal (AGENT_BUILDER D37). `suites` is the suite catalog:
+built-in plus `~/.kodo/harbor/suites/`. `llama_running`/`llama_model` describe
+the server's own llama-server, for the modal's memory warning (D20). A suite
+file that does not load gives `{ok: false, error}`.
 
 ### 7.6m `local_llm.hf_search` — search Hugging Face for GGUF repos
 

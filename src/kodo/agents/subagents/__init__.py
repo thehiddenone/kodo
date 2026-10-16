@@ -42,14 +42,25 @@ from ._artifacts import (
     Need,
 )
 from ._subagentspec import RESPONSIBILITY_CODE_KEY, SubAgentSpec
-from .specs import ALL_SUBAGENTS, SPEC_KEYS, SPEC_SHAPES, SPEC_SUFFIX, SpecLoadError, load_spec
+from .specs import (
+    ALL_SUBAGENTS,
+    SPEC_CONSUMES_KEYS,
+    SPEC_KEYS,
+    SPEC_SHAPE_ARGS,
+    SPEC_SHAPES,
+    SPEC_SUFFIX,
+    SpecLoadError,
+    load_spec,
+)
 
 __all__: list[str] = [
     "ALL_ROLES",
     "ALL_SCOPES",
     "ALL_SUBAGENTS",
+    "SPEC_CONSUMES_KEYS",
     "SPEC_KEYS",
     "SPEC_SHAPES",
+    "SPEC_SHAPE_ARGS",
     "SPEC_SUFFIX",
     "PRODUCES_REMAINDER",
     "RESPONSIBILITY_CODE_KEY",

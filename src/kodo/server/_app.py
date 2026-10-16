@@ -39,8 +39,10 @@ from kodo.agents import (
     install_source,
     plan_copy,
     scan_source,
+    write_agent_schemas,
 )
 from kodo.binutils import ensure_all_utils
+from kodo.harbor import AGENT_BASICS_SUITE, TERMINUS_2, HarborRunError, ListedModel, SuiteCatalog
 from kodo.llms import (
     CLOUD_THINKING_FAMILIES,
     DEFAULT_BEDROCK_REGION,
@@ -159,6 +161,7 @@ from kodo.transport import (
     MSG_DEFAULT_AGENT_GET,
     MSG_DEFAULT_AGENT_SET,
     MSG_EDIT_CONTROL_SET,
+    MSG_HARBOR_OPTIONS,
     MSG_HELLO,
     MSG_HOUSEKEEPER_LLM_GET,
     MSG_HOUSEKEEPER_LLM_SET,
@@ -1076,17 +1079,23 @@ def _agents_payload(registry: AgentRegistry) -> dict[str, object]:
 
     Each row carries ``warnings``, the number of lint findings on its prompt
     (doc/AGENT_BUILDER.md §5.2), so the table can flag an entry before the user
-    asks for its report. ``builtins`` lists every built-in ``agents.copy``
-    accepts as a source, for the panel's copy picker.
+    asks for its report, and ``selectable``: whether it is a top-level agent
+    the picker offers, which is what the panel's Benchmark and Basics test
+    actions run (§8, D23). ``builtins`` lists every built-in ``agents.copy``
+    accepts as a source, for the panel's copy picker; ``top_builtins`` lists
+    every selectable built-in top-level agent, for the panel's read-only
+    "Built-in agents" list.
 
     Args:
         registry: The live registry.
 
     Returns:
-        dict[str, object]: ``{agents: [...], builtins: [...], root}``.
+        dict[str, object]: ``{agents: [...], builtins: [...], top_builtins:
+        [...], root}``.
     """
     root = kodo_agents_dir()
     configs = {top.name: top for top in registry.top_agents()}
+    user_names = {agent.name for agent in registry.user_agents()}
     validator = AgentValidator(registry)
     rows: list[dict[str, object]] = []
     for agent in registry.user_agents():
@@ -1101,6 +1110,7 @@ def _agents_payload(registry: AgentRegistry) -> dict[str, object]:
                 "path": str(agent.source_path.parent),
                 "error": "",
                 "warnings": _warning_count(validator, agent.name),
+                "selectable": config is not None and config.selectable,
             }
         )
     for entry in registry.broken_agents:
@@ -1114,9 +1124,20 @@ def _agents_payload(registry: AgentRegistry) -> dict[str, object]:
                 "path": str(entry.path),
                 "error": entry.error,
                 "warnings": _warning_count(validator, entry.name),
+                "selectable": False,
             }
         )
-    return {"agents": rows, "builtins": _copy_sources_payload(), "root": str(root)}
+    top_builtins = [
+        {"name": top.name, "label": top.label, "description": top.description}
+        for top in registry.top_agents()
+        if top.selectable and top.name not in user_names
+    ]
+    return {
+        "agents": rows,
+        "builtins": _copy_sources_payload(),
+        "top_builtins": top_builtins,
+        "root": str(root),
+    }
 
 
 def _warning_count(validator: AgentValidator, name: str) -> int:
@@ -1339,6 +1360,51 @@ def _make_agents_validate_handler(registry: AgentRegistry) -> HandlerFn:
         await req.reply({"type": "agents.validate.ack", "ok": True, "report": report.as_payload()})
 
     return _handle_agents_validate
+
+
+def _harbor_options_payload() -> dict[str, object]:
+    """What the panel's Benchmark / Basics test modal can offer (AGENT_BUILDER §8).
+
+    Read through ``kodo.harbor`` itself, so the modal offers exactly what
+    ``kodo-harbor run`` accepts: the ``list-models`` rows, the suite catalog
+    (built-in plus ``~/.kodo/harbor/suites``), and the control agents. The
+    credential flags reflect this server's environment; kodo-vsix adds the keys
+    it keeps in VS Code's secret storage and passes the chosen one to the
+    terminal it runs ``kodo-harbor`` in (D37).
+
+    Returns:
+        dict[str, object]: The ``harbor.options.ack`` payload.
+
+    Raises:
+        HarborRunError: A suite file does not load.
+    """
+    kodo_dir = kodo_user_dir()
+    models = [*ListedModel.local(kodo_dir), *ListedModel.cloud(os.environ)]
+    active = LlamaServer.get_active_llama_server()
+    running = active is not None and active.is_running
+    return {
+        "ok": True,
+        "models": [model.to_dict() for model in models],
+        "suites": [
+            {"name": suite.name, "description": suite.description}
+            for suite in SuiteCatalog.for_user().all()
+        ],
+        "basics_suite": AGENT_BASICS_SUITE,
+        "controls": [TERMINUS_2],
+        "jobs_dir": str(kodo_dir / "harbor" / "jobs"),
+        "llama_running": running,
+        "llama_model": active.model_name if running and active is not None else "",
+    }
+
+
+async def _handle_harbor_options(req: Request) -> None:
+    # Off the event loop: it reads the local registry and every suite file.
+    try:
+        payload = await asyncio.to_thread(_harbor_options_payload)
+    except HarborRunError as exc:
+        await req.reply({"type": "harbor.options.ack", "ok": False, "error": str(exc)})
+        return
+    await req.reply({"type": "harbor.options.ack", **payload})
 
 
 def _make_agents_reload_handler(registry: AgentRegistry) -> HandlerFn:
@@ -3066,6 +3132,14 @@ def create_app(config: Config) -> web.Application:
     # shared ``subagents/`` directory, so both halves of the layout are there.
     UserAgentStore(kodo_agents_dir()).ensure_root()
     _setup_log_file(layout, config.log_level)
+    # JSON Schemas for the user agent JSON files (AGENT_BUILDER §4), which
+    # kodo-vsix maps onto ~/.kodo/agents/**.json in `json.schemas`. Written on
+    # every start, only where the content changed, so they always match this
+    # server's loaders. Editing help only: a failure must not stop the server.
+    try:
+        write_agent_schemas(layout.etc_dir)
+    except OSError as exc:
+        _log.warning("could not write the agent JSON Schemas: %s", exc)
 
     # The registry resolves the default agent, and the user's preference is a
     # settings key — injected as a live read so a change applies to the next
@@ -3133,6 +3207,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_AGENTS_COPY_SCAN, _handle_agents_copy_scan)
     conn_registry.register_handler(MSG_AGENTS_COPY, _make_agents_copy_handler(registry))
     conn_registry.register_handler(MSG_AGENTS_VALIDATE, _make_agents_validate_handler(registry))
+    conn_registry.register_handler(MSG_HARBOR_OPTIONS, _handle_harbor_options)
     conn_registry.register_handler(MSG_SKILLS_LIST, _handle_skills_list)
     conn_registry.register_handler(MSG_SKILLS_DELETE, _handle_skills_delete)
     conn_registry.register_handler(MSG_SKILLS_INSTALL_SCAN, _handle_skills_install_scan)

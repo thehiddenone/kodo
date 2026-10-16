@@ -1,0 +1,59 @@
+# agent-basics/instruction-following (doc/AGENT_BUILDER.md §5.4): seven small
+# tasks in one container, each a fresh agent run with its own instruction and
+# checker. Tests whether a prompt makes the agent follow instructions and use
+# its tools, not what the model can solve.
+schema_version = "1.4"
+# The trial's reward is each key's mean over the seven steps: the share of
+# tasks done correctly. No step sets min_reward, so all seven always run.
+multi_step_reward_strategy = "mean"
+
+[task]
+name = "kodo/agent-basics-instruction-following"
+description = "Seven one-step tasks that check instruction following and tool use."
+keywords = ["kodo", "basics", "instruction-following"]
+
+[agent]
+# Per step. Local models are slow; every task is a few tool calls.
+timeout_sec = 600.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+
+# A step's verifier timeout defaults to Harbor's 600 s and never falls back to
+# a task-level [verifier], so each step sets its own.
+[[steps]]
+name = "s1-exact-output"
+[steps.verifier]
+timeout_sec = 120.0
+
+[[steps]]
+name = "s2-find-and-edit"
+[steps.verifier]
+timeout_sec = 120.0
+
+[[steps]]
+name = "s3-run-command"
+[steps.verifier]
+timeout_sec = 120.0
+
+[[steps]]
+name = "s4-read-conventions"
+[steps.verifier]
+timeout_sec = 120.0
+
+[[steps]]
+name = "s5-implement"
+[steps.verifier]
+timeout_sec = 120.0
+
+[[steps]]
+name = "s6-protected-tests"
+[steps.verifier]
+timeout_sec = 120.0
+
+[[steps]]
+name = "s7-restraint"
+[steps.verifier]
+timeout_sec = 120.0

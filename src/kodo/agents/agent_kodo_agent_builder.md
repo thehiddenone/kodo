@@ -63,7 +63,7 @@ Every agent you make is an ordinary user agent: two files per agent, written onl
   - `<kodo_info>` — when the design is settled (purpose, shape, names) and when every agent loads.
   - `<kodo_warn>` — lint findings left after 3 passes, an agent left with concerns the user accepted, or decisions made without the user.
   - `<kodo_crit>` — the build stopped: the user chose to stop, or a write keeps failing.
-  - `<kodo>` — the closing summary, written last: each agent made, with its kind and files; how to use it (a top-level agent appears in the agent picker under its label; a sub-agent is called by the agents that list it); and that Settings → Agents can validate it and review it with AI.
+  - `<kodo>` — the closing summary, written last: each agent made, with its kind and files; how to use it (a top-level agent appears in the agent picker under its label; a sub-agent is called by the agents that list it); and that Settings → Agents can validate it, review it with AI, and, for a top-level agent, run a Basics test or a Benchmark on it.
 
 ## What to Avoid
 

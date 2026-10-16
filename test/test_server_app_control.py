@@ -16,6 +16,7 @@ import json
 import shutil
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import cast
 
 import aiohttp
 import pytest
@@ -478,6 +479,58 @@ async def test_agents_list_reports_installed_agents_and_the_root(
     assert row["version"] == "1.0.0"
     assert row["description"] == "The helper agent."
     assert row["error"] == ""
+    # The panel's Benchmark / Basics test actions (doc/AGENT_BUILDER.md §8).
+    assert row["selectable"] is True
+    builtins = {b["name"] for b in listing["top_builtins"]}  # type: ignore[union-attr]
+    picker = await _top_agent_names(server)
+    assert builtins == {name for name in picker if name.startswith("kodo_")}
+
+
+async def _top_agent_names(server: TestServer) -> set[str]:
+    client = aiohttp.ClientSession()
+    conn = await client.ws_connect(f"http://127.0.0.1:{server.port}/ws")
+    try:
+        picker = await _request(conn, "top_agents.list")
+    finally:
+        await conn.close()
+        await client.close()
+    return {str(a["name"]) for a in picker["agents"]}  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# harbor.options — the Benchmark / Basics test modal (doc/AGENT_BUILDER.md §8)
+# ---------------------------------------------------------------------------
+
+
+async def test_harbor_options_offers_what_kodo_harbor_run_accepts(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    reply = await _request(ws, "harbor.options")
+
+    assert reply["ok"] is True
+    suites = {s["name"] for s in reply["suites"]}  # type: ignore[union-attr]
+    assert reply["basics_suite"] in suites
+    assert reply["controls"] == ["terminus-2"]
+    assert reply["jobs_dir"] == str(_temp_home / ".kodo" / "harbor" / "jobs")
+    assert (reply["llama_running"], reply["llama_model"]) == (False, "")
+    models = cast(list[dict[str, object]], reply["models"])
+    anthropic = next(m for m in models if m["vendor"] == "anthropic")
+    assert anthropic["credential"] is True
+    assert anthropic["credential_env"][0] == "ANTHROPIC_API_KEY"  # type: ignore[index]
+    assert anthropic["control"] is True
+    assert set(anthropic) >= {"thinking_tiers", "default_thinking_tier", "description"}
+
+
+async def test_harbor_options_reports_a_broken_user_suite(
+    ws: aiohttp.ClientWebSocketResponse, _temp_home: Path
+) -> None:
+    suites = _temp_home / ".kodo" / "harbor" / "suites"
+    suites.mkdir(parents=True)
+    (suites / "mine.json").write_text("{oops", encoding="utf-8")
+    reply = await _request(ws, "harbor.options")
+    assert reply["ok"] is False
+    assert "mine.json" in str(reply["error"])
 
 
 async def test_agents_delete_removes_an_installed_agent(

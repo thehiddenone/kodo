@@ -1,17 +1,19 @@
 # Agent Builder — Proposal
 
-> Status: **P1–P6 landed.** P1 and P2 (2026-10-14): deep copy (§3) and the
-> load check + lint + report (§5.1, §5.2, §5.5 minus the smoke-test action).
+> Status: **P1–P9 landed.** P1 and P2 (2026-10-14): deep copy (§3) and the
+> load check + lint + report (§5.1, §5.2, §5.5).
 > P3 and P4 (2026-10-15): every built-in prompt lints clean (§9), and the
 > shipped skills tier with its four skills (§7). P5 and P6 (2026-10-15): the
 > builder tools, `kodo_agent_critic` and `kodo_agent_builder` (§6), and the
-> panel's "Review with AI" (`kodo_agent_review`, §5.3). P7–P9 are not
-> implemented. Builds on
+> panel's "Review with AI" (`kodo_agent_review`, §5.3). P7–P9 (2026-10-16):
+> Benchmark / Basics test from the panel (§8), the JSON Schemas (§4) and the
+> `agent-basics` suite (§5.4). Still open: §5.4.5's one-time Docker acceptance
+> of `agent-basics` (no Docker on the machine that built it). Builds on
 > [USER_AGENTS.md](USER_AGENTS.md) (the `~/.kodo/agents/` tier),
 > [SKILLS.md](SKILLS.md) (`~/.kodo/skills/`), [HARBOR.md](HARBOR.md)
 > (`kodo-harbor`) and [ADDING_A_SUBAGENT.md](ADDING_A_SUBAGENT.md) (the agent
 > format). Every decision in §1 was made by the user when asked; §12 tracks
-> open points (none at present). §5.4 (the `agent-smoke` suite) was added 2026-10-14.
+> open points (none at present). §5.4 (the `agent-basics` suite) was added 2026-10-14.
 
 Agent Builder is a set of tools for making new Kōdo agents and sub-agents
 **without changing Kōdo's code**:
@@ -21,7 +23,7 @@ Agent Builder is a set of tools for making new Kōdo agents and sub-agents
 2. **Edit** user agents by hand, with JSON Schemas for the two JSON formats
    (§4).
 3. **Validate** an agent: registry load check, deterministic lint, AI review,
-   and a Harbor smoke run (§5).
+   and a Harbor Basics test run (§5).
 4. **Generate** agents with AI, through a new interactive top-level agent,
    **Agent Builder**, backed by a new tier of **shipped skills** (§6, §7).
 5. **Benchmark** an agent with `kodo-harbor` from the Settings panel (§8).
@@ -41,7 +43,7 @@ a fresh copy passes the lint.
 | D4 | Copy provenance | **Not recorded.** A copy is an ordinary user agent, so the config schema does not change. |
 | D5 | Where copying is available | **CLI, Settings panel, and an Agent Builder tool.** |
 | D6 | Manual editing | **JSON Schemas only**, for `<name>.json` and the sub-agent spec JSON. Open folder + Reload stay as they are. |
-| D7 | Validation covers | **Registry load check + deterministic lint + AI review + Harbor smoke.** |
+| D7 | Validation covers | **Registry load check + deterministic lint + AI review + Harbor Basics test.** |
 | D8 | Lint severity | **Warnings only.** Only today's registry rules demote an agent to BROKEN. |
 | D9 | Lint vs. built-in prompts | **Fix the built-ins** so they pass, as a phase of this feature with a benchmark before and after (§9). |
 | D10 | AI generation UX | **An interactive top-level agent**, `kodo_agent_builder`, shown in the picker. |
@@ -64,13 +66,15 @@ a fresh copy passes the lint.
 | D27 | Builder critic rounds | **3** (the draft + up to 2 revisions), then the builder asks the user. |
 | D28 | Copying user agents | **Out of scope for v1.** Copy sources are built-ins only. |
 | D29 | L6 exemptions | **Code spans, fenced blocks, block quotes and double-quoted text only.** Negated forms (`may not`) are flagged like any other use, and there is no inline suppression. |
-| D30 | What the smoke test runs | **A fixed, agent-agnostic suite, `agent-smoke`** (§5.4), that tests instruction following and tool use, not model capability. Per-agent smoke tasks are out of scope for v1. |
-| D31 | What the smoke checker sees | **Only the final workspace files.** It is blind to which tools ran: no transcript, no harness logs, no tool names. |
-| D32 | Comparison arm for the smoke test | **None.** Scores are reported alone. |
-| D33 | How the seven smoke tasks run | **Seven tasks in one container**, as one Harbor multi-step task: one build and one agent install, then seven steps, each a fresh agent run with its own instruction and its own checker. |
+| D30 | What the Basics test runs | **A fixed, agent-agnostic suite, `agent-basics`** (§5.4), that tests instruction following and tool use, not model capability. Per-agent test tasks are out of scope for v1. |
+| D31 | What the Basics test checker sees | **Only the final workspace files.** It is blind to which tools ran: no transcript, no harness logs, no tool names. |
+| D32 | Comparison arm for the Basics test | **None.** Scores are reported alone. |
+| D33 | How the seven Basics test tasks run | **Seven tasks in one container**, as one Harbor multi-step task: one build and one agent install, then seven steps, each a fresh agent run with its own instruction and its own checker. |
 | D34 | §9's benchmark gate | **Waived** (2026-10-15). The machine that did P3 had no Docker; the user chose to rewrite without the before/after run. |
 | D35 | How deep the §9 rewrite goes | **Minimal and behavior-preserving**: only what the lint needs. No change to what an agent is told to do. |
 | D36 | How the builder reaches its critic with no project open | **`run_subagent` is no longer project-gated** (2026-10-15), for every agent. The dispatcher refused every `run_subagent_*` call in a homeless session, which contradicted §6.1; the user chose to drop the gate rather than narrow it to read-only callees or give the builder a dedicated review tool. |
+| D37 | Cloud credentials for a benchmark run from the panel | **Injected into the terminal** (2026-10-16). `kodo-harbor` reads a key only from its environment, and a key entered in Kōdo's Cloud AI settings lives in VS Code's secret storage. When no credential variable for the chosen vendor is set, kodo-vsix passes the active stored key in that one terminal's environment, under the vendor's preferred variable. It never goes on the command line or into a file. |
+| D38 | Name of the prompt test suite | **`agent-basics`, and the panel action "Basics test"** (2026-10-16). Renamed from `agent-smoke` / "Smoke test" before release, everywhere: suite, task directory, `AGENT_BASICS_SUITE`, `basics_suite` on the wire, the task scripts' `BASICS_*` variables and `/opt` + `/var/lib` paths, and the panel. Harbor's `hello-world` suite keeps the name `smoke`. |
 
 ---
 
@@ -226,6 +230,31 @@ because the config loader would reject the unknown key.
 Frontmatter (YAML in `.md`) gets no schema in v1. Errors in it are caught by
 the load check and lint (§5).
 
+As built (2026-10-16):
+
+- **Code.** `kodo/agents/_schemas.py`: `top_agent_schema()`,
+  `subagent_spec_schema()`, `write_agent_schemas(etc_dir)`. Draft-07. The
+  property lists iterate the loaders' own key sets — `TOP_AGENT_KEYS`,
+  `SPEC_KEYS`, and two constants made public for this, `SPEC_SHAPE_ARGS` (shape
+  → its arguments) and `SPEC_CONSUMES_KEYS` — so a key added to a loader without
+  a schema entry raises `KeyError` in the tests. `create_app` writes the files
+  after `layout.init()`; an `OSError` is logged, never fatal.
+- **User-agent rules, not just the loaders'.** The schemas also refuse what the
+  registry demotes on a user agent: `"default": true`, `"interactive": false`, a
+  `kodo_` name or `subagents`, and an unknown `consumes` scope. Artifact roles
+  stay open (the registry accepts a role a user spec invents), so the known
+  ones are completion `examples` only. Shapes are a `oneOf`, one branch per
+  shape with `additionalProperties: false`.
+- **Agreement test.** `test_agent_schemas.py` loads one valid file with a table
+  of single mutations and asserts the schema's verdict equals loading it as a
+  user agent; every built-in spec, renamed as a copy would be, validates.
+  `jsonschema` was added to the dev environment for it.
+- **kodo-vsix.** `src/extension/agent-schemas.ts`, run on activation. Globs
+  come from `Uri.file(…).path`, because VS Code matches `fileMatch` against
+  document URIs (forward slashes, lower-case drive letter). A duplicate of one
+  of its own entries collapses into one. Not yet seen squiggling a file in a
+  live VS Code; the merge is unit-tested.
+
 ---
 
 ## 5. Validation
@@ -324,18 +353,18 @@ As built (2026-10-15):
   `kodo-settings-bridge.ts`). The review writes nothing, so nothing is
   refreshed when it ends.
 
-### 5.4 Harbor smoke
+### 5.4 Harbor Basics test (`agent-basics`)
 
-A "Smoke test" action is a benchmark preset: suite `agent-smoke`, 1 attempt,
+A "Basics test" action is a benchmark preset: suite `agent-basics`, 1 attempt,
 no control (D32). It runs through the §8 path and is therefore panel/CLI only
 (D17).
 
 The existing `smoke` suite (Harbor's `hello-world`) is kept, but it is **not**
-the agent smoke test. It checks that install, run and verify work in Docker,
+the Basics test. It checks that install, run and verify work in Docker,
 and its one-line task passes under any prompt that lets the agent write a file,
 so it says nothing about the prompt under test.
 
-#### 5.4.1 What `agent-smoke` measures (D30, D31)
+#### 5.4.1 What `agent-basics` measures (D30, D31)
 
 The thing under test is a user-written prompt, not the model. So the task is
 **trivial for any model that follows instructions, and hard to pass without
@@ -357,7 +386,7 @@ visible, and it is an expected result, not a defect.
 
 #### 5.4.2 The task: seven steps in one container (D33)
 
-`agent-smoke/instruction-following` is a Harbor **multi-step task**: seven
+`agent-basics/instruction-following` is a Harbor **multi-step task**: seven
 `[[steps]]` in one `task.toml`. Harbor 0.23.0 runs a multi-step trial in this
 order:
 
@@ -422,7 +451,7 @@ meaningful (a key a step does not write counts as 0):
 
 `scope` compares the workspace with a snapshot taken right before the step
 by the step's `setup.sh` (`steps/<name>/workdir/setup.sh`). The script writes
-SHA-256 hashes of every file under `/app` to `/var/lib/agent-smoke/<step>.json`,
+SHA-256 hashes of every file under `/app` to `/var/lib/agent-basics/<step>.json`,
 then deletes itself from `/app`, because Harbor uploads it into the working
 directory where the agent would see it. Ignored by `scope`: `__pycache__/` and
 `.pytest_cache/` anywhere, and dot-directories at the workspace root (harness
@@ -439,19 +468,19 @@ done correctly, and the trial counts as solved only at 7/7.
 multi-step tasks: one row per step name, holding the mean of that step's
 `reward` (and of any other key it writes) across trials, read from each
 trial's `step_results`. It is generic: shown for any multi-step task, not
-special-cased for `agent-smoke`. For a smoke test it reads, e.g.,
+special-cased for `agent-basics`. For a Basics test it reads, e.g.,
 `s4-read-conventions 0/1`, which points at what the prompt fails to make the
 agent do (here, read a file the instruction names).
 
 #### 5.4.5 Packaging and acceptance
 
-- Layout: `src/kodo/harbor/tasks/agent-smoke/instruction-following/`, holding
+- Layout: `src/kodo/harbor/tasks/agent-basics/instruction-following/`, holding
   `task.toml`, `environment/{Dockerfile,make_fixture.py}`,
   `steps/<name>/{instruction.md,workdir/setup.sh,tests/{test.sh,check.py}}`
   for each step, each `tests/` also holding a committed copy of
   `make_fixture.py`, and `solution/solve.sh`.
-  `src/kodo/harbor/suites/agent-smoke.json` holds
-  `"tasks": [{"path": "../tasks/agent-smoke/instruction-following"}]`.
+  `src/kodo/harbor/suites/agent-basics.json` holds
+  `"tasks": [{"path": "../tasks/agent-basics/instruction-following"}]`.
   The suite loader already resolves a relative `path` against the suite
   file's directory.
 - The wheel `include` (`pyproject.toml`) gains `src/kodo/harbor/tasks/**`.
@@ -477,8 +506,54 @@ agent do (here, read a file the instruction names).
   failing step is too hard and is measuring the model, so it is simplified.
   The result is recorded in HARBOR.md.
 
-Per-agent smoke tasks, where a bundle carries tasks that test what *that*
+Per-agent test tasks, where a bundle carries tasks that test what *that*
 agent is for, are out of scope for v1 (D30).
+
+#### 5.4.6 As built (2026-10-16)
+
+Built as specified, with these departures, each forced by what Harbor 0.23.0
+actually does (read from its source):
+
+- **One checker, not seven copies.** A step's verifier uploads the task-level
+  `tests/` and then the step's own `tests/` into `/tests`, emptied before each
+  step. So `tests/` holds the one `check.py` (all seven checks, keyed by step
+  name) and the one checker copy of `make_fixture.py`, and each
+  `steps/<name>/tests/test.sh` runs `python3 /tests/check.py <name>` with a
+  zero-reward fallback. There are two copies of `make_fixture.py`
+  (`environment/` for the image, `tests/` for the checker), held identical by a
+  test.
+- **`make_fixture.py` is also the snapshot tool.** The image copies it to
+  `/opt/agent-basics/`, and each `setup.sh` deletes itself, then runs
+  `make_fixture.py snapshot <step>`. So the snapshot and the checker hash with
+  the same code and the same ignore rules.
+- **Per-step reference solutions** (`steps/<name>/solution/solve.sh`), not one
+  `solution/solve.sh`. Harbor's `oracle` agent runs a step's own solution when
+  there is one and the task-level one on *every* step otherwise, which would
+  make all seven edits in step 1 and fail its `scope`.
+- **Verifier timeout per step.** A step's `[steps.verifier] timeout_sec`
+  defaults to 600 s and never falls back to a task-level `[verifier]`, so each
+  step sets 120 s. `[agent] timeout_sec = 600` does apply per step.
+- **mypy excludes `src/kodo/harbor/tasks/`.** The scripts run in the
+  container, not in Kōdo; two `make_fixture.py` modules would also collide as
+  module names.
+- **Harbor aborts on a failed `setup.sh`.** A step with an exception and no
+  verifier result stops the remaining steps, so a broken setup ends the trial.
+  An agent timeout does not: the step is still verified.
+- **Summary.** Besides the Steps table, a multi-step trial's tokens, cost, agent
+  time, errors and Kōdo metadata are now summed over `step_results`. Harbor
+  leaves the trial-level `agent_result` empty for such a trial, so the report
+  would otherwise have shown no usage at all.
+
+Verified without Docker: `Task.is_valid_dir` accepts the task;
+`test_harbor_agent_basics.py` replays each step on a temp directory (setup →
+reference solution → check scores 1/1/1; untouched → `outcome` 0; a stray file
+outside `tN/` → `scope` 0; plus a wrong answer per step kind). The wheel ships
+all 34 files with the scripts' exec bits. **Not yet done (§5.4.5): the image
+build, the oracle run, the 7/7 × 3 local-model run, and the adapter's per-step
+logs.** Read from Harbor's code, the adapter reads each step's own logs
+(`_prepare_step` resets the download flag, every step gets a fresh
+`AgentContext`, and the previous step's files are archived away first), but a
+real run must still confirm it.
 
 ### 5.5 Surfaces
 
@@ -486,7 +561,7 @@ agent is for, are out of scope for v1 (D30).
 |---|---|
 | CLI | `python -m kodo --validate-agent NAME [--json]` (load + lint). Exits 1 on a load error and 0 with warnings. |
 | WS | `agents.validate {name}` → `AgentReport` |
-| Panel | Agents table: a **Lint** column (`⚠ N` or `✓`); the row's 🩺 **Validate** button opens `AgentReportModal` with the report, and a finding's line opens the prompt there. The row's 🤖 **Review with AI** button opens a locked session running `kodo_agent_review` (§5.3). The **Smoke test** (P7) action is not built yet |
+| Panel | Agents table: a **Lint** column (`⚠ N` or `✓`); the row's 🩺 **Validate** button opens `AgentReportModal` with the report, and a finding's line opens the prompt there. The row's 🤖 **Review with AI** button opens a locked session running `kodo_agent_review` (§5.3). 🧪 **Basics test** and 📊 **Benchmark** (§8) on every selectable top-level agent |
 | Builder | `validate_agent` / `lint_agent` tools, plus the report returned by every write |
 
 ---
@@ -591,7 +666,7 @@ one workshop per engine over its registry (`_agent_workshop_service`).
    rounds** per draft (D27). If concerns remain after round 3, present them
    to the user with `ask_user` and let the user choose: accept as is, revise
    per their direction, or stop.
-6. Report what was made, how to select it, and that a **Smoke test /
+6. Report what was made, how to select it, and that a **Basics test /
    Benchmark** is available in Settings → Agents. The builder never runs one
    (D17).
 
@@ -601,9 +676,8 @@ mode (no `ask_user`) it decides alone and lists every decision in one
 `<kodo_warn>`; and the draft→lint loop is capped at 3 passes, leftovers listed
 in a `<kodo_warn>`, so no stage lacks a stop condition. Agents are written
 callees first and critics before authors, so each write's report reflects the
-real load state. Until P7 lands, the closing summary names Validate and Review
-with AI in Settings → Agents, not a Smoke test or Benchmark, which do not exist
-yet.
+real load state. Since P7 the closing summary also names the Basics test and
+Benchmark in Settings → Agents, for a top-level agent.
 
 ---
 
@@ -664,7 +738,7 @@ As built (2026-10-15; details in SKILLS.md §9):
 
 ## 8. Benchmarking from the panel (D17–D20)
 
-- **Where (D23):** a **Benchmark…** and a **Smoke test** action on every
+- **Where (D23):** a **Benchmark…** and a **Basics test** action on every
   selectable top-level agent, built-in or user. The user rows live in the
   Agents table. Built-ins get a short read-only "Built-in agents" list above
   it, which is also where **Copy…** starts (§3.5). Sub-agents cannot run
@@ -672,8 +746,8 @@ As built (2026-10-15; details in SKILLS.md §9):
 - **Modal fields:** model (rows from `kodo-harbor list-models --json`
   semantics, served by a new control message `harbor.options` that calls
   `kodo.harbor` directly), suite (built-in + `~/.kodo/harbor/suites/`),
-  attempts, thinking level, and a ☐ *terminus-2 control* checkbox. **Smoke
-  test** pre-fills suite `agent-smoke`, 1 attempt, no control (§5.4).
+  attempts, thinking level, and a ☐ *terminus-2 control* checkbox. **Basics
+  test** pre-fills suite `agent-basics`, 1 attempt, no control (§5.4).
 - **GPU warning (D20):** if the model is local and the server currently has a
   llama-server loaded, the modal says the two may not fit in memory together
   and offers *Continue* or *Cancel*. It does nothing automatically.
@@ -686,6 +760,34 @@ As built (2026-10-15; details in SKILLS.md §9):
   `~/.kodo/agents` existence are all reported in the terminal. kodo-harbor
   already installs `~/.kodo/agents` into the container for a non-built-in
   agent.
+
+As built (2026-10-16):
+
+- **Server.** `harbor.options` (WS_PROTOCOL §7.6l1) returns `ListedModel` rows,
+  the suite catalog (`SuiteCatalog.for_user()`, now shared with the CLI),
+  `basics_suite` (`AGENT_BASICS_SUITE`), `controls`, `jobs_dir` and the server's
+  own llama-server state. `ListedModel` gained `vendor`, `credential_env`,
+  `thinking_tiers`, `default_thinking_tier` and `control`, so `list-models
+  --json` and the modal read the same rows. This makes `server` import
+  `harbor`, which was a leaf (INTERNALS.md updated). Every `agents.*` row gained
+  `selectable`, and the listing gained `top_builtins`.
+- **Panel.** A "Built-in agents" list above "Your agents": each selectable
+  built-in with 🧪 Basics test, 📊 Benchmark and ⧉ Copy (preselected in the copy
+  modal). User rows got 🧪 and 📊, disabled on a sub-agent or a broken row so
+  the columns stay aligned. `BenchmarkModal.tsx` offers runnable models (it
+  hides the `VENDOR/<MODEL_ID>` placeholders), with "no key" cloud models
+  disabled; suite, attempts (1–10), thinking tier (model default first) and
+  the control checkbox, which is enabled only where `control` is true. The
+  Basics test hides suite, attempts and control.
+- **Run.** `src/extension/benchmark.ts` runs `~/.kodo/venv/bin/kodo-harbor`
+  (`Scripts\kodo-harbor.exe` on Windows) in a terminal titled "Kōdo benchmark:
+  <agent>", job name `<agent>-<YYYY-MM-DD_HH-MM-SS>`. With shell integration
+  (VS Code 1.93+, feature-detected, since the extension supports 1.90) it runs
+  through `executeCommand`, and `kodo-summary.md` opens in Markdown preview
+  when the command ends. Without it the line is typed in and the summary is
+  not opened automatically. Credentials per D37.
+- **Not run end to end** on this machine (no Docker): the command line, the
+  credential injection rule and the quoting are unit-tested.
 
 ---
 
@@ -767,7 +869,7 @@ Engine-driven agents (`kodo_compactor`, `kodo_web_search`,
 | Builder tool specs | `kodo.toolspecs` | One module per tool |
 | Builder tool dispatch | `kodo.tools` | Via `AgentWorkshopLike`. The import ceiling grep stays empty. |
 | Shipped skills, second root, reserved prefix | `kodo.skills` | Stays a leaf |
-| `agents.copy_scan`, `agents.copy`, `agents.validate`, `harbor.options` | `kodo.server`, `kodo.transport` | WS_PROTOCOL §7.6l extended |
+| `agents.copy_scan`, `agents.copy`, `agents.validate`, `harbor.options` | `kodo.server`, `kodo.transport` | WS_PROTOCOL §7.6l extended, §7.6l1 added. `server` imports `harbor` for `harbor.options`. |
 | `agent.run` for `kodo_agent_review` | existing | Model Importer mechanism |
 | Panel: Copy modal, Validate report, Benchmark modal, built-in skill pills, `jsonValidation` | kodo-vsix | |
 
@@ -783,9 +885,9 @@ Engine-driven agents (`kodo_compactor`, `kodo_web_search`,
 | P4 ✅ | Shipped skills tier + the four skills (landed 2026-10-15) | P2 (rule IDs) |
 | P5 ✅ | Builder tools + `kodo_agent_critic` + `kodo_agent_builder` (landed 2026-10-15; `run_subagent` ungated, D36) | P1, P2, P4 |
 | P6 ✅ | Panel "Review with AI" (`kodo_agent_review`) (landed 2026-10-15) | P5 |
-| P7 | Panel Benchmark / Smoke test via terminal. Also add the Smoke test / Benchmark to the builder's closing summary (§6.3) | P9 (for the Smoke test preset) |
-| P8 | JSON Schemas + kodo-vsix `jsonValidation` | — |
-| P9 | `agent-smoke` suite + task, wheel `include`, the summary's Steps table, multi-step check of the adapter (§5.4) | — |
+| P7 ✅ | Panel Benchmark / Basics test via terminal, and both in the builder's closing summary (§6.3, §8; D37) (landed 2026-10-16) | P9 (for the Basics test preset) |
+| P8 ✅ | JSON Schemas + kodo-vsix `json.schemas` registration (§4) (landed 2026-10-16) | — |
+| P9 ✅ | `agent-basics` suite + task, wheel `include`, the summary's Steps table (§5.4) (landed 2026-10-16). The Docker acceptance and the adapter's multi-step check (§5.4.5) are still to run | — |
 
 P1, P2, P8 and P9 are independent of each other.
 
@@ -804,5 +906,10 @@ O11 (2026-10-15): `run_subagent` was `requires_project=True`, so the builder
 could not reach its critic with no project open, contradicting §6.1. The user
 removed the gate for every sub-agent spawn (D36).
 
+O12 (2026-10-16): §8 ran `kodo-harbor` in a fresh terminal, which has no key
+the user entered in Kōdo's Cloud AI settings, so a cloud model would fail
+preflight. The user chose to inject the stored key into that terminal's
+environment (D37), over "shell environment only" and "local models only".
+
 Resolved: O1 → D21, O2 → D22, O3 → D25, O4 → D23, O5 → D26 + D29, O6 → D27,
-O7 → D24, O8 → D28, O9 → D33, O10 → D22 (corrected), O11 → D36.
+O7 → D24, O8 → D28, O9 → D33, O10 → D22 (corrected), O11 → D36, O12 → D37.

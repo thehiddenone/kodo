@@ -55,7 +55,7 @@ source:
 | `subagents` | `plan`, `toolspecs` |
 | `titling` | `project`, `llms` |
 | `runtime` | `common`, `transport`, `toolspecs`, `tools`, `findings`, `plan`, `workproducts`, `guided_state`, `project`, `state`, `subagents`, `llms`, `titling`, `mirror`, `shellparser`, `binutils` |
-| `server` | `common`, `transport`, `project`, `state`, `subagents`, `llms`, `titling`, `runtime`, `binutils` |
+| `server` | `common`, `transport`, `project`, `state`, `subagents`, `llms`, `titling`, `runtime`, `binutils`, `harbor` |
 | `llamaserver` | `llms`, `project` |
 | `memcheck` | `llms`, `project` |
 | `headless` | `common`, `transport` |
@@ -66,7 +66,10 @@ source:
 direction: nothing in `kodo` imports it. Neither does anything import
 `memcheck` (the `kodo-memcheck` command, [MEMCHECK.md](MEMCHECK.md)). `headless` (the `kodo-headless`
 command) is imported only by `harbor` (the `kodo-harbor` command,
-[HARBOR.md](HARBOR.md)), which is itself a leaf. `harbor.agent` is the one
+[HARBOR.md](HARBOR.md)). `server` imports `harbor` for one control message,
+`harbor.options` (the Settings panel's Benchmark modal, AGENT_BUILDER.md §8),
+so the modal offers exactly the models and suites `kodo-harbor run` accepts;
+nothing else imports it. `harbor.agent` is the one
 module in `kodo` that imports the third-party `harbor` package, and only
 Harbor's own process imports it: nothing in `kodo` imports `harbor.agent`, and
 `harbor` (the orchestrator) spawns Harbor through `uv tool run` instead of

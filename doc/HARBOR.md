@@ -278,7 +278,12 @@ Each trial's `agent/` directory holds Kōdo's outputs (§4.2).
 
 `kodo-harbor list-models` prints every `--model` value `run` can run, local
 models first. `local` or `cloud` narrows it to one kind; `--json` prints
-`{model, kind, description, credential}` rows.
+`{model, kind, description, credential, vendor, credential_env, thinking_tiers,
+default_thinking_tier, control}` rows. `credential_env` lists the variables the
+vendor's key is read from (preferred first), `thinking_tiers` the values
+`--thinking-level` takes, and `control` whether a `terminus-2` control arm can
+run the model. The Settings panel's Benchmark modal reads the same rows
+through `harbor.options` ([AGENT_BUILDER.md](AGENT_BUILDER.md) §8).
 
 ```
 $ kodo-harbor list-models
@@ -356,11 +361,40 @@ file:
   (Harbor's own `DatasetConfig` / `TaskConfig` fields). Each needs exactly one
   of `name` or `path`; a relative `path` is relative to the suite file.
 - Built-in suites ship in `kodo/harbor/suites/`: `smoke` (hello-world, 1 task),
+  `agent-basics` (one seven-step task that tests an agent's prompt, §3.1),
   `terminal-bench-sample` (10 tasks), `terminal-bench` (Terminal-Bench 2.0, 89
   tasks). Your own go in `~/.kodo/harbor/suites/*.json`; one with a built-in's
   name shadows it. `--suite` also takes a path to any suite file.
   `kodo-harbor list-suites` lists them, and `list-tasks --suite NAME` the
   tasks each one holds (§2.7).
+
+### 3.1 `agent-basics` — does the prompt make the agent follow instructions?
+
+`agent-basics` tests a Kōdo agent's **prompt**, not the model: seven small
+tasks, each trivial for a model that follows instructions and uses its tools,
+and hard to pass without doing exactly that. It is the Settings panel's
+**Basics test** (one attempt, no control); the full design, the seven tasks and
+their checks are [AGENT_BUILDER.md](AGENT_BUILDER.md) §5.4.
+
+```bash
+kodo-harbor run --model qwen38-9b-distill-q4 --agent acme_guide --suite agent-basics
+```
+
+- **One Harbor multi-step task** (`[[steps]]`): one container build and one
+  agent install, then seven steps, each a fresh `kodo-headless` run with its
+  own instruction and checker. The task ships in the wheel under
+  `kodo/harbor/tasks/agent-basics/instruction-following/`.
+- **Three reward keys per step:** `outcome` (the step's own result is right),
+  `scope` (nothing outside the step's `tN/` directory changed), `reward`
+  (both). The trial's reward is the mean over the steps, so a trial counts as
+  solved only at 7/7; the report's Steps table (§6) shows which step failed.
+- **The checker is blind to how the work was done:** it reads only the final
+  workspace files, never a transcript or a tool name.
+- **Not yet run in Docker** (no Docker on the machine that built it,
+  2026-10-16). The one-time acceptance in AGENT_BUILDER §5.4.5 — Harbor's
+  `oracle` agent scoring 1.0, `kodo_problem_solver` scoring 7/7 three times on
+  the smallest local model, and per-step logs from Kōdo's adapter — is still
+  open, and its result goes in §8.1.
 
 ## 4. The Harbor agent — `kodo.harbor.agent:KodoAgent`
 
@@ -510,6 +544,13 @@ by URL ([HEADLESS.md](HEADLESS.md) §5):
   both ran, by mean reward per task: Kōdo better / worse / tied, with a
   two-sided exact sign-test p-value over the untied tasks. The task is the
   unit, not the attempt: attempts of one task are not independent samples.
+- **Multi-step tasks:** Harbor records each step's agent run in the trial's
+  `step_results` and leaves the trial-level `agent_result` empty, so tokens,
+  cost, agent time, errors and Kōdo's per-run details are summed over the
+  steps. Each arm with a multi-step task also gets a **Steps** table: one row
+  per step, and for each reward key the step writes, `passed/runs` (or the
+  mean, for scores other than 0 and 1). A step the verifier did not score
+  counts as 0. Nothing in it is specific to `agent-basics`.
 
 ## 7. Design
 
@@ -538,7 +579,9 @@ by URL ([HEADLESS.md](HEADLESS.md) §5):
   wall time (§8.1: 53 s total, 24 s of it the agent) and grows on a cold
   package cache.
 - **No MCP client:** a task's MCP servers are ignored (with a warning).
-- **Single-step tasks only:** no `resume` / multi-step tasks, no `load`/handoff.
+- **No `resume`, no `load`/handoff.** A multi-step task runs, each step as a
+  fresh `kodo-headless` run (`agent-basics` is the first such task); its first
+  real run is still to confirm that each step gets its own logs (§3.1).
 - **Linux containers only** (`capabilities.windows` is false).
 - **Web tools** need the network in the agent phase; `read_webpage` also needs a
   Playwright browser the image lacks.

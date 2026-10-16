@@ -96,6 +96,14 @@ from ._registry import (
     render_phase,
     shared_token,
 )
+from ._schemas import (
+    AGENT_SCHEMAS_DIRNAME,
+    SUBAGENT_SPEC_SCHEMA_FILE,
+    TOP_AGENT_SCHEMA_FILE,
+    subagent_spec_schema,
+    top_agent_schema,
+    write_agent_schemas,
+)
 from ._topagent import (
     TOP_AGENT_KEYS,
     TOP_AGENT_SUFFIX,
@@ -126,6 +134,7 @@ from ._workshop import (
 from .subagents import SubAgentSpec
 
 __all__: list[str] = [
+    "AGENT_SCHEMAS_DIRNAME",
     "AGENT_FILE_CONFIG",
     "AGENT_FILE_PROMPT",
     "AGENT_FILE_SPEC",
@@ -184,7 +193,9 @@ __all__: list[str] = [
     "SKILLS_TOKEN",
     "SUBAGENTS_SUBDIR",
     "SUBAGENT_SPECS_BY_NAME",
+    "SUBAGENT_SPEC_SCHEMA_FILE",
     "TOP_AGENT_KEYS",
+    "TOP_AGENT_SCHEMA_FILE",
     "TOP_AGENT_SUFFIX",
     "AgentLoadError",
     "AgentRegistry",
@@ -203,4 +214,7 @@ __all__: list[str] = [
     "render_phase",
     "reserved_name_error",
     "shared_token",
+    "subagent_spec_schema",
+    "top_agent_schema",
+    "write_agent_schemas",
 ]

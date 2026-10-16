@@ -148,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
         int: The exit code.
     """
     args = _parser().parse_args(argv)
-    catalog = SuiteCatalog(kodo_user_dir() / "harbor" / "suites")
+    catalog = SuiteCatalog.for_user()
     try:
         if args.command == "list-suites":
             return _list_suites(catalog, args.json)

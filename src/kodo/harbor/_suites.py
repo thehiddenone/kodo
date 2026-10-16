@@ -22,12 +22,17 @@ import json
 from pathlib import Path
 from typing import cast
 
+from kodo.project import kodo_user_dir
+
 from ._errors import HarborRunError
 
-__all__ = ["BUILTIN_SUITES_DIR", "Suite", "SuiteCatalog"]
+__all__ = ["AGENT_BASICS_SUITE", "BUILTIN_SUITES_DIR", "Suite", "SuiteCatalog"]
 
 #: Where the suites that ship with kodo live.
 BUILTIN_SUITES_DIR = Path(__file__).parent / "suites"
+
+#: The built-in suite behind the Settings panel's Basics test (doc/AGENT_BUILDER.md §5.4).
+AGENT_BASICS_SUITE = "agent-basics"
 
 _DATASET_KEYS = frozenset(
     {"name", "version", "ref", "path", "task_names", "exclude_task_names", "n_tasks"}
@@ -139,6 +144,15 @@ class SuiteCatalog:
             builtin_dir (Path): The package's suite directory.
         """
         self.__dirs = (builtin_dir, user_dir)
+
+    @classmethod
+    def for_user(cls) -> SuiteCatalog:
+        """The built-in suites plus the user's, from ``~/.kodo/harbor/suites``.
+
+        Returns:
+            SuiteCatalog: The catalog ``kodo-harbor`` and the Settings panel read.
+        """
+        return cls(kodo_user_dir() / "harbor" / "suites")
 
     def all(self) -> list[Suite]:
         """Every suite, a user suite shadowing a built-in of the same name.

@@ -1,0 +1,5 @@
+{
+  "name": "agent-basics",
+  "description": "Seven small tasks in one container that check whether an agent's prompt makes it follow instructions and use its tools; reports a score per task.",
+  "tasks": [{"path": "../tasks/agent-basics/instruction-following"}]
+}

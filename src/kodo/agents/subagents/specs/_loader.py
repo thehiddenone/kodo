@@ -57,14 +57,25 @@ already lives, in :meth:`AgentRegistry.__validate_artifact_roles`.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
+from types import MappingProxyType
 
 from .._artifacts import Need
 from .._subagentspec import SubAgentSpec
 from ._shapes import author_output, critic_output, pipeline_input
 
-__all__ = ["SPEC_KEYS", "SPEC_SHAPES", "SPEC_SUFFIX", "SpecLoadError", "load_spec", "load_specs"]
+__all__ = [
+    "SPEC_CONSUMES_KEYS",
+    "SPEC_KEYS",
+    "SPEC_SHAPES",
+    "SPEC_SHAPE_ARGS",
+    "SPEC_SUFFIX",
+    "SpecLoadError",
+    "load_spec",
+    "load_specs",
+]
 
 #: Extension of a spec definition file. The glob that finds them.
 SPEC_SUFFIX = ".json"
@@ -81,6 +92,9 @@ _TOP_LEVEL_KEYS = frozenset(
     }
 )
 _CONSUMES_KEYS = frozenset({"role", "scope", "required"})
+
+#: Every key a ``consumes`` entry may hold.
+SPEC_CONSUMES_KEYS: frozenset[str] = _CONSUMES_KEYS
 
 #: Every top-level key a spec file may hold.
 SPEC_KEYS: frozenset[str] = _TOP_LEVEL_KEYS
@@ -104,6 +118,10 @@ _SHAPE_ARGS: dict[str, frozenset[str]] = {
 
 #: Every schema shape a spec's ``input_schema``/``output_schema`` may name.
 SPEC_SHAPES: frozenset[str] = frozenset(_SHAPE_ARGS)
+
+#: Shape name -> the argument names that shape accepts, read-only. The JSON
+#: Schema for spec files (:mod:`kodo.agents._schemas`) is built from it.
+SPEC_SHAPE_ARGS: Mapping[str, frozenset[str]] = MappingProxyType(_SHAPE_ARGS)
 
 
 class SpecLoadError(Exception):

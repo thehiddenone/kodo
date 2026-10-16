@@ -50,14 +50,25 @@ from __future__ import annotations
 from pathlib import Path
 
 from .._subagentspec import SubAgentSpec
-from ._loader import SPEC_KEYS, SPEC_SHAPES, SPEC_SUFFIX, SpecLoadError, load_spec, load_specs
+from ._loader import (
+    SPEC_CONSUMES_KEYS,
+    SPEC_KEYS,
+    SPEC_SHAPE_ARGS,
+    SPEC_SHAPES,
+    SPEC_SUFFIX,
+    SpecLoadError,
+    load_spec,
+    load_specs,
+)
 from ._order import SpecOrderError, pipeline_order
 
 __all__ = [
     "ALL_SUBAGENTS",
     "SPECS_DIR",
+    "SPEC_CONSUMES_KEYS",
     "SPEC_KEYS",
     "SPEC_SHAPES",
+    "SPEC_SHAPE_ARGS",
     "SPEC_SUFFIX",
     "SpecLoadError",
     "SpecOrderError",

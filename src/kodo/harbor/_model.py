@@ -256,7 +256,16 @@ class BenchModel:
 
 
 class ListedModel:
-    """One row of ``kodo-harbor list-models``: a ``--model`` value and what it is."""
+    """One row of ``kodo-harbor list-models``: a ``--model`` value and what it is.
+
+    Besides the spelling and the credential state, a row carries what a client
+    building a ``run`` command needs to know without resolving the model
+    itself — the Settings panel's Benchmark modal (doc/AGENT_BUILDER.md §8)
+    reads exactly these rows through ``harbor.options``: the vendor and the
+    environment variables its credential is read from, the thinking tiers
+    ``--thinking-level`` takes, and whether a ``terminus-2`` control arm can
+    run the same model.
+    """
 
     LOCAL = "local"
     CLOUD = "cloud"
@@ -265,8 +274,23 @@ class ListedModel:
     __kind: str
     __description: str
     __credential: bool | None
+    __vendor: str
+    __credential_env: tuple[str, ...]
+    __thinking_tiers: tuple[str, ...]
+    __default_thinking_tier: str
+    __control: bool
 
-    def __init__(self, model: str, kind: str, description: str, credential: bool | None) -> None:
+    def __init__(
+        self,
+        model: str,
+        kind: str,
+        description: str,
+        credential: bool | None,
+        *,
+        vendor: str = "",
+        thinking_tiers: tuple[str, ...] = (),
+        default_thinking_tier: str = "",
+    ) -> None:
         """Bind one row.
 
         Args:
@@ -275,11 +299,21 @@ class ListedModel:
             description (str): One line on the model.
             credential (bool | None): Cloud: whether the vendor's credential is
                 set; ``None`` for a local model.
+            vendor (str): The cloud vendor; ``""`` for a local model.
+            thinking_tiers (tuple[str, ...]): The tiers ``--thinking-level``
+                takes, lowest first; ``()`` for a model with none.
+            default_thinking_tier (str): The tier a run gets without
+                ``--thinking-level``; ``""`` for a model with none.
         """
         self.__model = model
         self.__kind = kind
         self.__description = description
         self.__credential = credential
+        self.__vendor = vendor
+        self.__credential_env = vendor_credential_env_names(vendor) if vendor else ()
+        self.__thinking_tiers = thinking_tiers
+        self.__default_thinking_tier = default_thinking_tier
+        self.__control = vendor in _LITELLM
 
     @classmethod
     def local(cls, kodo_dir: Path) -> list[ListedModel]:
@@ -292,7 +326,16 @@ class ListedModel:
             list[ListedModel]: One row per installed entry, in registry order.
         """
         return [
-            cls(entry.name, cls.LOCAL, entry.description, None)
+            cls(
+                entry.name,
+                cls.LOCAL,
+                entry.description,
+                None,
+                thinking_tiers=local_thinking_tiers(entry.base_llm),
+                default_thinking_tier=(
+                    local_thinking_default_tier(entry.base_llm) if entry.base_llm else ""
+                ),
+            )
             for entry in get_local_registry(kodo_dir).values()
             if entry.kind != "custom_server_url"
             and find_installed_model_path(entry, kodo_dir) is not None
@@ -313,13 +356,29 @@ class ListedModel:
         for vendor, entries in get_cloud_registry().items():
             credential = resolve_vendor_api_key(vendor, env) is not None
             rows.extend(
-                cls(f"{vendor}/{entry.model_id}", cls.CLOUD, entry.name, credential)
+                cls(
+                    f"{vendor}/{entry.model_id}",
+                    cls.CLOUD,
+                    entry.name,
+                    credential,
+                    vendor=vendor,
+                    thinking_tiers=cloud_thinking_tiers(vendor),
+                    default_thinking_tier=cloud_thinking_default_tier(vendor),
+                )
                 for entry in entries
             )
         for vendor in sorted(_RUNTIME_CATALOG_VENDORS):
             credential = resolve_vendor_api_key(vendor, env) is not None
             rows.append(
-                cls(f"{vendor}/<MODEL_ID>", cls.CLOUD, "any model id it serves", credential)
+                cls(
+                    f"{vendor}/<MODEL_ID>",
+                    cls.CLOUD,
+                    "any model id it serves",
+                    credential,
+                    vendor=vendor,
+                    thinking_tiers=cloud_thinking_tiers(vendor),
+                    default_thinking_tier=cloud_thinking_default_tier(vendor),
+                )
             )
         return rows
 
@@ -343,15 +402,47 @@ class ListedModel:
         """Cloud: whether the vendor's credential is set; ``None`` for local."""
         return self.__credential
 
+    @property
+    def vendor(self) -> str:
+        """The cloud vendor; ``""`` for a local model."""
+        return self.__vendor
+
+    @property
+    def credential_env(self) -> tuple[str, ...]:
+        """The variables the vendor's credential is read from, first preferred."""
+        return self.__credential_env
+
+    @property
+    def thinking_tiers(self) -> tuple[str, ...]:
+        """The tiers ``--thinking-level`` takes, lowest first."""
+        return self.__thinking_tiers
+
+    @property
+    def default_thinking_tier(self) -> str:
+        """The tier a run gets without ``--thinking-level`` (``""``: none)."""
+        return self.__default_thinking_tier
+
+    @property
+    def control(self) -> bool:
+        """Whether a ``terminus-2`` control arm can run this model."""
+        return self.__control
+
     def to_dict(self) -> dict[str, object]:
         """The row as ``list-models --json`` prints it.
 
         Returns:
-            dict[str, object]: ``model``, ``kind``, ``description``, ``credential``.
+            dict[str, object]: ``model``, ``kind``, ``description``,
+            ``credential``, ``vendor``, ``credential_env``, ``thinking_tiers``,
+            ``default_thinking_tier``, ``control``.
         """
         return {
             "model": self.__model,
             "kind": self.__kind,
             "description": self.__description,
             "credential": self.__credential,
+            "vendor": self.__vendor,
+            "credential_env": list(self.__credential_env),
+            "thinking_tiers": list(self.__thinking_tiers),
+            "default_thinking_tier": self.__default_thinking_tier,
+            "control": self.__control,
         }

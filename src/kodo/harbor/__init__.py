@@ -29,11 +29,12 @@ from ._llama import CONTAINER_HOST, HostLlama, LlamaAccess
 from ._model import BenchModel, ListedModel
 from ._runner import HARBOR_VERSION, HarborInvocation, KodoSource, check_docker, find_uv
 from ._selection import Selection
-from ._suites import BUILTIN_SUITES_DIR, Suite, SuiteCatalog
+from ._suites import AGENT_BASICS_SUITE, BUILTIN_SUITES_DIR, Suite, SuiteCatalog
 from ._summary import JobSummary, sign_test_p_value
 from ._tasks import TaskGroup, TaskLister
 
 __all__ = [
+    "AGENT_BASICS_SUITE",
     "BUILTIN_SUITES_DIR",
     "CONTAINER_HOST",
     "CONTAINER_REGISTRY_PATH",
