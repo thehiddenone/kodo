@@ -346,7 +346,8 @@ As built (2026-10-15):
   `subagents: [kodo_agent_critic]`. It writes one `<kodo_warn>` per concern —
   the rule in bold, the location, the quote as a block quote, then the fix —
   and closes with `<kodo>` on accept or `<kodo_info>` otherwise. Rank 91.
-- **Panel.** A 🤖 button on every Agents row, broken rows included (the critic
+- **Panel.** A 🤖 **Review with AI** entry in every Agents row's **Actions…**
+  menu, broken rows included (the critic
   can read a broken agent and reports its load error), sends `review_agent
   {name}`; kodo-vsix opens a new session tab with `newSession({name:
   'kodo_agent_review', prompt: name})` (`AGENT_REVIEW_AGENT` in
@@ -561,7 +562,7 @@ real run must still confirm it.
 |---|---|
 | CLI | `python -m kodo --validate-agent NAME [--json]` (load + lint). Exits 1 on a load error and 0 with warnings. |
 | WS | `agents.validate {name}` → `AgentReport` |
-| Panel | Agents table: a **Lint** column (`⚠ N` or `✓`); the row's 🩺 **Validate** button opens `AgentReportModal` with the report, and a finding's line opens the prompt there. The row's 🤖 **Review with AI** button opens a locked session running `kodo_agent_review` (§5.3). 🧪 **Basics test** and 📊 **Benchmark** (§8) on every selectable top-level agent |
+| Panel | Agents table: a **Lint** column (`⚠ N` or `✓`); each row's actions sit in one **Actions…** menu (§8). Its 🩺 **Validate** entry opens `AgentReportModal` with the report, and a finding's line opens the prompt there. Its 🤖 **Review with AI** entry opens a locked session running `kodo_agent_review` (§5.3). 🧪 **Basics test** and 📊 **Benchmark** (§8) on every selectable top-level agent |
 | Builder | `validate_agent` / `lint_agent` tools, plus the report returned by every write |
 
 ---
@@ -773,10 +774,9 @@ As built (2026-10-16):
   `selectable`, and the listing gained `top_builtins`.
 - **Panel.** A "Built-in agents" list above "Your agents": each selectable
   built-in with 🧪 Basics test, 📊 Benchmark and ⧉ Copy (preselected in the copy
-  modal). User rows got 🧪 and 📊, disabled on a sub-agent or a broken row so
-  the columns stay aligned. `BenchmarkModal.tsx` offers runnable models (it
-  hides the `VENDOR/<MODEL_ID>` placeholders), with "no key" cloud models
-  disabled; suite, attempts (1–10), thinking tier (model default first) and
+  modal). User rows got 🧪 and 📊 too. `BenchmarkModal.tsx` offers runnable
+  models (it hides the `VENDOR/<MODEL_ID>` placeholders), with "no key" cloud
+  models disabled; suite, attempts (1–10), thinking tier (model default first) and
   the control checkbox, which is enabled only where `control` is true. The
   Basics test hides suite, attempts and control.
 - **Run.** `src/extension/benchmark.ts` runs `~/.kodo/venv/bin/kodo-harbor`
@@ -788,6 +788,18 @@ As built (2026-10-16):
   not opened automatically. Credentials per D37.
 - **Not run end to end** on this machine (no Docker): the command line, the
   credential injection rule and the quoting are unit-tested.
+- **Actions menu (2026-10-17).** Each row of both lists has one **Actions…**
+  button instead of a row of icons (`ActionsMenu.tsx` in kodo-vsix). It opens a
+  modal popup anchored under the button (above it when there is no room
+  below); each entry shows its glyph, its name in bold and a one-line
+  description. Choosing an entry, any keypress, a click outside, or a window
+  resize closes it; a plain key is swallowed so Enter or Space cannot also
+  press a button, while a shortcut with Ctrl/Cmd/Alt still reaches VS Code. An
+  action that cannot be performed is **left out**, not shown disabled: Basics
+  test and Benchmark only on a selectable top-level agent that loads (so never
+  on a sub-agent or a broken row), and Copy only on a built-in that
+  `agents.copy` accepts. User rows: Basics test, Benchmark, Validate, Review
+  with AI, Open folder, Delete (Delete still confirms in a VS Code dialog).
 
 ---
 

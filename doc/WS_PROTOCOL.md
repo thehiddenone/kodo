@@ -1733,7 +1733,7 @@ approve a call) and queues the prompt exactly as `prompt.submit` would.
 Two shipped agents are started this way, each by one kodo-vsix Settings
 button: `kodo_model_importer` with a Hugging Face repo id (Local LLMs → "Add
 local LLM (GGUF) from huggingface.com", doc/LLM_REGISTRY.md §4.0b), and
-`kodo_agent_review` with a user agent's name (Agents → 🤖 "Review with AI",
+`kodo_agent_review` with a user agent's name (Agents → a row's Actions… → 🤖 "Review with AI",
 doc/AGENT_BUILDER.md §5.3).
 
 A `state` event with `top_agent: <name>`, `autonomous: true` and

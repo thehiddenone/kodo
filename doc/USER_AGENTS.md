@@ -327,7 +327,8 @@ The **Agents** section lists what is installed with each entry's kind, version,
 lint warning count and description, and offers Copy a built-in agent…, Install
 from a repository…, Install from a local folder…, and Reload. Both install
 buttons go through the same modal, so the keep-or-replace step is never skipped
-just because the source happened to be local. Each row's 🩺 button opens its
+just because the source happened to be local. Each row's actions are in its
+**Actions…** menu; its 🩺 Validate entry opens the
 validation report; a finding with a line number opens the prompt there.
 
 ---
