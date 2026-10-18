@@ -1,9 +1,10 @@
 # Benchmark sessions
 
-> Status: **proposed 2026-10-17; being built.** Part A (§3) and the
-> exclusive lease (§4.6) — steps 1–2 of §8 — landed 2026-10-18; the rest is
-> not built yet. Every decision in §1 was made
-> by the user when asked. Supersedes [AGENT_BUILDER.md](AGENT_BUILDER.md) D19 (run
+> Status: **proposed 2026-10-17; being built.** Steps 1–3 of §8 landed
+> 2026-10-18: Part A (§3), the exclusive lease (§4.6) and the server side of
+> Part C (§4, see §4.7 for what was built differently). Step 4 (kodo-vsix, §5)
+> and the manual runs (step 5) are not done, so the panel still uses the
+> terminal. Every decision in §1 was made by the user when asked. Supersedes [AGENT_BUILDER.md](AGENT_BUILDER.md) D19 (run
 > in a terminal, no server-side job management) and D20 (GPU warning) once
 > built. Related: [HARBOR.md](HARBOR.md) (`kodo-harbor`),
 > [HEADLESS.md](HEADLESS.md) (`--llama-url`), [LLM_GATEWAY.md](LLM_GATEWAY.md)
@@ -198,28 +199,47 @@ Harbor 0.23 writes it, with `n_total_trials`, before the first trial starts
 
 ### 4.4 Stop
 
-`stop` on a benchmark session sends an interrupt to the child's process
-group, which is what Ctrl+C in a terminal does today:
+`stop` on a benchmark session interrupts the run the way Ctrl+C in a terminal
+does: Harbor winds its trials down and the summary covers what finished.
 
-- **POSIX:** `os.killpg(pgid, SIGINT)`.
-- **Windows:** `CTRL_BREAK_EVENT` to the child's own process group. **Never
-  `CTRL_C_EVENT`**: it goes to every process on the console, the server
-  included (CLAUDE.md, Windows pitfalls). `kodo-harbor` gains a `SIGBREAK`
-  handler that raises `KeyboardInterrupt`, so it takes the path it already
-  has for Ctrl+C: Harbor winds its trials down and the summary covers what
-  finished.
+**As built (2026-10-18):** the server **closes `kodo-harbor`'s stdin**. The
+server starts `kodo-harbor` with the hidden flag `--stop-on-stdin-close`, and a
+thread in `kodo-harbor` waits for stdin to close, then interrupts its own
+process group:
 
-**Harbor on Windows (decided by the user 2026-10-18).** `CTRL_BREAK_EVENT`
-reaches every process in the group, and Harbor (`uv tool run harbor …`) has no
-`SIGBREAK` handler, so it would exit at once instead of winding its trials
-down. So on Windows `kodo-harbor` starts Harbor in **its own** process group
-(`CREATE_NEW_PROCESS_GROUP`), and its `SIGBREAK` handler forwards the
-interrupt to Harbor's group. Harbor then takes its Ctrl+C path, as it does on
-macOS and Linux. Build this with §4.4 (step 3).
+- **POSIX:** `kodo-harbor` runs in its own session (`start_new_session`), and
+  sends `SIGINT` to its own group (`os.killpg(os.getpgrp(), SIGINT)`).
+- **Windows:** `kodo-harbor` runs on its own **hidden console**
+  (`CREATE_NEW_CONSOLE`, `SW_HIDE`), and calls
+  `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0)`, which reaches every
+  process on that console and never the server. `kodo-harbor`'s `SIGBREAK`
+  handler raises `KeyboardInterrupt`.
+
+The first design, in which the server sends the signal itself, doesn't work on
+Windows: a server VS Code started has no console, and a process without a
+console can't send `CTRL_BREAK_EVENT`. Closing stdin also means a server that
+crashes stops its run cleanly instead of orphaning it.
+
+**Harbor on Windows (decided by the user 2026-10-18).** Python installs no
+`SIGBREAK` handler, so Harbor would exit at once on `CTRL_BREAK_EVENT`. Moving
+it to its own process group, the first option, wouldn't help: it would still
+get only `CTRL_BREAK_EVENT`. So on Windows `kodo-harbor` starts Harbor
+through a shim: `uv tool run --from harbor==0.23.0 --with … python -c
+"<shim>" run -c …`, where the shim maps `SIGBREAK` to `KeyboardInterrupt` and
+then runs `harbor.cli.main:app` (checked on macOS that `--from harbor python`
+runs Harbor's CLI). Harbor then takes its Ctrl+C path. That `uv` itself
+ignores `CTRL_BREAK_EVENT` while its child runs is **unverified**; it's part of
+the Windows manual check (§8 step 5).
+
+**`kodo-harbor` now waits for Harbor after an interrupt.** It used
+`subprocess.run`, which kills its child 0.25 s after Ctrl+C, so `kodo-harbor`
+killed `uv` and summarized while Harbor was still winding down, orphaned.
+`HarborInvocation.run` now waits for Harbor after the first interrupt, then
+re-raises it; a second interrupt kills it. This also fixes the terminal path.
 
 The status becomes `stopping`. After a 120 s grace period the whole process
-group is killed, and the outcome is `stopped` either way. Containers Harbor
-didn't get to remove after a kill are a known limit (§6).
+tree is killed (`psutil`, children first), and the outcome is `stopped` either
+way. Containers Harbor didn't get to remove after a kill are a known limit (§6).
 
 ### 4.5 Idle shutdown, `server.shutdown`, restart
 
@@ -232,6 +252,9 @@ didn't get to remove after a kill are a known limit (§6).
   recorded pid is still alive, it kills that process group first. Liveness
   goes through the existing public pid helpers, never `os.kill(pid, 0)` on
   Windows. Nothing is resumed.
+  **As built:** the record keeps `process: {pid, created}` (psutil's start
+  time), and the tree is killed only when both match, so a reused pid is never
+  killed. `psutil` does the liveness check on every platform.
 
 ### 4.6 The exclusive lease (D2)
 
@@ -271,6 +294,46 @@ same-command waiters at the front of the queue join the current holders.
 The housekeeper LLM (titles, greetings) runs on its own llama-server
 (`titling/_server.py`) and isn't affected. Self-hosted cards and cloud models
 never touch the lease, so they keep working during a run.
+
+### 4.7 As built (2026-10-18)
+
+The server side is `kodo.server._harbor_job` (`HarborRequest`, `HarborJob`,
+`HarborJobs`, `ManagedLlama`) and these changes elsewhere:
+
+- **Engine:** `WorkflowEngine.handle_job_start` / `update_job` /
+  `record_job_event`; `SessionState.job`; `TransientStore.harbor_job` (opaque,
+  like `llm_selection`). `state.job` leaves out the `process` entry. On
+  resume, a stored `harbor_job` sets `interactive: false`.
+- **History:** `harbor_*` markers replay verbatim, with the live event's own
+  snake_case fields, not camelCase, so the client can use one code path for
+  live and replayed entries.
+- **Outcome rule:** `stopped` if a Stop or delete was requested; `completed` if
+  `kodo-summary.md` exists, the exit code isn't `2` and nothing failed before
+  `kodo-harbor` started; else `failed` with `detail`.
+- **Progress:** `JobSummary.trial_rows()` and `JobSummary.total_trials()`.
+  Harbor writes a trial's `result.json` only when the trial ends
+  (`Trial._finalize`, checked in Harbor 0.23's source), so a present file is a
+  finished trial; a half-written one fails to parse and is read on the next
+  poll.
+- **Departure: `llama.start` is refused during a run, not queued** (§4.6 said
+  it waits). Handlers run one at a time per connection, so a `llama.start`
+  waiting for the whole run would stall every request on the sidebar's
+  connection for hours.
+- **Guards (the hazards in §4.6):** `llamacpp.update` and `llamacpp.uninstall`
+  are refused while a run is active, on every platform (on Linux the run's own
+  `kodo-llama-server` uses the same binaries). The GPU-release hook now does
+  nothing while anyone holds the llama-server lease. The idle self-reap needs
+  no change: with no window for 5 s it shuts down, and `_stop_background`
+  stops the run first (D5).
+- **Bug found while testing:** a daemon thread blocked in
+  `sys.stdin.buffer.read()` holds the buffered reader's lock, and Python then
+  aborts at exit (`SIGABRT`, "could not acquire lock for <stdin> at
+  interpreter shutdown"). The stdin watcher reads the raw descriptor
+  (`os.read`) instead.
+- **Tests:** `test/test_harbor_jobs.py` (a stand-in `kodo-harbor` script),
+  WebSocket tests in `test/test_server_integration.py`, and an end-to-end
+  POSIX test of the real `kodo-harbor --stop-on-stdin-close` with a fake `uv`
+  that traps `SIGINT` (`test/test_harbor_host.py`).
 
 ## 5. Client (kodo-vsix)
 

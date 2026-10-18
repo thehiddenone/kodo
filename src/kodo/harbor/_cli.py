@@ -32,11 +32,13 @@ temporary directory it deletes afterwards.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import re
 import signal
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -121,6 +123,9 @@ def _parser() -> argparse.ArgumentParser:
         "never started or stopped. Excludes --llama-port/--llama-bind/--keep-llama.",
     )
     run.add_argument("--dry-run", action="store_true", help="Write the job config; run nothing.")
+    # For the Kōdo server, which runs this in its own process group (or hidden
+    # console) and stops it by closing stdin (doc/BENCHMARK_SESSIONS.md §4.4).
+    run.add_argument("--stop-on-stdin-close", action="store_true", help=argparse.SUPPRESS)
     run.add_argument("harbor_args", nargs=argparse.REMAINDER, help="-- then harbor run args.")
 
     summarize = commands.add_parser("summarize", help="Summarize a Harbor job directory.")
@@ -200,6 +205,23 @@ def _raise_interrupt(signum: int, frame: object) -> None:
     raise KeyboardInterrupt
 
 
+def _interrupt_on_stdin_close() -> None:
+    # Blocks until the parent closes our stdin, then interrupts this whole
+    # process group — this run, uv and Harbor — exactly as Ctrl+C would. The
+    # raw descriptor, not sys.stdin: a daemon thread blocked inside the
+    # buffered reader holds its lock, and Python aborts at exit over it.
+    try:
+        while os.read(sys.stdin.fileno(), 4096):
+            pass
+    except (OSError, ValueError):
+        pass
+    if sys.platform == "win32":
+        # Every process on this (hidden) console; each maps it to Ctrl+C.
+        ctypes.windll.kernel32.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, 0)
+    else:
+        os.killpg(os.getpgrp(), signal.SIGINT)
+
+
 def _list_suites(catalog: SuiteCatalog, as_json: bool) -> int:
     suites = catalog.all()
     if as_json:
@@ -273,6 +295,8 @@ def _summarize(job_dir: Path, as_json: bool) -> int:
 
 
 def _run(args: argparse.Namespace, catalog: SuiteCatalog) -> int:
+    if args.stop_on_stdin_close:
+        threading.Thread(target=_interrupt_on_stdin_close, daemon=True).start()
     kodo_dir = kodo_user_dir()
     model = BenchModel.resolve(args.model, os.environ, kodo_dir)
     if args.thinking_level is not None:

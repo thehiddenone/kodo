@@ -2284,3 +2284,122 @@ async def test_closing_the_server_with_a_window_connected_is_prompt() -> None:
         assert conn.close_code == aiohttp.WSCloseCode.GOING_AWAY
     finally:
         await http.close()
+
+
+# ---------------------------------------------------------------------------
+# harbor.run — a benchmark session (doc/BENCHMARK_SESSIONS.md §4)
+# ---------------------------------------------------------------------------
+
+
+class _BenchLlama:
+    """The managed llama-server for a benchmark run: answers without loading anything."""
+
+    def command(self, entry: str) -> tuple[str, ...]:
+        return ("llama-server", "--model", entry)
+
+    async def serve(self, entry: str) -> str:
+        return "http://127.0.0.1:8042"
+
+    async def unload(self) -> None:
+        return None
+
+
+@pytest.fixture
+async def bench_ws(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncGenerator[aiohttp.ClientWebSocketResponse, None]:
+    import functools
+    import sys
+
+    from kodo.llms import LocalLLMEntry, add_local_entry
+    from kodo.server import HarborJobs
+
+    gguf = tmp_path / "bench.gguf"
+    gguf.write_bytes(b"GGUF")
+    add_local_entry(
+        tmp_path / ".kodo", LocalLLMEntry(name="bench-gguf", kind="custom_file", path=str(gguf))
+    )
+    # kodo-harbor stand-in: runs until its stdin closes (a Stop), then exits.
+    monkeypatch.setattr(
+        _app_module,
+        "HarborJobs",
+        functools.partial(
+            HarborJobs,
+            llama=_BenchLlama(),
+            command=[sys.executable, "-c", "import os\nwhile os.read(0, 1): pass"],
+            platform="darwin",
+            poll_seconds=0.05,
+        ),
+    )
+    srv = TestServer(create_app(Config()))
+    await srv.start_server()
+    http = aiohttp.ClientSession()
+    conn = await http.ws_connect(f"http://127.0.0.1:{srv.port}/ws")
+    yield conn
+    await conn.close()
+    await http.close()
+    await srv.close()
+
+
+def _bench_request(**overrides: object) -> dict[str, object]:
+    return {"agent": "kodo_problem_solver", "model": "bench-gguf", "suite": "agent-basics"} | (
+        overrides
+    )
+
+
+async def _until_event(
+    ws: aiohttp.ClientWebSocketResponse, kind: str, timeout: float = 10.0
+) -> dict[str, object]:
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while True:
+        env = await _recv(ws, timeout=max(0.1, deadline - loop.time()))
+        if env.kind == "event" and env.payload.get("type") == kind:
+            return env.payload
+
+
+async def test_harbor_run_refuses_a_model_kodo_harbor_would_refuse(
+    bench_ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    sid = await _open_session(bench_ws)
+    reply = await _send_and_reply(
+        bench_ws, "harbor.run", sid, **_bench_request(model="no-such-model")
+    )
+    assert reply["type"] == "error"
+    assert reply["code"] == "harbor_run_refused"
+    assert "no-such-model" in str(reply["message"])
+    # Nothing changed: the session still takes prompts.
+    assert (await _send_and_reply(bench_ws, "prompt.submit", sid, text="hi"))["type"] == (
+        "prompt.accepted"
+    )
+
+
+async def test_a_benchmark_session_is_locked_guards_llama_and_stops_on_stop(
+    bench_ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    sid = await _open_session(bench_ws)
+    req = _make_request("harbor.run", session_id=sid, **_bench_request())
+    await bench_ws.send_str(req.to_json())
+    resp, events = await _recv_until_response(bench_ws, req.id)
+    assert resp.payload["type"] == "harbor.run.accepted"
+    state = _last_state(events)
+    assert state["interactive"] is False
+    job = cast("dict[str, object]", state["job"])
+    assert (job["kind"], job["model"]) == ("basics", "bench-gguf")
+
+    reply = await _send_and_reply(bench_ws, "prompt.submit", sid, text="hi")
+    assert reply["code"] == "session_locked"
+
+    # llama.start must not wait out the whole run on this connection.
+    await bench_ws.send_str(_make_request("llama.start", session_id=sid).to_json())
+    llama = await _until_event(bench_ws, "llama.state")
+    assert "in use by the benchmark" in str(llama["error"])
+    # Nor may llama.cpp be replaced under it.
+    await bench_ws.send_str(_make_request("llamacpp.update", session_id=sid).to_json())
+    progress = await _until_event(bench_ws, "llamacpp.install.progress")
+    assert progress["percent"] == -1
+    assert "can't be updated while the benchmark" in str(progress["message"])
+
+    assert (await _send_and_reply(bench_ws, "stop", sid))["type"] == "stop.accepted"
+    finished = await _until_event(bench_ws, "harbor.finished")
+    assert finished["outcome"] == "stopped"

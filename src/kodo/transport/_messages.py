@@ -190,6 +190,20 @@ MSG_AGENT_SET = "agent.set"
 # is the only way onto one. doc/WS_PROTOCOL.md §7.4h.
 MSG_AGENT_RUN = "agent.run"
 
+# Client → Server. Session connection. Start a **brand-new** session as a
+# benchmark session: the server runs ``kodo-harbor run`` for one agent, model
+# and suite, shows its progress in this session and locks it to input
+# (doc/BENCHMARK_SESSIONS.md §4). Payload ``{agent, model, suite, attempts,
+# control, thinking_level}``. Replies ``harbor.run.accepted`` after an
+# EVT_STATE whose ``interactive`` is ``false`` and whose ``job`` is set;
+# refused with an ``error`` of code ``harbor_run_refused`` (nothing changed)
+# when the session already has a conversation, a queued prompt or a job,
+# another benchmark is running server-wide, or the model, suite, attempts or
+# thinking level fails ``kodo-harbor``'s own checks. Progress arrives as
+# EVT_HARBOR_TRIAL, the end as EVT_HARBOR_FINISHED; ``stop`` interrupts the
+# run. doc/WS_PROTOCOL.md §7.4j.
+MSG_HARBOR_RUN = "harbor.run"
+
 # Client → Server. Session connection. Request the current top-level agent
 # catalog on demand — the ``{agents, default_agent}`` shape ``hello.ack`` used
 # to carry unconditionally before the catalog moved out of it (kodo-vsix's
@@ -1374,6 +1388,20 @@ EVT_SESSION_GREETING = "session.greeting"
 # ``session_params`` marker so it replays via ``session.history``; never part
 # of the LLM context.
 EVT_SESSION_PARAMS = "session.params"
+
+# Server → Client event. One finished trial of a benchmark session's run
+# (doc/BENCHMARK_SESSIONS.md §4.3): ``{trial, task, arm, reward, seconds,
+# exceptions, finished, total}`` — ``total`` is ``null`` until Harbor has
+# written the job's trial count. Persisted as a ``harbor_trial`` marker so it
+# replays via ``session.history``.
+EVT_HARBOR_TRIAL = "harbor.trial"
+
+# Server → Client event. A benchmark session's run ended:
+# ``{outcome, exit_code, summary_markdown, detail, job_dir, log_path}`` with
+# ``outcome`` one of ``completed`` · ``failed`` · ``stopped`` ·
+# ``interrupted``. ``detail`` holds the end of the run's log when it failed.
+# Persisted as a ``harbor_finished`` marker.
+EVT_HARBOR_FINISHED = "harbor.finished"
 
 # Subsession (sub-agent takeover) boundaries — drive the WebView feed dividers
 # ("Narrative Author subagent took over from Kōdo" / "Kōdo resumed").

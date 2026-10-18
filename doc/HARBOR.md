@@ -144,8 +144,16 @@ kodo-harbor run --model unsloth-qwen36-27b-q4-k-xl --path tasks/terminal-bench
   pulled task images stay in Docker's image cache. `-- --no-delete` keeps
   every container for inspection, and those containers add up over a full run.
 - **Stopping:** Ctrl+C winds down the trial in progress, stops the
-  llama-server, and reports the trials that finished. On Windows,
-  `CTRL_BREAK_EVENT` sent to `kodo-harbor`'s process group does the same. `kodo-harbor` won't reuse
+  llama-server, and reports the trials that finished. `kodo-harbor` waits for
+  Harbor to finish winding down before it summarizes (since 2026-10-18; it
+  used to kill it after 0.25 s); a second Ctrl+C kills Harbor. On Windows,
+  `CTRL_BREAK_EVENT` sent to `kodo-harbor`'s process group does the same, and
+  Harbor is started through a small shim (`python -c …` in Harbor's own
+  environment) that turns `CTRL_BREAK_EVENT` into Ctrl+C, because Python
+  otherwise exits on it at once. The hidden flag `--stop-on-stdin-close` makes
+  `kodo-harbor` interrupt its own process group when its stdin closes; the
+  Kōdo server uses it for a benchmark session's Stop
+  ([BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md) §4.4). `kodo-harbor` won't reuse
   an existing job directory, so the next run needs a new `--job-name` (the
   default name is timestamped, so leaving `--job-name` off also works).
 - **Several local runs in a row:** `--keep-llama` leaves the llama-server

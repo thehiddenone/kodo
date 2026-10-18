@@ -64,11 +64,19 @@ share; everything else is internal.
 >   commands (§7.6) no longer restart llama-server; `llama.stop` is refused
 >   while a session's turn holds llama-server.
 
-> **Benchmark sessions (2026-10-18, in progress — [BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md)).**
+> **Benchmark sessions (2026-10-18 — [BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md)).**
+> The server side is built; kodo-vsix does not send or render any of this yet.
+> - New client→server **`harbor.run`** (§7.4j): make a brand-new session a
+>   benchmark session that runs `kodo-harbor` and takes no input.
+> - `state` (§5.1) gained **`job`**; new events **`harbor.trial`** (§5.9k) and
+>   **`harbor.finished`** (§5.9l), persisted as `harbor_*` markers that
+>   `session.history` (§5.11) replays.
 > - `llm.waiting` gained `reason: "benchmark"` with **`title`** (the
->   benchmark session's): a local request waiting for an exclusive benchmark
->   hold on llama-server. The gateway emits it; nothing takes such a hold yet
->   (⟪planned⟫ `harbor.run`, §7.4j), and the webview doesn't render it yet.
+>   benchmark session's): a local request waiting for the run's exclusive
+>   hold on llama-server.
+> - During a run `llama.start` is refused (a `llama.state` with `error`) rather
+>   than waiting, and `llamacpp.update` / `llamacpp.uninstall` are refused
+>   (§7.6); `stop` on a benchmark session stops the run.
 
 Where a message is **specified but not yet emitted/handled** (a planned
 extension or a stubbed feature), it is flagged **⟪planned⟫** inline. Everything
@@ -445,6 +453,25 @@ resumed or reloaded session reports it again from its stored `top_agent`. While
 it is `false` the server refuses `prompt.submit`, `agent.set` and `mode.set`
 with `session_locked`, and kodo-vsix replaces the composer with a read-only
 strip keeping only Stop and Delete.
+
+**Added 2026-10-18:** `job` — `null`, or a benchmark session's run (§7.4j,
+[BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md) §4.3):
+
+```json
+"job": { "status": "running", "kind": "basics", "agent": "kodo_problem_solver",
+         "model": "unsloth-qwen38-27b-ud-q4-k-xl", "suite": "agent-basics",
+         "attempts": 1, "control": false, "thinking_level": null,
+         "job_dir": "/Users/me/.kodo/harbor/jobs/kodo_problem_solver-2026-10-18_14-02-11",
+         "log_path": "/Users/me/.kodo/sessions/<id>/harbor-output.log",
+         "started_at": "2026-10-18T21:02:11.204+00:00" }
+```
+
+`status` is `waiting` (for llama-server, a key or the model to load) ·
+`running` · `stopping` · `completed` · `failed` · `stopped` · `interrupted`
+(the server stopped mid-run; set at its next start). `kind` is `basics` for
+the Basics test suite, else `benchmark`. While `job` is set, `interactive` is
+`false` — the lock comes from the job record, so it survives a reload, a
+resume and a server restart.
 
 ### 5.2 `agent.started` / `agent.finished` — invocation boundaries
 
@@ -892,6 +919,40 @@ by `session.history` as a `{type: "session_params", first, changes}` entry; a
 marker never reaches the LLM context. kodo-vsix renders it right before the
 prompt it applies to.
 
+### 5.9k `harbor.trial` — a benchmark run finished a trial
+
+Pushed once per finished trial of a benchmark session's run (§7.4j), read from
+the job directory every 2 s:
+
+```json
+{ "type": "harbor.trial", "trial": "instruction-following__SoWbobf",
+  "task": "kodo/agent-basics-instruction-following",
+  "arm": "kodo[kodo_problem_solver] @ local/unsloth-qwen38-27b-ud-q4-k-xl",
+  "reward": 0.714, "seconds": 193.0, "exceptions": ["NonZeroAgentExitCodeError"],
+  "finished": 1, "total": 1 }
+```
+
+`reward` and `seconds` are `null` when unknown; `total` is `null` until
+Harbor has written the job's trial count. Persisted as a `harbor_trial` marker
+with the same fields, which `session.history` replays as a
+`{type: "harbor_trial", …}` entry.
+
+### 5.9l `harbor.finished` — a benchmark run ended
+
+```json
+{ "type": "harbor.finished", "outcome": "completed", "exit_code": 0,
+  "summary_markdown": "# Benchmark summary — …", "detail": "",
+  "job_dir": "…", "log_path": "…" }
+```
+
+`outcome`: `completed` (the run wrote its `kodo-summary.md`), `failed` (it
+didn't, it exited `2`, or something before it failed — `detail` then says
+why, or holds the last 40 lines of the log), `stopped` (§7.4j Stop; the
+summary covers the trials that finished) or `interrupted` (the server stopped
+mid-run; written at the next start). A `state` with the final `job.status`
+comes just before it. Persisted as a `harbor_finished` marker and replayed the
+same way.
+
 ### 5.10 `error` — unsolicited server error
 
 For errors not tied to a specific request. Errors tied to a request are returned as `response` payloads with an `error` field (§2.2).
@@ -917,7 +978,7 @@ Pushed once after `hello.ack` when the resumed session has prior turns, so a fre
 
 **Hydration is one file at a time, never a server-side merge of several.** `entries` mirrors the main `session.jsonl` alone; `subsessions` maps every subsession referenced by an `entries` divider to that subsession's own entries, read from exactly its own `<id>.jsonl` (`HistoryProjector.full_history` — doc/SESSIONS.md). The client places each `subsessions[id]` array right after that subsession's `subsession_start` divider itself, in one deterministic pass — it never has to reconcile a flat, pre-merged array against whatever it already holds live by tool-call id (the source of several previous reconnect bugs — see doc/SESSIONS.md's "User experience (dividers)" section).
 
-Entries mirror the WebView's session model. `user_message`, `assistant_response`, and `tool_call` entries additionally carry `ts` — the persisted line's ISO-8601 UTC timestamp (`TransientStore.__append_line` stamps every line with one on write; `HistoryProjector._message_to_entries` passes it straight through). It exists solely for kodo-vsix's opt-in "Show Timestamps" display (its own `~/.kodo/etc/ui-settings.json`, never sent to or read by the server) — no other entry kind carries it, and nothing server-side reads it back. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers, now also carrying `subsessionId`) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed, as is `nudge` (`{uiText, reasons, mode, source}` — reconstructed from its `kind="nudge"` message the same way, §5.9e; a legacy session persisted under either former `kind` — `agent_unstuck_nudge` or `cyclic_thinking_notice` — reshapes into this same entry, backward-compatibly), `agent_stuck_critical` (`{message}` — reconstructed from its bare `agent_stuck_critical` marker, §5.9f), `agent_cyclic_thinking_critical` (`{message}` — reconstructed from its bare `agent_cyclic_thinking_critical` marker, §5.9g), and `agent_think_in_tool_call_critical` / `agent_tool_call_cyclic_critical` (`{message}` — reconstructed the same way, §5.9h). Other display-only entries (status) are still ephemeral and dropped on rehydrate.
+Entries mirror the WebView's session model. `user_message`, `assistant_response`, and `tool_call` entries additionally carry `ts` — the persisted line's ISO-8601 UTC timestamp (`TransientStore.__append_line` stamps every line with one on write; `HistoryProjector._message_to_entries` passes it straight through). It exists solely for kodo-vsix's opt-in "Show Timestamps" display (its own `~/.kodo/etc/ui-settings.json`, never sent to or read by the server) — no other entry kind carries it, and nothing server-side reads it back. Context-bearing entries (`user_message`, `assistant_response`, `tool_call`) and `thinking_block` are rehydrated (thinking is persisted in `session.jsonl` as part of the assistant message's content, so it survives reload and replays as a collapsible block, toggleable exactly like a live one — see SESSIONS.md "Thinking blocks"). Display-only entries `subsession_start` / `subsession_end` (the takeover dividers, now also carrying `subsessionId`) and `subagent_task` (`{content}` — the structured task brief a sub-agent was seeded with, reconstructed from its `kind="subagent_task"` seed message; rendered as a card, never as a user bubble) are also replayed, as is `nudge` (`{uiText, reasons, mode, source}` — reconstructed from its `kind="nudge"` message the same way, §5.9e; a legacy session persisted under either former `kind` — `agent_unstuck_nudge` or `cyclic_thinking_notice` — reshapes into this same entry, backward-compatibly), `agent_stuck_critical` (`{message}` — reconstructed from its bare `agent_stuck_critical` marker, §5.9f), `agent_cyclic_thinking_critical` (`{message}` — reconstructed from its bare `agent_cyclic_thinking_critical` marker, §5.9g), `agent_think_in_tool_call_critical` / `agent_tool_call_cyclic_critical` (`{message}` — reconstructed the same way, §5.9h), and a benchmark session's `harbor_job` / `harbor_trial` / `harbor_finished` markers (§5.9k, §5.9l — replayed verbatim, `{type, …}` with the live event's own snake_case fields; `harbor_job` carries the run's request, `job_dir`, `log_path` and `started_at`). Other display-only entries (status) are still ephemeral and dropped on rehydrate.
 
 A `kodo_web_search` `tool_call` entry additionally carries `webSearchNotes: string[]` — its live narration (§5.5e), read back from the best-effort sidecar file rather than from `session.jsonl` (empty if the run was aborted before it flushed, or for every non-`kodo_web_search` tool call).
 
@@ -1565,7 +1626,7 @@ See the `project_kodo_problem_solver` memory for the full before/after and the f
 
 ### 7.2 `stop` — global STOP
 
-Cancels the worker and aborts in-flight LLM streams (FR-LLM-07); `state.phase` transitions to `stopped`.
+Cancels the worker and aborts in-flight LLM streams (FR-LLM-07); `state.phase` transitions to `stopped`. On a benchmark session with an active run it stops the run instead (§7.4j) and leaves `phase` alone.
 
 ```json
 { "type": "stop" }
@@ -1859,6 +1920,63 @@ unbound session ignores it (`bound: false`): it follows the sidebar anyway and
 binds at its first prompt. Nothing binds, starts or restarts here; the next
 prompt does that ([SESSION_LLM_BINDING.md](SESSION_LLM_BINDING.md) D1, D7).
 
+### 7.4j `harbor.run` — make a brand-new session a benchmark session
+
+**Added 2026-10-18** ([BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md) §4).
+Session connection, **brand-new session only** (open it with `hello`
+`greet: false`, §4.1). The server runs `kodo-harbor run` for one agent, model
+and suite, shows its progress in this session, and locks the session to
+input.
+
+```json
+{ "type": "harbor.run", "agent": "kodo_problem_solver",
+  "model": "unsloth-qwen38-27b-ud-q4-k-xl", "suite": "agent-basics",
+  "attempts": 1, "control": false, "thinking_level": null }
+```
+
+`model` is a local entry or `VENDOR/MODEL_ID`, as `harbor.options` (§7.6l1)
+lists them; `control: true` adds a `terminus-2` arm; `thinking_level: null`
+means the model's default. The session is named at once — `Basics test:
+<agent> · <model>` for the Basics test suite, else `Benchmark: …` (a
+`session.name`, §5.9a) — and a `state` with `interactive: false` and `job`
+(§5.1) comes before the response:
+
+```json
+{ "type": "harbor.run.accepted" }
+```
+
+Refusals change nothing and answer an `error` response with code
+`harbor_run_refused` and a `message`: the session already has a conversation,
+a queued prompt or a job; **another benchmark is running** anywhere on this
+server (one at a time; the message names its session); or the request fails
+the checks `kodo-harbor` makes before creating a job — a malformed field, an
+unknown or uninstalled model, a thinking level the model doesn't take, an
+unknown suite.
+
+**The run.** For a local model the server holds its llama-server
+exclusively for the whole run (on the entry's stored profile and knobs): every
+local chat in other sessions waits, told so by `llm.waiting {reason:
+"benchmark", title}`. On macOS and Windows `kodo-harbor` attaches to that
+server (`--llama-url`); on Linux the server unloads it and `kodo-harbor`
+starts its own. For a cloud model with no key in the server's environment, the
+server asks this session's window with `api_key.request` (§6.3) and passes the
+key only in `kodo-harbor`'s environment. Progress arrives as `harbor.trial`
+(§5.9k), the end as `harbor.finished` (§5.9l). `kodo-harbor`'s output goes to
+`job.log_path`, never to the wire.
+
+**Stop and delete.** `stop` (§7.2) on a benchmark session stops the run as
+Ctrl+C would: Harbor winds down the trials in progress, and the summary
+covers the ones that finished; `job.status` is `stopping` until it exits, and
+the whole process tree is killed if it hasn't after 120 s. A Stop while the
+run still waits for llama-server or a key ends it before `kodo-harbor` starts.
+`session.delete` / `session.delete_by_id` kill the run first. When the last
+window has been gone for the idle grace period the server stops the run the
+same way before it exits; a window reload doesn't.
+
+**The lock** is the same as `agent.run`'s (§7.4h): `prompt.submit`,
+`agent.set` and `mode.set` answer `session_locked`, including after a reload,
+a resume or a server restart.
+
 ### 7.5 `config.reload` — apply settings.json changes
 
 Tells the server to re-read `~/.kodo/etc/settings.json`. The primary use is model switching: the VSIX edits `mode`, `active_cloud_vendor`, and/or the `models` map and sends this message; the engine resolves the new active plugin on its next dispatch (settings are read fresh per call). Since 2026-10-17 that reaches **unbound** sessions only: a bound session resolves against its own binding overlaid on the settings, so a sidebar pick changes it only through `llm_selection.capture` (§7.4i) and its next prompt ([SESSION_LLM_BINDING.md](SESSION_LLM_BINDING.md) §2.3).
@@ -1888,6 +2006,12 @@ progress over the wire — a download's live byte progress is read by polling
 `llamacpp.install`/`llamacpp.update` are the exception, still streaming
 `llamacpp.install.progress` (§5.12) on the requesting connection, since
 both are one-shot binary fetches with no pause/resume.
+
+While a benchmark run (§7.4j) is active, `llamacpp.update` is refused with
+a single `llamacpp.install.progress {percent: -1, message}` and
+`llamacpp.uninstall` with an `error` event plus its usual ack reporting the
+install unchanged: both would replace the binaries the run's llama-server
+uses.
 
 `llamacpp.update` installs the requested build and then removes the
 superseded one (`update_llamacpp`, doc/INTERNALS.md §10 — installing first
@@ -2111,7 +2235,10 @@ another session's turn holds llama-server on a different command line it waits
 (the requesting connection gets `llm.waiting {reason: "model_swap"}`), so it
 never swaps the model out from under a running turn. `llama.stop` while a
 session's turn holds llama-server is refused: the reply is a `llama.state`
-with `running: true` and an `error` saying so.
+with `running: true` and an `error` saying so. While a benchmark run (§7.4j)
+holds llama-server, `llama.start` is refused at once — a `llama.state` with
+`running: false` and an `error` naming the benchmark — because waiting would
+stall this connection's requests for the whole run.
 
 `llama.start` on a `custom_server_url` active entry stops kodo's own
 llama-server (if running and no session's turn holds it) and reports

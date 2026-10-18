@@ -66,10 +66,14 @@ source:
 direction: nothing in `kodo` imports it. Neither does anything import
 `memcheck` (the `kodo-memcheck` command, [MEMCHECK.md](MEMCHECK.md)). `headless` (the `kodo-headless`
 command) is imported only by `harbor` (the `kodo-harbor` command,
-[HARBOR.md](HARBOR.md)). `server` imports `harbor` for one control message,
+[HARBOR.md](HARBOR.md)). `server` imports `harbor` for the control message
 `harbor.options` (the Settings panel's Benchmark modal, AGENT_BUILDER.md §8),
-so the modal offers exactly the models and suites `kodo-harbor run` accepts;
-nothing else imports it. `harbor.agent` is the one
+so the modal offers exactly the models and suites `kodo-harbor run` accepts,
+and for benchmark sessions (`server/_harbor_job.py`,
+[BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md)): `harbor.run` makes the same
+checks `kodo-harbor run` does before it spawns `python -m kodo.harbor run`,
+and reads progress with `JobSummary`. It never runs Harbor in-process;
+nothing else imports `harbor`. `harbor.agent` is the one
 module in `kodo` that imports the third-party `harbor` package, and only
 Harbor's own process imports it: nothing in `kodo` imports `harbor.agent`, and
 `harbor` (the orchestrator) spawns Harbor through `uv tool run` instead of

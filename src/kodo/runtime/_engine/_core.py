@@ -72,6 +72,7 @@ from kodo.titling import generate_project_name
 from kodo.tools import LogicalPathResolver, PathResolver, RootPath, root_for
 from kodo.transport import (
     EVT_AUTONOMOUS_CHANGED,
+    EVT_SESSION_NAME,
     EVT_WORKSPACE_ADD_FOLDER,
 )
 from kodo.workproducts import WorkProduct
@@ -126,6 +127,11 @@ def _reconcile_workspace_folders(
             key = f"{name} ({suffix})"
         merged[key] = path
     return merged
+
+
+def _public_job(job: dict[str, object]) -> dict[str, object]:
+    """A job record as ``state.job`` shows it: without the server's ``process`` entry."""
+    return {key: value for key, value in job.items() if key != "process"}
 
 
 def _review_summary(paths: tuple[str, ...]) -> str:
@@ -464,6 +470,12 @@ class WorkflowEngine(
             # places. A stale or legacy value resolves to a real agent.
             self._session.top_agent = self._registry.resolve_top_agent(self._transient.top_agent)
             self._session.interactive = self._registry.is_interactive(self._session.top_agent)
+            # A benchmark session stays locked; its job record is the lock
+            # (doc/BENCHMARK_SESSIONS.md §4.3), not its top-level agent.
+            job = self._transient.harbor_job
+            if job is not None:
+                self._session.job = _public_job(job)
+                self._session.interactive = False
             self._session.edit_control = self._transient.edit_control
             self._session.command_control = self._transient.command_control
             self._session.security_rules = self._transient.security_rules
@@ -761,7 +773,7 @@ class WorkflowEngine(
         """
         if not self._registry.knows_top_agent(name) or self._registry.is_interactive(name):
             return f"{name!r} is not an agent that agent.run can start"
-        if self._main_messages or self._prompt_queued:
+        if self._main_messages or self._prompt_queued or self._session.job is not None:
             return "agent.run can only start a brand-new session"
         # Nobody chats with a non-interactive agent, so its session has no
         # opening greeting; `hello`'s `greet: false` normally prevents one,
@@ -774,6 +786,72 @@ class WorkflowEngine(
         await self._emitters.emit_state()
         await self.handle_prompt_submit(text, request_id)
         return None
+
+    async def handle_job_start(self, job: dict[str, object], title: str) -> str | None:
+        """Make this brand-new session a benchmark session (doc/BENCHMARK_SESSIONS.md §4.1).
+
+        The server's job drives the run; the engine only holds its record,
+        names the session and locks it: from now on
+        :attr:`SessionState.interactive` is ``False`` and the server refuses
+        any prompt, agent switch or mode change, including after a reload or
+        resume.
+
+        Args:
+            job: The job record (:meth:`update_job` describes it).
+            title: The session's name — set at once, no titler involved.
+
+        Returns:
+            str | None: ``None`` when the session became a benchmark session,
+            else why not: it already has a conversation, a queued prompt or a
+            job. Nothing changes on a refusal.
+        """
+        if self._main_messages or self._prompt_queued or self._session.job is not None:
+            return "a benchmark can only start in a brand-new session"
+        self._greeter.cancel()
+        self._session.interactive = False
+        self._session.job = _public_job(job)
+        self._transient.update(harbor_job=job)
+        self._transient.set_session_name(title)
+        await self._sink.send(
+            Envelope.make_event(
+                EVT_SESSION_NAME,
+                {"session_id": self._orch_session_id, "name": self._transient.session_name},
+            )
+        )
+        await self._emitters.emit_state()
+        return None
+
+    async def update_job(self, job: dict[str, object]) -> None:
+        """Replace the benchmark job's record, persist it and push ``state``.
+
+        Args:
+            job: ``{status, kind, agent, model, suite, attempts, control,
+                thinking_level, job_dir, log_path, started_at}``, plus a
+                ``process`` entry the server keeps for a restart
+                (doc/BENCHMARK_SESSIONS.md §4.5) and ``state.job`` leaves out.
+        """
+        self._session.job = _public_job(job)
+        self._transient.update(harbor_job=job)
+        await self._emitters.emit_state()
+
+    async def record_job_event(
+        self, event_type: str, marker_type: str, payload: dict[str, object]
+    ) -> None:
+        """Persist one benchmark-job event as a marker and push it live.
+
+        The marker is ``{"type": marker_type, **payload}``, and
+        ``session.history`` replays it with the same payload, so a reopened
+        session shows what the live events showed.
+
+        Args:
+            event_type: The live event (``harbor.trial``, ``harbor.finished``).
+            marker_type: The ``session.jsonl`` marker (``harbor_job``,
+                ``harbor_trial``, ``harbor_finished``).
+            payload: Their shared payload.
+        """
+        self._transient.append_marker({"type": marker_type, **payload})
+        if event_type:
+            await self._sink.send(Envelope.make_event(event_type, payload))
 
     async def handle_edit_control_set(self, value: str) -> None:
         """Set the Edit Control posture.

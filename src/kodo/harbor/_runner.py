@@ -20,6 +20,7 @@ import importlib.metadata
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import cast
 from urllib.parse import unquote, urlparse
@@ -35,6 +36,16 @@ __all__ = ["HARBOR_VERSION", "HarborInvocation", "KodoSource", "check_docker", "
 HARBOR_VERSION = "0.23.0"
 
 _DISTRIBUTION = "py-kodo"
+
+#: Harbor's CLI as Windows runs it: ``CTRL_BREAK_EVENT`` raises
+#: ``KeyboardInterrupt`` (Harbor's Ctrl+C path) before Harbor's code loads.
+_WINDOWS_SHIM = (
+    "import signal, sys; "
+    "signal.signal(signal.SIGBREAK, signal.default_int_handler); "
+    "sys.argv[0] = 'harbor'; "
+    "from harbor.cli.main import app; "
+    "app()"
+)
 
 
 class KodoSource:
@@ -152,9 +163,16 @@ class HarborInvocation:
     def command(self) -> list[str]:
         """The full command line.
 
+        On Windows Harbor is started through its environment's ``python``
+        and :data:`_WINDOWS_SHIM`, which makes ``CTRL_BREAK_EVENT`` raise
+        ``KeyboardInterrupt``: Python has no ``SIGBREAK`` handler by default,
+        so without it Harbor would exit at once on a Stop instead of winding
+        its trials down (doc/BENCHMARK_SESSIONS.md §4.4).
+
         Returns:
             list[str]: argv.
         """
+        harbor = ["python", "-c", _WINDOWS_SHIM] if sys.platform == "win32" else ["harbor"]
         return [
             str(self.__uv),
             "tool",
@@ -163,7 +181,7 @@ class HarborInvocation:
             f"harbor=={HARBOR_VERSION}",
             "--with",
             self.__kodo,
-            "harbor",
+            *harbor,
             "run",
             "-c",
             str(self.__config),
@@ -171,12 +189,35 @@ class HarborInvocation:
         ]
 
     def run(self) -> int:
-        """Run Harbor in the foreground, sharing this terminal.
+        """Run Harbor in the foreground, sharing this terminal, and wait for it.
+
+        An interrupt (Ctrl+C, or a Stop, doc/BENCHMARK_SESSIONS.md §4.4)
+        reaches Harbor too, since it shares the process group, and Harbor
+        winds its trials down. This waits for that to finish instead of
+        killing Harbor (``subprocess.run`` kills its child 0.25 s after
+        Ctrl+C), then re-raises the interrupt. A second interrupt kills it.
 
         Returns:
             int: Harbor's exit code.
+
+        Raises:
+            KeyboardInterrupt: The run was interrupted (after Harbor exited).
         """
-        return subprocess.run(self.command(), check=False).returncode
+        process = subprocess.Popen(self.command())
+        interrupted = False
+        while True:
+            try:
+                code = process.wait()
+            except KeyboardInterrupt:
+                if interrupted:
+                    process.kill()
+                    process.wait()
+                    raise
+                interrupted = True
+                continue
+            if interrupted:
+                raise KeyboardInterrupt
+            return code
 
 
 def find_uv(kodo_dir: Path) -> Path:

@@ -80,8 +80,10 @@ seamlessly across the change.
                          cumulative_input_tokens_uncached, cumulative_output_tokens
                          — WS_PROTOCOL.md §5.7), and the session's own LLM:
                          llm_binding, llm_selection, params_snapshot
-                         (SESSION_LLM_BINDING.md §2)
+                         (SESSION_LLM_BINDING.md §2), and for a benchmark
+                         session harbor_job (BENCHMARK_SESSIONS.md §4.3)
     session.jsonl      — the MAIN session log (see below)
+    harbor-output.log  — a benchmark session's kodo-harbor output (only there)
     subsessions/
         <subsession-id>.jsonl   — one per sub-agent run; the sub-agent's full,
                                   isolated message history (per-call usage
@@ -196,7 +198,7 @@ order):
   `read_attachment` tool, not re-read from the links), so the reconstructed
   context matches submit time without the log ever holding the file bytes. See
   WS_PROTOCOL.md §7.1 / `kodo.runtime._attachments`.
-- **Marker lines** — `{"type": "subsession_start"|"subsession_end"|"compaction"|"error"|"security_rule_added"|"agent_stuck_critical"|"usage"|"greeting"|"session_params", ...}`.
+- **Marker lines** — `{"type": "subsession_start"|"subsession_end"|"compaction"|"error"|"security_rule_added"|"agent_stuck_critical"|"usage"|"greeting"|"session_params"|"harbor_job"|"harbor_trial"|"harbor_finished", ...}`.
   `subsession_start`/`subsession_end` record, *in chronological position*, when
   a sub-agent took over and when it handed control back. They carry
   `subsession_id`, `agent`, `display_name`, and `parent_display_name`;
@@ -229,6 +231,13 @@ order):
   since the previous prompt (`EngineEmitters.emit_session_params`,
   SESSION_LLM_BINDING.md §4); like `greeting` it replays via `session.history`
   and never enters the LLM context.
+  `harbor_job` / `harbor_trial` / `harbor_finished` are a **benchmark
+  session's** record (BENCHMARK_SESSIONS.md §4.3, WS_PROTOCOL.md §7.4j): the
+  run's request, each finished trial, and how it ended. A benchmark session
+  has no messages at all; these markers are its whole feed, and they replay
+  verbatim. Its `transient.json` `harbor_job` holds the run's status, which is
+  also what locks the session (`interactive: false`) after a reload or
+  restart.
   All of these except `subsession_start`/`subsession_end`/`greeting` can
   equally appear inside a **subsession's own log** (below) — an error, a
   granted security rule, or the stuck watchdog can just as easily happen to a

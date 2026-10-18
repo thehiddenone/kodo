@@ -237,6 +237,15 @@ class LLMGateway:
         """Sessions (or one-off callers) holding the managed llama-server right now."""
         return self.__lease.holders
 
+    @property
+    def exclusive_label(self) -> str | None:
+        """The label of an exclusive hold on llama-server, held or waiting; else ``None``.
+
+        A benchmark run's title (doc/BENCHMARK_SESSIONS.md §4.6) — what a
+        caller that must not wait for the whole run refuses with.
+        """
+        return self.__lease.exclusive_label
+
     async def acquire_local(
         self,
         holder: str,

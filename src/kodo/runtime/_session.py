@@ -133,6 +133,13 @@ class SessionState:
             flag is what lets a fresh `hello`/`state` snapshot reconstruct
             that spinner correctly instead of only ever setting it from the
             live (and reconnect-losable) `llm.turn_start` event.
+        job: The benchmark job a benchmark session runs
+            (doc/BENCHMARK_SESSIONS.md §4.3): ``{status, kind, agent, model,
+            suite, attempts, control, thinking_level, job_dir, log_path,
+            started_at}``; ``None`` for every other session. Set by the
+            server's job through :meth:`WorkflowEngine.handle_job_start` and
+            :meth:`WorkflowEngine.update_job`; while it is set,
+            :attr:`interactive` is ``False``.
         workspace_connected: Whether this session's bound directories (if any)
             are hosted by the live workspace currently pushed to this window —
             mirrors :meth:`~kodo.runtime._engine._core.WorkflowEngine.
@@ -175,6 +182,7 @@ class SessionState:
     security_path_rules: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     awaiting_first_chunk: bool = False
     workspace_connected: bool = True
+    job: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Serialise to a plain dict for wire-protocol events.
@@ -205,4 +213,5 @@ class SessionState:
             "llm": self.llm,
             "awaiting_first_chunk": self.awaiting_first_chunk,
             "workspace_connected": self.workspace_connected,
+            "job": self.job,
         }

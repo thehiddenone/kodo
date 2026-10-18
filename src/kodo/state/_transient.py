@@ -230,6 +230,7 @@ class TransientStore:
     __llm_selection: dict[str, object] | None
     __llm_binding: dict[str, object] | None
     __params_snapshot: dict[str, object] | None
+    __harbor_job: dict[str, object] | None
     __security_rules: frozenset[tuple[str, str]]
     __security_path_rules: frozenset[tuple[str, str]]
     __pending_prompt: dict[str, object] | None
@@ -267,6 +268,7 @@ class TransientStore:
         self.__llm_selection = None
         self.__llm_binding = None
         self.__params_snapshot = None
+        self.__harbor_job = None
         self.__security_rules = frozenset()
         self.__security_path_rules = frozenset()
         self.__pending_prompt = None
@@ -676,6 +678,19 @@ class TransientStore:
         """
         return copy.deepcopy(self.__params_snapshot)
 
+    @property
+    def harbor_job(self) -> dict[str, object] | None:
+        """The benchmark job this session runs, if it is a benchmark session.
+
+        ``None`` for every other session. Stored opaquely, like
+        :attr:`llm_selection` — the server owns its shape
+        (doc/BENCHMARK_SESSIONS.md §4.3). Mutated only via :meth:`update`.
+
+        Returns:
+            dict[str, object] | None: A deep copy.
+        """
+        return copy.deepcopy(self.__harbor_job)
+
     def set_llm_state(
         self,
         *,
@@ -980,6 +995,7 @@ class TransientStore:
         workspace_physical_root: str | None = None,
         workspace_folders: dict[str, str] | None = None,
         workspace_code_file: str | None = _UNSET,  # type: ignore[assignment]
+        harbor_job: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
     ) -> None:
         """Update mutable fields and flush ``transient.json`` to disk.
 
@@ -1020,6 +1036,8 @@ class TransientStore:
                 remembered ``.code-workspace`` file, or ``None`` to remember
                 "no workspace file" (a plain folder workspace). Left
                 unchanged if omitted.
+            harbor_job (dict[str, object] | None): The session's benchmark
+                job record, or ``None`` to clear it. Left unchanged if omitted.
         """
         if stage is not None:
             self.__stage = stage
@@ -1049,6 +1067,8 @@ class TransientStore:
             self.__workspace_folders = dict(workspace_folders)
         if workspace_code_file is not _UNSET:
             self.__workspace_code_file = workspace_code_file
+        if harbor_job is not _UNSET:
+            self.__harbor_job = copy.deepcopy(harbor_job)
         if self.__paths is not None:
             self.__flush(self.__paths)
 
@@ -1343,6 +1363,8 @@ class TransientStore:
             self.__llm_binding = binding if isinstance(binding, dict) else None
             snapshot = data.get("params_snapshot")
             self.__params_snapshot = snapshot if isinstance(snapshot, dict) else None
+            job = data.get("harbor_job")
+            self.__harbor_job = job if isinstance(job, dict) else None
             raw_rules = data.get("security_rules")
             self.__security_rules = (
                 frozenset(
@@ -1454,6 +1476,7 @@ class TransientStore:
             "llm_selection": self.__llm_selection,
             "llm_binding": self.__llm_binding,
             "params_snapshot": self.__params_snapshot,
+            "harbor_job": self.__harbor_job,
             "security_rules": sorted([list(rule) for rule in self.__security_rules]),
             "security_path_rules": sorted([list(rule) for rule in self.__security_path_rules]),
             "pending_prompt": self.__pending_prompt,

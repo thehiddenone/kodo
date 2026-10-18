@@ -17,7 +17,7 @@ import re
 import shutil
 import sys
 import uuid
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
 from typing import cast
 
@@ -163,6 +163,7 @@ from kodo.transport import (
     MSG_DEFAULT_AGENT_SET,
     MSG_EDIT_CONTROL_SET,
     MSG_HARBOR_OPTIONS,
+    MSG_HARBOR_RUN,
     MSG_HELLO,
     MSG_HOUSEKEEPER_LLM_GET,
     MSG_HOUSEKEEPER_LLM_SET,
@@ -228,6 +229,7 @@ from ._connection_registry import (
     HandlerFn,
     Request,
 )
+from ._harbor_job import HarborJobs
 from ._session import Session
 from ._session_manager import SessionManager
 
@@ -235,6 +237,7 @@ _log = logging.getLogger(__name__)
 
 _SERVER_VERSION: str = "0.2.0b1"
 _MANAGER_KEY: web.AppKey[SessionManager] = web.AppKey("session_manager")
+_HARBOR_JOBS_KEY: web.AppKey[HarborJobs] = web.AppKey("harbor_jobs")
 
 # Agents directory: kodo/agents/ next to kodo/server/
 _AGENTS_DIR = Path(__file__).parent.parent / "agents"
@@ -691,6 +694,28 @@ async def _handle_session_release(req: Request) -> None:
     if req.session_id:
         req.manager.release(req.session_id)
     await req.reply({"type": "session.release.ack"})
+
+
+def _make_session_delete_handler(jobs: HarborJobs) -> HandlerFn:
+    """Build ``session.delete``, which also ends the session's benchmark run, if any."""
+
+    async def _handle(req: Request) -> None:
+        if req.session_id:
+            await jobs.discard(req.session_id)
+        await _handle_session_delete(req)
+
+    return _handle
+
+
+def _make_session_delete_by_id_handler(jobs: HarborJobs) -> HandlerFn:
+    """Build ``session.delete_by_id``, which also ends the session's benchmark run, if any."""
+
+    async def _handle(req: Request) -> None:
+        if req.session_id:
+            await jobs.discard(req.session_id)
+        await _handle_session_delete_by_id(req)
+
+    return _handle
 
 
 async def _handle_session_delete(req: Request) -> None:
@@ -1720,6 +1745,29 @@ async def _handle_agent_run(req: Request) -> None:
     await req.reply({"type": "agent.run.accepted"})
 
 
+def _make_harbor_run_handler(jobs: HarborJobs) -> HandlerFn:
+    """Build ``harbor.run``: make a brand-new session a benchmark session (§7.4j)."""
+
+    async def _handle_harbor_run(req: Request) -> None:
+        session = await _require_session(req)
+        if session is None:
+            return
+        refusal = await jobs.start(session, req.env.payload)
+        if refusal is not None:
+            await req.reply(
+                {
+                    "type": "error",
+                    "code": "harbor_run_refused",
+                    "message": refusal,
+                    "recoverable": True,
+                }
+            )
+            return
+        await req.reply({"type": "harbor.run.accepted"})
+
+    return _handle_harbor_run
+
+
 async def _handle_edit_control(req: Request) -> None:
     session = await _require_session(req)
     if session is None:
@@ -1832,12 +1880,21 @@ async def _handle_project_create(req: Request) -> None:
     await req.reply({"type": "project.create.done", **result})
 
 
-async def _handle_stop(req: Request) -> None:
-    session = await _require_session(req)
-    if session is None:
-        return
-    await session.engine.stop()
-    await req.reply({"type": "stop.accepted"})
+def _make_stop_handler(jobs: HarborJobs) -> HandlerFn:
+    """Build ``stop``: stop the turn, or a benchmark session's run (§4.4)."""
+
+    async def _handle_stop(req: Request) -> None:
+        session = await _require_session(req)
+        if session is None:
+            return
+        job = jobs.for_session(session.id)
+        if job is not None and job.active:
+            job.stop()
+        else:
+            await session.engine.stop()
+        await req.reply({"type": "stop.accepted"})
+
+    return _handle_stop
 
 
 async def _handle_compact(req: Request) -> None:
@@ -2168,6 +2225,53 @@ async def _handle_llamacpp_update(req: Request) -> None:
     ok = await _stream_llamacpp_progress(req, _update)
     if ok:
         asyncio.create_task(start_titling(kodo_dir, _current_housekeeper_llm_id()))
+
+
+def _make_llamacpp_update_handler(jobs: HarborJobs) -> HandlerFn:
+    """Build ``llamacpp.update``, refused while a benchmark runs on llama.cpp."""
+
+    async def _handle(req: Request) -> None:
+        running = jobs.running
+        if running is not None:
+            msg = f"llama.cpp can't be updated while the benchmark {running.title!r} runs."
+            await req.connection.send(
+                Envelope.make_event(EVT_LLAMACPP_INSTALL_PROGRESS, {"percent": -1, "message": msg})
+            )
+            return
+        await _handle_llamacpp_update(req)
+
+    return _handle
+
+
+def _make_llamacpp_uninstall_handler(jobs: HarborJobs) -> HandlerFn:
+    """Build ``llamacpp.uninstall``, refused while a benchmark runs on llama.cpp."""
+
+    async def _handle(req: Request) -> None:
+        running = jobs.running
+        if running is None:
+            await _handle_llamacpp_uninstall(req)
+            return
+        installed = find_installed(kodo_user_dir())
+        await req.connection.send(
+            Envelope.make_event(
+                EVT_ERROR,
+                {
+                    "code": "llamacpp_uninstall_failed",
+                    "message": f"llama.cpp can't be removed while the benchmark "
+                    f"{running.title!r} runs.",
+                    "recoverable": True,
+                },
+            )
+        )
+        await req.reply(
+            {
+                "type": "llamacpp.uninstall.ack",
+                "llama_installed": installed is not None,
+                "llama_version": f"b{installed.build}" if installed is not None else None,
+            }
+        )
+
+    return _handle
 
 
 async def _handle_llamacpp_uninstall(req: Request) -> None:
@@ -2879,6 +2983,21 @@ def _make_llama_start_handler(config: Config, gateway: LLMGateway) -> HandlerFn:
     """
 
     async def _handle_llama_start(req: Request) -> None:
+        benchmark = gateway.exclusive_label
+        if benchmark is not None:
+            # Waiting would hold this connection's handler for the whole run.
+            await req.connection.send(
+                Envelope.make_event(
+                    EVT_LLAMA_STATE,
+                    {
+                        "running": False,
+                        "model": None,
+                        "error": f"llama.cpp is in use by the benchmark {benchmark!r}. "
+                        "Start it after the benchmark ends.",
+                    },
+                )
+            )
+            return
         user_dir = kodo_user_dir()
         settings = config.reload_settings()
         models_map = settings.get("models", {})
@@ -3072,7 +3191,16 @@ async def _close_connections(app: web.Application) -> None:
     await app[CONNECTION_REGISTRY_KEY].close_connections()
 
 
+async def _recover_harbor_jobs(app: web.Application) -> None:
+    # Before any window connects: a run the previous server process never saw
+    # end is marked interrupted, and its process tree killed (§4.5).
+    await asyncio.to_thread(app[_HARBOR_JOBS_KEY].recover, WorkspaceLayout().sessions_dir)
+
+
 async def _stop_background(app: web.Application) -> None:
+    # A benchmark run is stopped as Stop does — its finished trials are kept —
+    # before the llama-server it runs on goes (D5).
+    await app[_HARBOR_JOBS_KEY].stop_all()
     server = LlamaServer.get_active_llama_server()
     if server is not None and server.is_running:
         await server.stop()
@@ -3080,10 +3208,21 @@ async def _stop_background(app: web.Application) -> None:
     await app[_MANAGER_KEY].shutdown()
 
 
-async def _release_llama_gpu() -> None:
-    server = LlamaServer.get_active_llama_server()
-    if server is not None and server.is_running:
-        await server.stop()
+def _make_gpu_release(gateway: LLMGateway) -> Callable[[], Awaitable[None]]:
+    """Build the hook that unloads llama-server when the last window disconnects.
+
+    Never while someone holds it: a benchmark run holds it for its whole run,
+    with no window needed (doc/BENCHMARK_SESSIONS.md §4.5).
+    """
+
+    async def _release_llama_gpu() -> None:
+        if gateway.local_holders:
+            return
+        server = LlamaServer.get_active_llama_server()
+        if server is not None and server.is_running:
+            await server.stop()
+
+    return _release_llama_gpu
 
 
 async def _ws_endpoint(request: web.Request) -> web.StreamResponse:
@@ -3151,13 +3290,18 @@ def create_app(config: Config) -> web.Application:
         default_settings=Config.default_settings,
     )
     conn_registry = ConnectionRegistry(manager)
-    conn_registry.set_gpu_release_hook(_release_llama_gpu)
+    conn_registry.set_gpu_release_hook(_make_gpu_release(gateway))
+    jobs = HarborJobs(
+        gateway=gateway, kodo_dir=layout.kodo_dir, get_settings=config.reload_settings
+    )
 
     conn_registry.register_handler(MSG_HELLO, _make_hello_handler(config))
     conn_registry.register_handler(MSG_SESSION_LIST, _handle_session_list)
     conn_registry.register_handler(MSG_SESSION_RELEASE, _handle_session_release)
-    conn_registry.register_handler(MSG_SESSION_DELETE, _handle_session_delete)
-    conn_registry.register_handler(MSG_SESSION_DELETE_BY_ID, _handle_session_delete_by_id)
+    conn_registry.register_handler(MSG_SESSION_DELETE, _make_session_delete_handler(jobs))
+    conn_registry.register_handler(
+        MSG_SESSION_DELETE_BY_ID, _make_session_delete_by_id_handler(jobs)
+    )
     conn_registry.register_handler(MSG_SECURITY_RULES_LIST, _handle_security_rules_list)
     conn_registry.register_handler(MSG_SECURITY_RULES_DELETE, _handle_security_rules_delete)
     conn_registry.register_handler(
@@ -3198,6 +3342,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_MODE_SET, _handle_mode)
     conn_registry.register_handler(MSG_AGENT_SET, _handle_agent_set)
     conn_registry.register_handler(MSG_AGENT_RUN, _handle_agent_run)
+    conn_registry.register_handler(MSG_HARBOR_RUN, _make_harbor_run_handler(jobs))
     conn_registry.register_handler(MSG_TOP_AGENTS_LIST, _make_top_agents_list_handler(registry))
     conn_registry.register_handler(MSG_EDIT_CONTROL_SET, _handle_edit_control)
     conn_registry.register_handler(MSG_COMMAND_CONTROL_SET, _handle_command_control)
@@ -3206,7 +3351,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_LLM_SELECTION_CAPTURE, _handle_llm_selection_capture)
     conn_registry.register_handler(MSG_WORKSPACE_FOLDERS, _handle_workspace_folders)
     conn_registry.register_handler(MSG_PROJECT_CREATE, _handle_project_create)
-    conn_registry.register_handler(MSG_STOP, _handle_stop)
+    conn_registry.register_handler(MSG_STOP, _make_stop_handler(jobs))
     conn_registry.register_handler(MSG_COMPACT_NOW, _handle_compact)
     conn_registry.register_handler(MSG_CHECKPOINT_ROLLBACK, _handle_checkpoint_rollback)
     conn_registry.register_handler(MSG_CHECKPOINT_ROLL_FORWARD, _handle_checkpoint_roll_forward)
@@ -3215,8 +3360,8 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_CHECKPOINT_LIST, _handle_checkpoint_list)
     conn_registry.register_handler(MSG_CONFIG_RELOAD, _make_config_reload_handler(config))
     conn_registry.register_handler(MSG_LLAMACPP_INSTALL, _handle_llamacpp_install)
-    conn_registry.register_handler(MSG_LLAMACPP_UPDATE, _handle_llamacpp_update)
-    conn_registry.register_handler(MSG_LLAMACPP_UNINSTALL, _handle_llamacpp_uninstall)
+    conn_registry.register_handler(MSG_LLAMACPP_UPDATE, _make_llamacpp_update_handler(jobs))
+    conn_registry.register_handler(MSG_LLAMACPP_UNINSTALL, _make_llamacpp_uninstall_handler(jobs))
     conn_registry.register_handler(MSG_LLAMACPP_VERSION_INFO, _handle_llamacpp_version_info)
     conn_registry.register_handler(MSG_LOCAL_LLM_INSTALL, _handle_local_llm_install)
     conn_registry.register_handler(MSG_LOCAL_LLM_RESUME, _handle_local_llm_resume)
@@ -3251,7 +3396,10 @@ def create_app(config: Config) -> web.Application:
     app = web.Application()
     app[CONNECTION_REGISTRY_KEY] = conn_registry
     app[_MANAGER_KEY] = manager
+    app[_HARBOR_JOBS_KEY] = jobs
     app.router.add_get("/ws", _ws_endpoint)
+    if sandbox_root is None:
+        app.on_startup.append(_recover_harbor_jobs)
     app.on_startup.append(
         _start_background_headless if sandbox_root is not None else _start_background
     )

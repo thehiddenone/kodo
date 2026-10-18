@@ -126,7 +126,8 @@ class HistoryProjector:
         ``compaction``, ``error``, ``security_rule_added``,
         ``agent_stuck_critical``, ``agent_cyclic_thinking_critical``,
         ``agent_think_in_tool_call_critical``, ``agent_tool_call_cyclic_critical``,
-        ``greeting`` — see :meth:`_marker_to_entries`) is rendered in its
+        ``greeting``, the ``harbor_*`` benchmark markers — see
+        :meth:`_marker_to_entries`) is rendered in its
         correct chronological position.
 
         Each ``tool_call`` entry's ``checkpoint`` (root/sha/parent/index/undone)
@@ -287,6 +288,10 @@ class HistoryProjector:
             ]
         if kind == "greeting":
             return [{"type": "greeting", "text": str(line.get("text", ""))}]
+        if kind in ("harbor_job", "harbor_trial", "harbor_finished"):
+            # A benchmark session's record (doc/BENCHMARK_SESSIONS.md §4.3),
+            # replayed with the live event's own payload.
+            return [dict(line)]
         if kind == "session_params":
             changes = line.get("changes")
             return [

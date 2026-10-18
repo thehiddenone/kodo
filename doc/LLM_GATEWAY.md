@@ -84,7 +84,9 @@ The **`LlamaLease`** (`llms/_llama_lease.py`) does that:
   every holder has released (running turns finish), and while it holds or
   waits, every later request queues behind it in arrival order. When it
   releases, the queue is admitted as usual. `exclusive_label` on the lease
-  names the hold (or the first waiting exclusive request).
+  names the hold (or the first waiting exclusive request); the gateway
+  exposes it as `LLMGateway.exclusive_label`, which `llama.start` refuses on
+  instead of waiting for a whole benchmark run.
 - When a waiting request is cancelled, the waiters at the front of the queue
   on the held command line join the current holders at once, instead of
   waiting for those holders to release.

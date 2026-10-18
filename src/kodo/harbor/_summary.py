@@ -63,6 +63,7 @@ def sign_test_p_value(better: int, worse: int) -> float:
 class _Trial:
     """The fields of one ``TrialResult`` the report uses."""
 
+    __name: str
     __task: str
     __arm: str
     __is_kodo: bool
@@ -75,6 +76,7 @@ class _Trial:
     __steps: tuple[tuple[str, dict[str, float] | None], ...]
 
     def __init__(self, data: dict[str, object]) -> None:
+        self.__name = str(data.get("trial_name", ""))
         self.__task = str(data.get("task_name", ""))
         info = _dict(data.get("agent_info"))
         agent = str(info.get("name", "?"))
@@ -122,6 +124,10 @@ class _Trial:
             )
             for step in step_results
         )
+
+    @property
+    def name(self) -> str:
+        return self.__name
 
     @property
     def task(self) -> str:
@@ -205,10 +211,55 @@ class JobSummary:
                 trials.append(cast(dict[str, object], loaded))
         return cls(job_dir, trials)
 
+    @staticmethod
+    def total_trials(job_dir: Path) -> int | None:
+        """How many trials the job will run, from Harbor's job-level ``result.json``.
+
+        Harbor 0.23 writes that file, with ``n_total_trials``, before the first
+        trial starts.
+
+        Args:
+            job_dir (Path): A Harbor job directory.
+
+        Returns:
+            int | None: The count; ``None`` until Harbor has written it.
+        """
+        try:
+            loaded: object = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(loaded, dict):
+            return None
+        total = cast(dict[str, object], loaded).get("n_total_trials")
+        return total if isinstance(total, int) and total >= 0 else None
+
     @property
     def trial_count(self) -> int:
         """Trials with a result."""
         return len(self.__trials)
+
+    def trial_rows(self) -> list[dict[str, object]]:
+        """One row per finished trial, for a progress view.
+
+        Harbor writes a trial's ``result.json`` only when the trial ends, so
+        every row is a finished trial.
+
+        Returns:
+            list[dict[str, object]]: ``{trial, task, arm, reward, seconds,
+            exceptions}``, in trial-directory order; ``reward`` and
+            ``seconds`` are ``None`` when unknown.
+        """
+        return [
+            {
+                "trial": trial.name,
+                "task": trial.task,
+                "arm": trial.arm,
+                "reward": trial.reward,
+                "seconds": trial.seconds,
+                "exceptions": list(trial.exceptions),
+            }
+            for trial in self.__trials
+        ]
 
     def to_dict(self) -> dict[str, object]:
         """The report as JSON-ready data.

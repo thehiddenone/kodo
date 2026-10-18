@@ -60,6 +60,8 @@ class _Processes:
         self.datasets: dict[str, list[str]] = {}
         self.download_dirs: list[Path] = []
         self.download_interrupt = False
+        self.harbor_interrupts = 0
+        self.killed = 0
 
     def __call__(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         args = [str(a) for a in argv]
@@ -112,6 +114,27 @@ class _Processes:
         if command == "start":
             return _done(args, self.start_code, stderr="no such gguf" if self.start_code else "")
         return _done(args, 0)
+
+
+class _Popen:
+    """``subprocess.Popen`` for Harbor: answered by :class:`_Processes`.
+
+    ``processes.harbor_interrupts`` interrupts arrive while waiting, the way
+    Ctrl+C reaches a waiting parent; then Harbor exits with its scripted code.
+    """
+
+    def __init__(self, processes: _Processes, argv: list[str]) -> None:
+        self.__processes = processes
+        self.__result = processes(argv)
+
+    def wait(self) -> int:
+        if self.__processes.harbor_interrupts > 0:
+            self.__processes.harbor_interrupts -= 1
+            raise KeyboardInterrupt
+        return self.__result.returncode
+
+    def kill(self) -> None:
+        self.__processes.killed += 1
 
 
 def _done(
@@ -212,6 +235,7 @@ def running_llama() -> Iterator[_RunningLlama]:
 def processes(monkeypatch: pytest.MonkeyPatch) -> _Processes:
     fake = _Processes()
     monkeypatch.setattr(subprocess, "run", fake)
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kwargs: _Popen(fake, argv))
     return fake
 
 
@@ -517,6 +541,42 @@ def test_harbor_exit_code_is_returned(processes: _Processes, tmp_path: Path) -> 
     assert processes.calls == [invocation.command()]
 
 
+def test_an_interrupt_waits_for_harbor_to_wind_down(processes: _Processes, tmp_path: Path) -> None:
+    processes.harbor_interrupts = 1
+    invocation = HarborInvocation(Path("/bin/uv"), tmp_path / "job.json", "py-kodo==1", [])
+
+    with pytest.raises(KeyboardInterrupt):
+        invocation.run()
+
+    assert processes.killed == 0  # Harbor finished its own Ctrl+C path
+
+
+def test_a_second_interrupt_kills_harbor(processes: _Processes, tmp_path: Path) -> None:
+    processes.harbor_interrupts = 2
+    invocation = HarborInvocation(Path("/bin/uv"), tmp_path / "job.json", "py-kodo==1", [])
+
+    with pytest.raises(KeyboardInterrupt):
+        invocation.run()
+
+    assert processes.killed == 1
+
+
+@pytest.mark.parametrize(("platform", "windows"), [("win32", True), ("darwin", False)])
+def test_windows_starts_harbor_through_the_ctrl_break_shim(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform: str, windows: bool
+) -> None:
+    monkeypatch.setattr(sys, "platform", platform)
+    command = HarborInvocation(Path("uv"), tmp_path / "job.json", "py-kodo==1", []).command()
+
+    run = command.index("run", 3)
+    if windows:
+        assert command[run - 3 : run - 1] == ["python", "-c"]
+        assert "signal.SIGBREAK, signal.default_int_handler" in command[run - 1]
+        assert "from harbor.cli.main import app" in command[run - 1]
+    else:
+        assert command[run - 1] == "harbor"
+
+
 def test_uv_on_path_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     uv = _executable(tmp_path / "bin" / "uv")
     monkeypatch.setenv("PATH", str(uv.parent))
@@ -606,7 +666,7 @@ def test_a_local_run_serves_the_model_runs_harbor_and_reports(
 
 
 def test_an_interrupted_run_still_reports(home: Path, processes: _Processes, props: _Props) -> None:
-    processes.harbor = KeyboardInterrupt()
+    processes.harbor_interrupts = 1
     code = main(_run_args(home, "--llama-bind", "127.0.0.1", "--job-name", "j", "--keep-llama"))
 
     assert code == 130
@@ -908,3 +968,72 @@ def test_summarizing_a_missing_job_is_an_error(
 ) -> None:
     assert main(["summarize", str(tmp_path / "nope")]) == 2
     assert "No job directory" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# --stop-on-stdin-close, end to end (the Kōdo server's Stop, BENCHMARK_SESSIONS §4.4)
+# ---------------------------------------------------------------------------
+
+_INTERRUPTIBLE_UV = """#!/bin/sh
+case "$*" in
+  *"tool run"*)
+    trap 'echo interrupted > "$KODO_TEST_MARK.int"; exit 7' INT
+    echo started > "$KODO_TEST_MARK"
+    while true; do sleep 0.1; done
+    ;;
+esac
+exit 0
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_closing_stdin_interrupts_the_run_and_harbor_winds_down_first(tmp_path: Path) -> None:
+    import os
+    import time
+
+    bin_dir = tmp_path / "bin"
+    _executable(bin_dir / "docker")
+    uv = _executable(bin_dir / "uv")
+    uv.write_text(_INTERRUPTIBLE_UV, encoding="utf-8")
+    task = tmp_path / "task"
+    task.mkdir()
+    mark = tmp_path / "harbor-started"
+    model = get_cloud_registry()["anthropic"][0].model_id
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "ANTHROPIC_API_KEY": "sk-test",
+        "KODO_TEST_MARK": str(mark),
+    }
+    argv = [
+        sys.executable, "-m", "kodo.harbor", "run",
+        "--model", f"anthropic/{model}", "--path", str(task),
+        "--kodo-version", "0.5.30", "--jobs-dir", str(tmp_path / "jobs"), "--job-name", "j",
+        "--stop-on-stdin-close",
+    ]  # fmt: skip
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while not mark.exists():
+            assert process.poll() is None, "kodo-harbor exited before Harbor started"
+            assert time.monotonic() < deadline, "Harbor never started"
+            time.sleep(0.05)
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.close()
+        process.wait(timeout=60)
+        out = process.stdout.read().decode()
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, 9)
+
+    assert process.returncode == 130, out
+    assert (tmp_path / "harbor-started.int").read_text().strip() == "interrupted"
+    assert (tmp_path / "jobs" / "j" / "kodo-summary.md").is_file()
