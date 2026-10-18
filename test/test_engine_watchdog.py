@@ -143,6 +143,9 @@ _AppendedSubEntry = tuple[str, str, object, str | None, "dict[str, object] | Non
 
 class _FakeTransient:
     def __init__(self) -> None:
+        # An unbound session (doc/SESSION_LLM_BINDING.md): settings as-is.
+        self.llm_binding = None
+        self.llm_selection = None
         self.appended: list[_AppendedEntry] = []
         self.appended_sub: list[_AppendedSubEntry] = []
 

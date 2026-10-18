@@ -106,6 +106,7 @@ _SESSION_SCOPED = (
     "command_control.set",
     "thinking_level.set",
     "sampling.set",
+    "llm_selection.capture",
     "workspace.folders",
     "project.create",
     "stop",
@@ -170,6 +171,16 @@ async def test_sampling_set_for_an_unknown_model_is_not_ok(
     )
     assert reply["type"] == "sampling.accepted"
     assert reply["ok"] is False
+
+
+async def test_llm_selection_capture_on_a_new_session_reports_it_unbound(
+    ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    # A session binds only at its first prompt (doc/SESSION_LLM_BINDING.md D1);
+    # until then it follows the sidebar and a capture changes nothing.
+    sid = await _open_session(ws)
+    reply = await _request(ws, "llm_selection.capture", session_id=sid)
+    assert reply == {"type": "llm_selection.capture.ack", "ok": True, "bound": False}
 
 
 async def test_sampling_set_with_a_non_dict_sampling_is_tolerated(

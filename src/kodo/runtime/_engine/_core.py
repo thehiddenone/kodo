@@ -80,6 +80,7 @@ from .._attachments import parse_attachment_marker
 from .._checkpoints import CheckpointState
 from .._gates import GateOrchestrator
 from .._session import SessionState
+from ._binding import BindingMixin
 from ._checkpointing import CheckpointCoordinator
 from ._compaction import ContextCompactor, estimate_tokens
 from ._events import EngineEmitters
@@ -137,7 +138,13 @@ def _review_summary(paths: tuple[str, ...]) -> str:
 
 
 class WorkflowEngine(
-    LLMPlumbingMixin, WorkerMixin, TurnLoopMixin, SubagentMixin, ResumeMixin, WatchdogMixin
+    LLMPlumbingMixin,
+    BindingMixin,
+    WorkerMixin,
+    TurnLoopMixin,
+    SubagentMixin,
+    ResumeMixin,
+    WatchdogMixin,
 ):
     """Single-worker runtime engine hosting the Guide session.
 
@@ -211,6 +218,7 @@ class WorkflowEngine(
         gateway: LLMGateway,
         session_workspace: SessionWorkspace | None = None,
         sandbox_root: Path | None = None,
+        default_settings: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         """Initialise the runtime engine.
 
@@ -237,11 +245,16 @@ class WorkflowEngine(
                 :class:`~kodo.security.SandboxSecurityLayer` confining mutation
                 to this directory — allow or deny, never ask. ``None`` (the
                 default) is the interactive :class:`~kodo.security.SecurityLayer`.
+            default_settings (Callable | None): Returns ``settings.json``'s
+                shipped defaults — what the change element measures a cloud
+                card's tier models against (doc/SESSION_LLM_BINDING.md §4).
+                ``None`` means no defaults (every tier model counts as set).
         """
         self._sink = sink
         self._gate = gate
         self._key_provider = key_provider
         self._get_settings = get_settings
+        self._get_default_settings = default_settings or dict
         self._transient = transient
         self._workspace_layout = workspace_layout
         self._session_workspace = session_workspace or SessionWorkspace()
@@ -512,6 +525,7 @@ class WorkflowEngine(
         # recomputes + emits the corrected `state`. Always accurate for an
         # unlocked session (vacuously connected).
         self._session.workspace_connected = self._is_workspace_connected()
+        self._refresh_llm_state()
 
         self._worker = asyncio.create_task(self._run_worker(), name="kodo-worker")
         _log.info(
@@ -652,6 +666,9 @@ class WorkflowEngine(
             self._worker = None
         if was_running and top_agent is not None:
             self._persist_interrupted_turn(top_agent)
+        # The cancelled turn is over: let a session waiting to swap llama-server
+        # in (doc/SESSION_LLM_BINDING.md §3).
+        self._release_llama_lease()
         if in_subsession:
             # Sent before the "stopped" state event below so the client closes
             # the collapsible subsession block before it renders the generic
@@ -717,6 +734,8 @@ class WorkflowEngine(
         self._session.top_agent = self._registry.resolve_top_agent(name)
         self._session.interactive = self._registry.is_interactive(self._session.top_agent)
         self._transient.update(top_agent=self._session.top_agent)
+        # A cloud card's label names the model of the agent's capability tier.
+        self._refresh_llm_state()
         await self._emitters.emit_state()
 
     async def handle_agent_run(self, name: str, text: str, request_id: str) -> str | None:

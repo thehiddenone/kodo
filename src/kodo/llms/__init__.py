@@ -41,6 +41,7 @@ from ._interface import (
     Usage,
     default_cache_breakpoints,
 )
+from ._llama_lease import LlamaLease
 from ._logger import LoggingLLMPlugin
 from ._openrouter_catalog import (
     OpenRouterModelInfo,
@@ -75,6 +76,7 @@ from .local_registry import (
     UNLIMITED_THINKING_TIER,
     KnobKind,
     KnobOption,
+    LaunchChoice,
     LlamaKnob,
     LlmProfile,
     LocalLLMEntry,
@@ -84,6 +86,7 @@ from .local_registry import (
     clear_llama_server_override_path,
     get_active_profile,
     get_knob_selections,
+    get_launch_choice,
     get_llama_server_override_path,
     get_local_registry,
     get_mtp_sidecars,
@@ -104,6 +107,7 @@ from .local_registry import (
     resolve_default_profile_args,
     resolve_effective_llama_config,
     resolve_knob_selections,
+    resolve_profile_id,
     set_active_profile,
     set_knobs,
     set_llama_server_override_path,
@@ -134,6 +138,8 @@ __all__ = [
     "LLMRouting",
     "KnobKind",
     "KnobOption",
+    "LaunchChoice",
+    "LlamaLease",
     "LlamaArgSpec",
     "LlamaKnob",
     "LlmProfile",
@@ -181,6 +187,7 @@ __all__ = [
     "get_cloud_vendor_module",
     "get_context_window",
     "get_knob_selections",
+    "get_launch_choice",
     "get_llama_server_override_path",
     "get_local_registry",
     "get_mtp_sidecars",
@@ -207,6 +214,7 @@ __all__ = [
     "resolve_context_window",
     "resolve_default_profile_args",
     "resolve_effective_llama_config",
+    "resolve_profile_id",
     "resolve_knob_selections",
     "run_openrouter_catalog_refresh_loop",
     "sampling_param_spec",

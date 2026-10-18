@@ -24,6 +24,7 @@ from kodo.agents import PHASE_INITIAL, AgentRegistry, SubAgent
 from kodo.common import ApiKeyProvider, MessageSink
 from kodo.findings import RoundSummary
 from kodo.llms import (
+    LaunchChoice,
     LLMGateway,
     LLMPlugin,
     LLMRouting,
@@ -40,7 +41,9 @@ from kodo.workproducts import WorkProduct
 
 from .._checkpoints import CheckpointRef
 from .._gates import GateOrchestrator
+from .._llm_selection import LlmSelection
 from .._session import SessionState
+from .._session_params import ParamsSnapshot
 from ._checkpointing import CheckpointCoordinator
 from ._compaction import ContextCompactor
 from ._events import EngineEmitters
@@ -57,6 +60,7 @@ class EngineHost(Protocol):
     _gate: GateOrchestrator
     _key_provider: ApiKeyProvider
     _get_settings: Callable[[], dict[str, object]]
+    _get_default_settings: Callable[[], dict[str, object]]
     _transient: TransientStore
     _workspace_layout: WorkspaceLayout
     _gateway: LLMGateway
@@ -103,6 +107,31 @@ class EngineHost(Protocol):
 
     @staticmethod
     def _util_paths() -> dict[str, Path]: ...
+
+    # -- LLM binding (defined in _binding) ---------------------------------------
+    def _bound_selection(self) -> LlmSelection | None: ...
+
+    def _pending_selection(self) -> LlmSelection | None: ...
+
+    def _effective_settings(self) -> dict[str, object]: ...
+
+    def _selection_settings(self) -> dict[str, object]: ...
+
+    def _launch_choice_for(self, model_key: str) -> LaunchChoice | None: ...
+
+    def _lease_holder(self) -> str: ...
+
+    def _llama_command_for(self, model_key: str) -> tuple[str, ...] | None: ...
+
+    def _release_llama_lease(self) -> None: ...
+
+    async def _bind_for_prompt(self) -> bool: ...
+
+    async def handle_llm_selection_capture(self) -> bool: ...
+
+    def _refresh_llm_state(self) -> None: ...
+
+    def _params_snapshot(self) -> ParamsSnapshot: ...
 
     # -- LLM plumbing (defined in _llm) -----------------------------------------
     def _resolve_model_key(self, capability: str) -> str: ...

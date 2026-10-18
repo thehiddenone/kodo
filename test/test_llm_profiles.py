@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from kodo.llms.llamacpp._llama_server import LlamaServer, LlamaServerConfig
+from kodo.llms.llamacpp import LlamaServerConfig, build_llama_command
 from kodo.llms.local_registry import (
     GPT_OSS_REASONING_EFFORT_FAMILY,
     MUSE_GLIMMER_REASONING_STRENGTH_FAMILY,
@@ -821,7 +821,7 @@ def test_remove_local_entry_cleans_up_its_profiles_knobs_and_selection(tmp_path:
 
 
 def _cmd(llama_args: dict[str, str]) -> list[str]:
-    server = LlamaServer(
+    return build_llama_command(
         LlamaServerConfig(
             executable=Path("/bin/llama-server"),
             model_path=Path("/models/m.gguf"),
@@ -829,7 +829,6 @@ def _cmd(llama_args: dict[str, str]) -> list[str]:
         ),
         llama_args,
     )
-    return server._LlamaServer__build_command()  # type: ignore[attr-defined]
 
 
 def test_build_command_with_no_llama_args_carries_only_server_flags() -> None:

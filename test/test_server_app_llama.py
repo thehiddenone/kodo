@@ -885,21 +885,16 @@ async def _file_model_with_profile(
     return profile_id
 
 
-async def test_editing_the_active_profile_restarts_the_running_server(
+async def test_editing_the_active_profile_leaves_the_running_server_alone(
     ws: aiohttp.ClientWebSocketResponse,
-    monkeypatch: pytest.MonkeyPatch,
     rec: _Recorder,
     tmp_path: Path,
     _temp_home: Path,
 ) -> None:
+    # llama-server changes only when a prompt needs another command line
+    # (doc/SESSION_LLM_BINDING.md D1), never on a profile edit.
     profile_id = await _file_model_with_profile(ws, tmp_path, _temp_home)
     rec.active = _FakeLlamaServer("file-model")
-    relaunched = _FakeLlamaServer("file-model", port=9000)
-
-    async def _ensure(_entry: object, _kodo_dir: Path) -> _FakeLlamaServer:
-        return relaunched
-
-    monkeypatch.setattr(f"{_APP}.ensure_llama_running", _ensure)
     await _send(
         ws,
         "local_llm.update_profile",
@@ -907,31 +902,22 @@ async def test_editing_the_active_profile_restarts_the_running_server(
         profile_id=profile_id,
         profile_name="Tighter",
     )
-    state = await _event(ws)
-    assert state == {"type": "llama.state", "running": True, "model": "file-model", "port": 9000}
     assert (await _event(ws))["type"] == "local_llm.registry_state"
-    assert rec.active.stops == 1
+    assert rec.active.stops == 0
 
 
-async def test_a_failed_restart_is_reported_as_a_stopped_server(
+async def test_removing_the_active_profile_leaves_the_running_server_alone(
     ws: aiohttp.ClientWebSocketResponse,
-    monkeypatch: pytest.MonkeyPatch,
     rec: _Recorder,
     tmp_path: Path,
     _temp_home: Path,
 ) -> None:
     profile_id = await _file_model_with_profile(ws, tmp_path, _temp_home)
     rec.active = _FakeLlamaServer("file-model")
-
-    async def _ensure(_entry: object, _kodo_dir: Path) -> _FakeLlamaServer:
-        raise RuntimeError("out of VRAM")
-
-    monkeypatch.setattr(f"{_APP}.ensure_llama_running", _ensure)
     await _send(ws, "local_llm.remove_profile", name="file-model", profile_id=profile_id)
-    state = await _event(ws)
-    assert state == {"type": "llama.state", "running": False, "model": None, "error": "out of VRAM"}
     entry = _entry(await _event(ws), "file-model")
     assert entry["active_profile"] == ""
+    assert rec.active.stops == 0
 
 
 async def test_a_server_running_another_model_is_not_restarted(
@@ -992,7 +978,7 @@ async def test_llama_start_with_an_unknown_model_reports_an_error(
     assert "ghost" in str(state["error"])
 
 
-async def test_llama_start_on_a_server_url_entry_stops_the_managed_server(
+async def test_llama_start_on_a_server_url_entry_stops_an_idle_managed_server(
     ws: aiohttp.ClientWebSocketResponse, rec: _Recorder, _temp_home: Path
 ) -> None:
     await _send(ws, "local_llm.add_server_url", name="remote", url="http://h:1")
@@ -1004,6 +990,14 @@ async def test_llama_start_on_a_server_url_entry_stops_the_managed_server(
     assert rec.active.stops == 1
 
 
+def _plan_without_llamacpp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``llama.start`` plans the command line before it launches; no llama.cpp here."""
+    monkeypatch.setattr(
+        f"{_APP}.plan_llama_command",
+        lambda entry, _kodo_dir: ("llama-server", "--model", entry.name),
+    )
+
+
 async def test_llama_start_launches_the_selected_model(
     ws: aiohttp.ClientWebSocketResponse,
     monkeypatch: pytest.MonkeyPatch,
@@ -1011,6 +1005,7 @@ async def test_llama_start_launches_the_selected_model(
     _temp_home: Path,
 ) -> None:
     launched: list[str] = []
+    _plan_without_llamacpp(monkeypatch)
 
     async def _ensure(entry: LocalLLMEntry, _kodo_dir: Path) -> _FakeLlamaServer:
         launched.append(entry.name)
@@ -1035,6 +1030,8 @@ async def test_llama_start_failure_is_reported(
     tmp_path: Path,
     _temp_home: Path,
 ) -> None:
+    _plan_without_llamacpp(monkeypatch)
+
     async def _ensure(_entry: object, _kodo_dir: Path) -> _FakeLlamaServer:
         raise RuntimeError("no llama.cpp installed")
 

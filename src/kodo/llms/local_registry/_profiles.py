@@ -27,6 +27,8 @@ here, so this is one-directional.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ._entries import get_local_registry, get_mtp_sidecars
@@ -49,19 +51,87 @@ from ._types import LlmProfile, LocalLLMEntry
 _log = logging.getLogger(__name__)
 
 __all__ = [
+    "LaunchChoice",
     "add_profile",
     "get_active_profile",
     "get_knob_selections",
+    "get_launch_choice",
     "get_profiles",
     "get_selected_mtp_sidecar",
     "remove_profile",
     "resolve_context_window",
     "resolve_default_profile_args",
     "resolve_effective_llama_config",
+    "resolve_profile_id",
     "set_active_profile",
     "set_knobs",
     "update_profile",
 ]
+
+
+@dataclass(frozen=True)
+class LaunchChoice:
+    """Which profile and which knob values one local entry launches with.
+
+    The registry stores one such choice per entry (``active_profiles`` and
+    the knob selections — the sidebar's state). A session that has bound to a
+    local entry keeps its *own* copy (doc/SESSION_LLM_BINDING.md D6), and
+    every launch-config function below takes one as an optional ``choice``
+    argument; ``None`` there means "the registry's stored choice".
+
+    Attributes:
+        profile_id: A user-defined profile id, or ``""`` for the Default
+            profile. An id whose profile has since been removed resolves to
+            the Default profile, same as a stale ``active_profiles`` entry.
+        knobs: ``{knob_id: selection}`` for the Default profile. Need not be
+            complete; a missing or stale selection resolves to the knob's
+            default (:func:`~._knobs.resolve_knob_selections`). Ignored while
+            a user-defined profile is selected.
+    """
+
+    profile_id: str = ""
+    knobs: Mapping[str, str] = field(default_factory=dict)
+
+
+def get_launch_choice(kodo_dir: Path, entry: LocalLLMEntry) -> LaunchChoice:
+    """The registry's stored choice for *entry*: its active profile and resolved knobs.
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        entry: The entry to read.
+
+    Returns:
+        LaunchChoice: The choice the sidebar currently shows for *entry*;
+        empty for a ``custom_server_url`` entry, which kodo never launches.
+    """
+    if entry.kind == "custom_server_url":
+        return LaunchChoice()
+    return LaunchChoice(
+        profile_id=get_active_profile(kodo_dir, entry.name),
+        knobs=get_knob_selections(kodo_dir, entry),
+    )
+
+
+def resolve_profile_id(kodo_dir: Path, entry: LocalLLMEntry, choice: LaunchChoice | None) -> str:
+    """The profile id *entry* launches with under *choice*.
+
+    A *choice* naming a profile that no longer exists falls back to ``""``,
+    the Default profile — the same rule :func:`get_active_profile` applies to
+    the registry's own stale ids.
+
+    Args:
+        kodo_dir: User-level ``~/.kodo`` directory.
+        entry: The entry to resolve.
+        choice: A session's own choice, or ``None`` for the registry's.
+
+    Returns:
+        str: A profile id that exists, or ``""`` for the Default profile.
+    """
+    if choice is None:
+        return get_active_profile(kodo_dir, entry.name)
+    if choice.profile_id and any(p.id == choice.profile_id for p in get_profiles(kodo_dir, entry)):
+        return choice.profile_id
+    return ""
 
 
 def _require_launchable(kodo_dir: Path, entry_name: str) -> LocalLLMEntry:
@@ -431,7 +501,9 @@ def set_knobs(kodo_dir: Path, entry_name: str, selections: dict[str, str]) -> di
 # ---------------------------------------------------------------------------
 
 
-def resolve_default_profile_args(kodo_dir: Path, entry: LocalLLMEntry) -> dict[str, str]:
+def resolve_default_profile_args(
+    kodo_dir: Path, entry: LocalLLMEntry, choice: LaunchChoice | None = None
+) -> dict[str, str]:
     """*entry*'s Default profile args: its base args with knob args layered on top.
 
     The one place the base-args-are-the-floor rule is applied (see
@@ -441,11 +513,15 @@ def resolve_default_profile_args(kodo_dir: Path, entry: LocalLLMEntry) -> dict[s
     Args:
         kodo_dir: User-level ``~/.kodo`` directory.
         entry: The entry to resolve.
+        choice: Knob values to resolve with; ``None`` (default) uses the
+            registry's stored selection.
 
     Returns:
         dict[str, str]: A fresh dict, safe for the caller to mutate.
     """
-    stored = _stored_selections(_load_raw(kodo_dir), entry)
+    stored = (
+        dict(choice.knobs) if choice is not None else _stored_selections(_load_raw(kodo_dir), entry)
+    )
     args = dict(entry.base_llama_args)
     args.update(knob_selection_args(entry.knobs, stored, entry.knob_defaults))
     return args
@@ -477,7 +553,7 @@ def resolve_context_window(entry: LocalLLMEntry, llama_args: dict[str, str]) -> 
 
 
 def resolve_effective_llama_config(
-    kodo_dir: Path, entry: LocalLLMEntry
+    kodo_dir: Path, entry: LocalLLMEntry, choice: LaunchChoice | None = None
 ) -> tuple[dict[str, str], int]:
     """The ``(llama_args, context_window)`` actually launched for *entry*.
 
@@ -490,6 +566,9 @@ def resolve_effective_llama_config(
     Args:
         kodo_dir: User-level ``~/.kodo`` directory.
         entry: The entry about to be launched.
+        choice: The profile and knobs to resolve with — a bound session's own
+            (doc/SESSION_LLM_BINDING.md D6); ``None`` (default) uses the
+            registry's stored choice.
 
     Returns:
         tuple[dict[str, str], int]: ``(llama_args, context_window)`` for this
@@ -497,17 +576,19 @@ def resolve_effective_llama_config(
     """
     if entry.kind == "custom_server_url":
         return {}, entry.context_window
-    profile_id = get_active_profile(kodo_dir, entry.name)
+    profile_id = resolve_profile_id(kodo_dir, entry, choice)
     if profile_id:
         profile = next((p for p in get_profiles(kodo_dir, entry) if p.id == profile_id), None)
         if profile is not None:
             args = dict(profile.llama_args)
             return args, resolve_context_window(entry, args)
-    args = resolve_default_profile_args(kodo_dir, entry)
+    args = resolve_default_profile_args(kodo_dir, entry, choice)
     return args, resolve_context_window(entry, args)
 
 
-def get_selected_mtp_sidecar(kodo_dir: Path, entry: LocalLLMEntry) -> MtpSidecar | None:
+def get_selected_mtp_sidecar(
+    kodo_dir: Path, entry: LocalLLMEntry, choice: LaunchChoice | None = None
+) -> MtpSidecar | None:
     """The standalone MTP head *entry* is about to launch with, if any.
 
     Only the Default profile drafts with a head: a user-defined profile's args
@@ -516,17 +597,24 @@ def get_selected_mtp_sidecar(kodo_dir: Path, entry: LocalLLMEntry) -> MtpSidecar
     Args:
         kodo_dir: User-level ``~/.kodo`` directory.
         entry: The entry about to be launched.
+        choice: The profile and knobs to resolve with; ``None`` (default)
+            uses the registry's stored choice.
 
     Returns:
         MtpSidecar | None: The head the entry's MTP head picker currently
         selects; ``None`` when a user-defined profile is active, the entry has
         no picker, or the picker is on *Off* or *Built-in*.
     """
-    if entry.kind == "custom_server_url" or get_active_profile(kodo_dir, entry.name):
+    if entry.kind == "custom_server_url" or resolve_profile_id(kodo_dir, entry, choice):
         return None
     picker = next((knob for knob in entry.knobs if is_mtp_head_knob(knob)), None)
     if picker is None:
         return None
-    selected = get_knob_selections(kodo_dir, entry).get(picker.id, "")
+    selections = (
+        resolve_knob_selections(entry.knobs, dict(choice.knobs), entry.knob_defaults)
+        if choice is not None
+        else get_knob_selections(kodo_dir, entry)
+    )
+    selected = selections.get(picker.id, "")
     sidecars = get_mtp_sidecars(kodo_dir, entry.base_llm)
     return next((sidecar for sidecar in sidecars if sidecar.id == selected), None)

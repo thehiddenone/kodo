@@ -51,6 +51,19 @@ share; everything else is internal.
 > - Resume is **client-driven** (the window persists its `session_id`); the old
 >   guide-session-marker auto-resume is gone.
 
+> **Session ↔ LLM binding (2026-10-17).** Each session now runs on its own
+> LLM, bound at its first prompt ([SESSION_LLM_BINDING.md](SESSION_LLM_BINDING.md)):
+> - `state` (§5.1) gained **`llm`** `{bound, binding, selection, label, next_label}`.
+> - New client→server **`llm_selection.capture`** (§7.4i): take the sidebar's
+>   current card as a bound session's next LLM.
+> - New server→client **`session.params`** (§5.9j) `{first, changes}` — what
+>   changed since the previous prompt, persisted as a `session_params` marker.
+> - `llm.waiting` gained `reason: "model_swap"` — a local request waiting for
+>   another session's turn to release llama-server on a different command line.
+> - `config.reload` (§7.5) no longer moves a **bound** session; profile/knob
+>   commands (§7.6) no longer restart llama-server; `llama.stop` is refused
+>   while a session's turn holds llama-server.
+
 Where a message is **specified but not yet emitted/handled** (a planned
 extension or a stubbed feature), it is flagged **⟪planned⟫** inline. Everything
 not so flagged is live in the current build.
@@ -345,7 +358,15 @@ Pushed on connect (also embedded in `hello.ack`), and whenever a field below cha
   "thinking_level": "unlimited" | "medium" | "" | "...",
   "awaiting_first_chunk": false,
   "workspace_connected": true,
-  "interactive": true }
+  "interactive": true,
+  "llm": { "bound": true,
+           "binding": { "kind": "local", "entry": "unsloth-qwen36-27b-q4-k-xl",
+                        "profile_id": "", "knobs": {"context": "128k"},
+                        "command": ["…/llama-server", "--model", "…"] },
+           "selection": { "kind": "local", "entry": "unsloth-qwen36-27b-q4-k-xl",
+                          "profile_id": "", "knobs": {"context": "128k"} },
+           "label": "Qwen3.6 27B Q4_K_XL",
+           "next_label": "" } }
 ```
 
 `phase` semantics:
@@ -396,6 +417,20 @@ The header toggles split into **two frozen** and **three never-frozen**:
 > payload itself.
 
 **Added 2026-07-23:** `workspace_connected` — whether this session's bound directories (if any) are hosted by the workspace currently open in this window, i.e. `WorkflowEngine._is_workspace_connected()` (§7.1b's disconnected/isolated-operation extension). Mode-agnostic (Guided and Problem Solver sessions both report it) and always `true` for a session that has never locked a directory. Recomputed — and this event re-pushed — on session start and on every `workspace.folders` push (§7.1b), so it tracks live connect/disconnect transitions within a turn, not just at session-open time. Drives kodo-vsix's reconnect-workspace button (webview footer, shown only while `false`).
+
+**Added 2026-10-17:** `llm` — the session's own LLM
+([SESSION_LLM_BINDING.md](SESSION_LLM_BINDING.md) §2). `bound` is `false`
+until the session's first prompt binds it; an unbound session follows the
+sidebar (`settings.json`) and `binding`/`selection` are `null`. `binding` is
+what the last prompt ran with (a local card also carries `command`, the exact
+llama-server argv, `[]` for a self-hosted entry); `selection` is what the next
+prompt binds to — equal to `binding` until `llm_selection.capture` (§7.4i)
+replaces it. A cloud card is `{kind: "cloud", vendor, tiers: {low, medium,
+high, max}, uniform: {enabled, model_id}, openrouter_auto}`. `label` names the
+bound LLM (a local entry's description, or `"<Vendor> · <model>"` naming the
+top-level agent's tier model); `next_label` names the pending one when it
+differs, else `""`. While bound, `thinking_level` describes `selection`'s
+thinking family.
 
 **Added 2026-10-05:** `interactive` — `false` while `top_agent` is an agent
 declared `interactive: false` (a session started by `agent.run`, §7.4h, such as
@@ -820,6 +855,36 @@ The titler's own llama-server is started as early as possible in kodo's own star
 Also persisted as a `greeting` marker (`{type: "greeting", text}`) so it replays via `session.history` (§5.11) on every future reload — the user always sees their session's original greeting again. Rendered as a non-context, informational feed entry (`exclude_from_context: true`): because it is a bare marker (no `role` key), `HistoryProjector.load_main_messages` never reads it back into the live LLM context, so the coding agent itself never sees its own greeting — only the human does.
 
 In the common case the titler's chat completion is not yet done by the time `_handle_session_hello` reads back `session.history` moments after `hello.ack`, so a freshly-connected client sees the greeting via this live event, not via the initial history replay; the persisted marker only matters from the next reload onward.
+
+### 5.9j `session.params` — what changed since the previous prompt
+
+Pushed when a prompt is dequeued, right before its turn starts, whenever the
+session's parameters differ from the previous prompt's
+([SESSION_LLM_BINDING.md](SESSION_LLM_BINDING.md) §4).
+
+```json
+{ "type": "session.params", "first": false,
+  "changes": [
+    {"param": "llm", "label": "LLM", "from": "Qwen3.6 27B Q4_K_XL", "to": "Anthropic · Claude Opus 5"},
+    {"param": "thinking", "label": "Thinking", "from": "unlimited", "to": "high",
+     "from_base_llm": "Qwen36-27B", "to_base_llm": "anthropic"}] }
+```
+
+Params: `llm`, `agent`, `mode`, `edit_control`, `command_control`, `thinking`,
+`profile`, `flag:<llama-server flag>`, `sampling:<parameter>`, `tier:<low…max>`,
+`uniform`, `openrouter_auto`. `from`/`to` are raw values (`null` = not set);
+`from_<k>`/`to_<k>` carry display context (`base_llm` for a thinking tier,
+`display` for an agent's or profile's name). A row is listed when its value
+changed, unless it went from the old LLM's default to the new LLM's default;
+`llm` is listed whenever the LLM's identity changed. `first: true` marks a
+session's first prompt: the `llm` row (with `from: null`) plus every parameter
+not at its default. A session that already had a conversation before bindings
+existed gets no element on its first bound prompt.
+
+Persisted as a `session_params` marker (`{type, first, changes}`) and replayed
+by `session.history` as a `{type: "session_params", first, changes}` entry; a
+marker never reaches the LLM context. kodo-vsix renders it right before the
+prompt it applies to.
 
 ### 5.10 `error` — unsolicited server error
 
@@ -1769,9 +1834,28 @@ Agent Review session writes nothing, so nothing is refreshed after it.
 Only built-in agents may declare `interactive: false`; a user-installed one
 that does is demoted like any other broken agent (doc/USER_AGENTS.md).
 
+### 7.4i `llm_selection.capture` — the sidebar's card becomes a bound session's next LLM
+
+```json
+{ "type": "llm_selection.capture", "session_id": "…" }
+```
+
+Reply: `{ "type": "llm_selection.capture.ack", "ok": true, "bound": true | false }`,
+followed by a `state` (§5.1) whose `llm.selection` is the new card.
+
+No payload: the server snapshots the same `settings.json` selection and
+registry profile/knob state the sidebar just wrote
+(`LlmSelection.from_settings`). kodo-vsix sends it on the active session's
+connection after every sidebar edit — card, mode, cloud vendor, tier models,
+"one model for all", OpenRouter Auto, profile, knobs (for the last two, after
+the `local_llm.registry_state` reply, since the server makes that write). An
+unbound session ignores it (`bound: false`): it follows the sidebar anyway and
+binds at its first prompt. Nothing binds, starts or restarts here; the next
+prompt does that ([SESSION_LLM_BINDING.md](SESSION_LLM_BINDING.md) D1, D7).
+
 ### 7.5 `config.reload` — apply settings.json changes
 
-Tells the server to re-read `~/.kodo/etc/settings.json`. The primary use is model switching: the VSIX edits `mode`, `active_cloud_vendor`, and/or the `models` map and sends this message; the engine resolves the new active plugin on its next dispatch (settings are read fresh per call).
+Tells the server to re-read `~/.kodo/etc/settings.json`. The primary use is model switching: the VSIX edits `mode`, `active_cloud_vendor`, and/or the `models` map and sends this message; the engine resolves the new active plugin on its next dispatch (settings are read fresh per call). Since 2026-10-17 that reaches **unbound** sessions only: a bound session resolves against its own binding overlaid on the settings, so a sidebar pick changes it only through `llm_selection.capture` (§7.4i) and its next prompt ([SESSION_LLM_BINDING.md](SESSION_LLM_BINDING.md) §2.3).
 
 ```json
 { "type": "config.reload" }
@@ -1921,8 +2005,8 @@ download record; nothing on the wire names a head.
 { "type": "local_llm.add_server_url", "name": "...", "description": "...", "url": "http://host:port" }
 { "type": "llama_server_override.set", "path": "/usr/local/bin/llama-server-cuda" }
 { "type": "llama_server_override.remove" }
-{ "type": "llama.start" }            // start (or restart) llama-server for the active model
-{ "type": "llama.stop" }             // stop llama-server
+{ "type": "llama.start" }            // start (or restart) llama-server for the sidebar's card
+{ "type": "llama.stop" }             // stop llama-server (refused while a session's turn holds it)
 ```
 
 → `llamacpp.uninstall.ack` `{ "llama_installed": false, "llama_version": null }`
@@ -2009,21 +2093,25 @@ knob, is an error. Selections are persisted **sparsely** — anything equal to
 the knob's current default is not written at all, so a later kodo release can
 change a default and have it reach everyone who never moved that knob.
 
-`set_active_profile`/`remove_profile`/`update_profile`/`set_knobs` restart
-llama-server **only** when `name` is the currently selected local model
-(`models.local`) **and** llama-server is actually running it — for
-`update_profile`/`remove_profile` only when the affected profile is the active
-one, and for `set_knobs` only when the knobs actually resolve to *different*
-launch args (opening Configure, changing nothing and pressing Apply must not
-interrupt a window mid-generation) and no user-defined profile is active
-(knobs aren't what launches then). Reconfiguring an inactive entry just
-persists the change. A restart, when it happens, also emits a fresh
-`llama.state` (§5.12) on the same connection, same as
-`llama.start`.
+`set_active_profile`/`remove_profile`/`update_profile`/`set_knobs` only
+persist: since 2026-10-17 none of them restarts llama-server. They change the
+sidebar's stored choice (and a profile's definition); a session that binds to
+the result sees a different llama-server command line at its next prompt, and
+llama-server restarts then ([SESSION_LLM_BINDING.md](SESSION_LLM_BINDING.md)
+D1, §3).
+
+`llama.start` launches the sidebar's card under the llama-server lease: while
+another session's turn holds llama-server on a different command line it waits
+(the requesting connection gets `llm.waiting {reason: "model_swap"}`), so it
+never swaps the model out from under a running turn. `llama.stop` while a
+session's turn holds llama-server is refused: the reply is a `llama.state`
+with `running: true` and an `error` saying so.
 
 `llama.start` on a `custom_server_url` active entry stops kodo's own
-llama-server (if running) and reports `llama.state {running: false}` — it
-does not start a process for that entry (see §5.12).
+llama-server (if running and no session's turn holds it) and reports
+`llama.state {running: false}` — it does not start a process for that entry
+(see §5.12). A session's request on such an entry no longer stops kodo's own
+server: another session may be bound to it.
 
 ### 7.6a `llm.select` — RETIRED
 

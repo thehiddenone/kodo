@@ -24,6 +24,7 @@ from kodo.common import Envelope, MessageSink
 from kodo.llms import (
     QWEN_TIER_TOKEN_BUDGETS,
     UNLIMITED_THINKING_TIER,
+    LaunchChoice,
     LLMPlugin,
     Message,
     SamplingParams,
@@ -45,7 +46,7 @@ from kodo.toolspecs import tool_description
 from kodo.transport import EVT_LLAMA_STATE
 
 from ._llama_server import LlamaServer
-from ._manager import ensure_llama_running
+from ._manager import ensure_llama_running, plan_llama_command
 from ._remote import RemoteLlamaEndpoint
 
 __all__ = ["LlamaPlugin", "MalformedToolCallError"]
@@ -517,10 +518,13 @@ class LlamaPlugin(LLMPlugin):
 
     __sink: MessageSink
     __kodo_dir: Path
+    __choice: LaunchChoice | None
     __client: openai.AsyncOpenAI | None
     __cancel_events: dict[str, asyncio.Event]
 
-    def __init__(self, sink: MessageSink, kodo_dir: Path) -> None:
+    def __init__(
+        self, sink: MessageSink, kodo_dir: Path, choice: LaunchChoice | None = None
+    ) -> None:
         """Initialise the plugin.
 
         Args:
@@ -528,9 +532,14 @@ class LlamaPlugin(LLMPlugin):
                 events to the VSIX client.
             kodo_dir (Path): User-level ``~/.kodo`` directory used to locate
                 the llama.cpp install and downloaded models.
+            choice (LaunchChoice | None): The profile and knobs the managed
+                llama-server must run with — the calling session's own
+                (doc/SESSION_LLM_BINDING.md D6); ``None`` uses the registry's
+                stored choice.
         """
         self.__sink = sink
         self.__kodo_dir = kodo_dir
+        self.__choice = choice
         self.__client = None
         self.__cancel_events = {}
 
@@ -636,15 +645,9 @@ class LlamaPlugin(LLMPlugin):
             return
 
         if entry is not None and entry.kind == "custom_server_url":
-            # Externally-managed server: stop kodo's own managed process (if
-            # any) and never start one — it stays stopped until the user picks
-            # a kodo-managed local model again (see doc/LLM_REGISTRY.md).
-            managed = LlamaServer.get_active_llama_server()
-            if managed is not None and managed.is_running:
-                await managed.stop()
-                await self.__sink.send(
-                    Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None})
-                )
+            # Externally-managed server: never start kodo's own. Kodo's managed
+            # process is left alone — another session may be bound to it
+            # (doc/SESSION_LLM_BINDING.md §3); the sidebar's Stop frees it.
             self.__client = openai.AsyncOpenAI(
                 api_key=_API_KEY,
                 base_url=f"{entry.url}/v1",
@@ -653,7 +656,16 @@ class LlamaPlugin(LLMPlugin):
             return
 
         server = LlamaServer.get_active_llama_server()
-        if server is not None and server.is_running and server.model_name == model_name:
+        if entry is not None and server is not None and server.is_running:
+            try:
+                planned: tuple[str, ...] | None = plan_llama_command(
+                    entry, self.__kodo_dir, self.__choice
+                )
+            except RuntimeError:
+                planned = None  # the slow path below reports why
+        else:
+            planned = None
+        if server is not None and planned is not None and server.command == planned:
             if self.__client is None:
                 self.__client = openai.AsyncOpenAI(
                     api_key=_API_KEY,
@@ -676,7 +688,7 @@ class LlamaPlugin(LLMPlugin):
             raise RuntimeError(error)
 
         try:
-            server = await ensure_llama_running(entry, self.__kodo_dir)
+            server = await ensure_llama_running(entry, self.__kodo_dir, self.__choice)
         except Exception as exc:
             await self.__sink.send(
                 Envelope.make_event(

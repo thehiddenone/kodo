@@ -827,3 +827,18 @@ def test_expand_persisted_attachments_skips_non_dict_entries() -> None:
     projector, transient, _c = _make_projector(Path("."))
     text = projector._expand_persisted_attachments("clean text", ["not-a-dict"])
     assert "clean text" in text
+
+
+async def test_history_entries_session_params_marker(tmp_path: Path) -> None:
+    projector, transient, _c = _make_projector(tmp_path)
+    changes = [{"param": "llm", "label": "LLM", "from": "A", "to": "B"}]
+    transient._lines = [{"type": "session_params", "first": False, "changes": changes}]
+    entries = await projector.history_entries()
+    assert entries == [{"type": "session_params", "first": False, "changes": changes}]
+
+
+async def test_history_entries_session_params_marker_tolerates_garbage(tmp_path: Path) -> None:
+    projector, transient, _c = _make_projector(tmp_path)
+    transient._lines = [{"type": "session_params", "first": "yes", "changes": "nope"}]
+    entries = await projector.history_entries()
+    assert entries == [{"type": "session_params", "first": False, "changes": []}]

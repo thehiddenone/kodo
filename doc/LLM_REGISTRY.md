@@ -458,7 +458,7 @@ shape as every other vendor — defaulting all four tiers to the special
 router pseudo-model `"openrouter/auto"` out of the box. A second, separate
 boolean, `openrouter_auto_mode` (default `False`, doc/SETTINGS.md §2.2b),
 is the account-wide "Auto mode" toggle the Cloud AI Settings tab's checkbox
-drives: when `True`, `kodo/runtime/_engine/_llm.py`'s `_resolve_model_key`
+drives: when `True`, `kodo/runtime/_llm_selection.py`'s `resolve_model_key`
 returns `"openrouter/auto"` unconditionally for every tier, **without**
 overwriting `models.cloud.openrouter` — so switching Auto back off restores
 whatever the user had picked per-tier in Manual mode. This mirrors
@@ -2051,6 +2051,18 @@ A local registry entry is launched under one of exactly two things:
   `{flag: value}` arg sets the user builds in the "Manage profiles" editor.
   These have no knobs.
 
+**Whose choice it is (2026-10-17).** The registry stores one choice per entry —
+`active_profiles[entry]` plus the knob selections — and that is the
+**sidebar's** state. A session that has bound to a local entry keeps its *own*
+copy (a `LaunchChoice(profile_id, knobs)`, doc/SESSION_LLM_BINDING.md D6), and
+every launch-config function takes it as an optional `choice` argument
+(`resolve_effective_llama_config`, `resolve_default_profile_args`,
+`get_selected_mtp_sidecar`, `resolve_llama_launch`, `plan_llama_command`,
+`ensure_llama_running`, `get_context_window`); `None` means the registry's
+stored choice. A `choice` naming a removed profile resolves to the Default
+profile (`resolve_profile_id`). Profile *definitions* stay global: editing a
+profile's flags reaches every session using it at its next prompt.
+
 This replaced the older **flavor** model, where every useful combination had
 to be enumerated as its own predefined `LlamaFlavor` literal in Python. The
 Laguna-S-2.1 catalog is the clearest illustration of why: each of its 20
@@ -2403,12 +2415,12 @@ plus, once per payload rather than per entry:
 Five client→server messages manage all of this (doc/WS_PROTOCOL.md §7.6):
 `local_llm.add_profile`, `.update_profile`, `.remove_profile`,
 `.set_active_profile`, and `.set_knobs`. All five reply with
-`local_llm.registry_state`. The last two restart llama-server immediately
-**only** if the entry is both the selected local model (`models.local`) and the
-one currently running — reconfiguring an inactive entry just persists the
-choice. `set_knobs` additionally compares the *resolved args* before and after
-and skips the restart when they are unchanged, so opening Configure, changing
-nothing and pressing Apply never interrupts a window mid-generation.
+`local_llm.registry_state`. None of them restarts llama-server (since
+2026-10-17, doc/SESSION_LLM_BINDING.md D1): they change the sidebar's stored
+choice, kodo-vsix captures it into the active bound session as its next one,
+and the next prompt that needs a different llama-server command line restarts
+it (`ensure_llama_running` compares the running server's recorded argv with
+the planned one).
 
 **kodo-vsix UI.** Three surfaces, in two places:
 
@@ -2431,8 +2443,8 @@ nothing and pressing Apply never interrupts a window mid-generation.
   knobs behind a collapsible section that is collapsed every time the modal
   opens. Edits are local until **Apply**, which sends the whole selection at
   once; **Cancel** discards them. Deliberately unlike the profile editor, where
-  a field writes through immediately: a knob change can restart llama-server,
-  so "change three knobs, restart once" has to be possible.
+  a field writes through immediately: one Apply is one new launch choice, so a
+  session captures three knob changes as one.
 - The **Manage profiles modal** (`settings-webview/ProfileModal.tsx`) is the
   user-defined-profile editor — see §4.7 for its argument picker. The settings
   panel's Local LLMs card offers both buttons (Configure Default Profile,
@@ -2609,7 +2621,7 @@ outside its recommended band — or while the name is blank or clashes.
   "mode": "cloud",
   "active_cloud_vendor": "anthropic",
   "models": {
-    "local": "llamacpp-qwen36-27b-q4-k-xl",
+    "local": "unsloth-qwen38-27b-ud-q4-k-xl",
     "cloud": {
       "anthropic": { "low": "claude-haiku-4-5-20251001", "medium": "claude-sonnet-5",
                       "high": "claude-opus-5", "max": "claude-fable-5" }

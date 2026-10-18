@@ -12,6 +12,7 @@ was written.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -212,6 +213,11 @@ async def test_sandboxed_session_refuses_outside_writes_and_git_mutation(
         return plugin, "fake-model", LLMRouting(residence="local")
 
     monkeypatch.setattr(WorkflowEngine, "_resolve_plugin", _resolve_plugin)
+    # A cloud card binds without any local model on disk; the scripted plugin
+    # above answers instead of the vendor (doc/SESSION_LLM_BINDING.md §2.2).
+    settings = tmp_path / "home" / ".kodo" / "etc" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"mode": "cloud"}), encoding="utf-8")
 
     server = TestServer(create_app(Config(headless_sandbox=sandbox)))
     await server.start_server()

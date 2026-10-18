@@ -32,6 +32,7 @@ keeps the API key per session — the gateway never touches keys.
 
 ```python
 LLMRouting(residence="local")                 # the one shared local feed
+LLMRouting(residence="local", launch=argv, holder=session_id)  # + the llama-server lease
 LLMRouting(residence="cloud", vendor="anthropic")  # per-vendor cloud feed
 ```
 
@@ -49,11 +50,46 @@ A feed is a **delay-aware FIFO admission controller**: a request first sleeps ou
 its `ready_at` delay, then competes for a slot strictly in arrival order (an
 `asyncio.Condition`). `now`/`sleep` are injectable for deterministic tests.
 
+## The llama-server lease
+
+Added 2026-10-17 with per-session LLM binding
+([SESSION_LLM_BINDING.md](SESSION_LLM_BINDING.md) §3). Sessions can be bound
+to different local LLMs — or the same GGUF with different profiles or knobs —
+but kodo runs one managed llama-server. The local feed's one slot serializes
+single requests; it cannot keep a *turn* (many requests) on one command line.
+The **`LlamaLease`** (`llms/_llama_lease.py`) does that:
+
+- A local request whose routing names a command line (`launch`, from
+  `kodo.llms.llamacpp.plan_llama_command`) and a `holder` (the session id)
+  takes the lease **before** it competes for the feed's slot. Waiting for the
+  lease while holding the slot would deadlock: the holders' own next requests
+  need that slot to finish their turns.
+- Holders on the same command line share it. A different command line waits —
+  FIFO — until every holder released, then becomes the lease's command line;
+  waiters on that same line are admitted together. A same-command request that
+  arrives while a swap waits queues behind it, so a busy model cannot starve a
+  swap. A sole holder may switch lines without waiting.
+- The engine releases its hold when a worker task ends (a prompt, a manual
+  compaction, a resume) and when the session is stopped:
+  `LLMGateway.release_local(holder)`.
+- Self-hosted (`custom_server_url`) and headless `--llama-url` requests carry
+  no command line and never touch the lease.
+- `acquire_local(holder, argv, sink)` / `release_local(holder)` let a caller
+  outside a session (the sidebar's `llama.start`) wait the same way;
+  `local_holders` tells `llama.stop` whether a turn is using llama-server.
+
+The lease only orders requests; the restart itself happens later, inside
+`ensure_llama_running`, which compares the running server's recorded argv with
+the planned one.
+
 ## Waiting indicator
 
 When a request cannot be admitted immediately the gateway emits
 `llm.waiting {waiting:true, reason:"queued"}` to the session, and `{waiting:false}`
-once admitted. The webview shows "LLM is busy, waiting …".
+once admitted. The webview shows "LLM is busy, waiting …". While a local request
+waits for the llama-server lease the reason is `"model_swap"`, and the webview
+says it is waiting for another session's turn to end before llama.cpp switches
+to this session's LLM.
 
 ## 429 throttling (cloud)
 

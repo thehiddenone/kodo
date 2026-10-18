@@ -11,7 +11,8 @@ use and reused across restarts when the session is resumed.  Layout::
                            pending_edit_review, workspace_physical_root,
                            workspace_folders, workspace_code_file,
                            cumulative_input_tokens, cumulative_input_tokens_uncached,
-                           cumulative_output_tokens)
+                           cumulative_output_tokens, llm_selection, llm_binding,
+                           params_snapshot)
         session.jsonl    — append-only MAIN session log: top-level LLM messages
                            (agent-agnostic — Guide and Problem Solver
                            share it) interleaved with ``subsession_start`` /
@@ -40,6 +41,7 @@ See ``doc/SESSIONS.md`` for the full session/subsession model.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import time
@@ -225,6 +227,9 @@ class TransientStore:
     __command_control: str
     __thinking_level: str
     __sampling: dict[str, dict[str, object]]
+    __llm_selection: dict[str, object] | None
+    __llm_binding: dict[str, object] | None
+    __params_snapshot: dict[str, object] | None
     __security_rules: frozenset[tuple[str, str]]
     __security_path_rules: frozenset[tuple[str, str]]
     __pending_prompt: dict[str, object] | None
@@ -259,6 +264,9 @@ class TransientStore:
         self.__command_control = "smart"
         self.__thinking_level = ""
         self.__sampling = {}
+        self.__llm_selection = None
+        self.__llm_binding = None
+        self.__params_snapshot = None
         self.__security_rules = frozenset()
         self.__security_path_rules = frozenset()
         self.__pending_prompt = None
@@ -629,6 +637,68 @@ class TransientStore:
             self.__sampling[entry_name] = dict(values)
         else:
             self.__sampling.pop(entry_name, None)
+        if self.__paths is not None:
+            self.__flush(self.__paths)
+
+    @property
+    def llm_selection(self) -> dict[str, object] | None:
+        """The LLM this session's next prompt binds to (doc/SESSION_LLM_BINDING.md §2).
+
+        ``None`` while the session is unbound. Stored opaquely, like
+        ``top_agent``: what a selection means is the runtime's business
+        (``kodo.runtime.LlmSelection``), and this package imports nothing
+        from ``kodo``. Mutated only via :meth:`set_llm_state`.
+
+        Returns:
+            dict[str, object] | None: A deep copy.
+        """
+        return copy.deepcopy(self.__llm_selection)
+
+    @property
+    def llm_binding(self) -> dict[str, object] | None:
+        """The LLM this session's last prompt ran with; ``None`` = unbound.
+
+        Opaque like :attr:`llm_selection`; mutated only via :meth:`set_llm_state`.
+
+        Returns:
+            dict[str, object] | None: A deep copy.
+        """
+        return copy.deepcopy(self.__llm_binding)
+
+    @property
+    def params_snapshot(self) -> dict[str, object] | None:
+        """The session parameters as of the last prompt, which the next change element diffs.
+
+        Opaque like :attr:`llm_selection`; mutated only via :meth:`set_llm_state`.
+
+        Returns:
+            dict[str, object] | None: A deep copy; ``None`` before the first prompt.
+        """
+        return copy.deepcopy(self.__params_snapshot)
+
+    def set_llm_state(
+        self,
+        *,
+        selection: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
+        binding: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
+        params_snapshot: dict[str, object] | None = _UNSET,  # type: ignore[assignment]
+    ) -> None:
+        """Replace any of the three LLM-binding records and flush ``transient.json``.
+
+        Args:
+            selection (dict[str, object] | None): New pending selection, or
+                ``None`` to clear it. Left unchanged if omitted.
+            binding (dict[str, object] | None): New binding, or ``None`` to
+                clear it. Left unchanged if omitted.
+            params_snapshot (dict[str, object] | None): New parameter
+                snapshot. Left unchanged if omitted.
+        """
+        if selection is not _UNSET:
+            self.__llm_selection = copy.deepcopy(selection)
+        if binding is not _UNSET:
+            self.__llm_binding = copy.deepcopy(binding)
+        if params_snapshot is not _UNSET:
+            self.__params_snapshot = copy.deepcopy(params_snapshot)
         if self.__paths is not None:
             self.__flush(self.__paths)
 
@@ -1267,6 +1337,12 @@ class TransientStore:
                 if isinstance(raw_sampling, dict)
                 else {}
             )
+            selection = data.get("llm_selection")
+            self.__llm_selection = selection if isinstance(selection, dict) else None
+            binding = data.get("llm_binding")
+            self.__llm_binding = binding if isinstance(binding, dict) else None
+            snapshot = data.get("params_snapshot")
+            self.__params_snapshot = snapshot if isinstance(snapshot, dict) else None
             raw_rules = data.get("security_rules")
             self.__security_rules = (
                 frozenset(
@@ -1375,6 +1451,9 @@ class TransientStore:
             "command_control": self.__command_control,
             "thinking_level": self.__thinking_level,
             "sampling": self.__sampling,
+            "llm_selection": self.__llm_selection,
+            "llm_binding": self.__llm_binding,
+            "params_snapshot": self.__params_snapshot,
             "security_rules": sorted([list(rule) for rule in self.__security_rules]),
             "security_path_rules": sorted([list(rule) for rule in self.__security_path_rules]),
             "pending_prompt": self.__pending_prompt,

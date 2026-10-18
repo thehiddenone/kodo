@@ -116,6 +116,13 @@ class SessionState:
             refuses ``prompt.submit``/``agent.set``/``mode.set`` while it is
             ``False``, and kodo-vsix replaces the composer with a read-only
             strip (doc/WS_PROTOCOL.md §5.1, §7.4h).
+        llm: The session's LLM binding as the client renders it
+            (doc/SESSION_LLM_BINDING.md §2): ``{bound, binding, selection,
+            label, next_label}`` — ``binding``/``selection`` are
+            :meth:`kodo.runtime.LlmSelection.to_json` dicts (``None`` while
+            unbound), ``label`` names the bound LLM and ``next_label`` the
+            pending one when it differs (else ``""``). Recomputed by the
+            engine whenever either record, or the top-level agent, changes.
         awaiting_first_chunk: ``True`` from the moment an ``llm.turn_start``
             is sent until the first ``ThinkingDelta``/``TokenDelta``/
             ``ToolCallArgDelta`` of that call arrives (or the stream ends
@@ -155,6 +162,15 @@ class SessionState:
     command_control: str = "smart"
     thinking_level: str = ""
     sampling: dict[str, dict[str, object]] = field(default_factory=dict)
+    llm: dict[str, object] = field(
+        default_factory=lambda: {
+            "bound": False,
+            "binding": None,
+            "selection": None,
+            "label": "",
+            "next_label": "",
+        }
+    )
     security_rules: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     security_path_rules: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     awaiting_first_chunk: bool = False
@@ -186,6 +202,7 @@ class SessionState:
             "command_control": self.command_control,
             "thinking_level": self.thinking_level,
             "sampling": self.sampling,
+            "llm": self.llm,
             "awaiting_first_chunk": self.awaiting_first_chunk,
             "workspace_connected": self.workspace_connected,
         }

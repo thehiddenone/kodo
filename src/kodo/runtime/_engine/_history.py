@@ -287,6 +287,15 @@ class HistoryProjector:
             ]
         if kind == "greeting":
             return [{"type": "greeting", "text": str(line.get("text", ""))}]
+        if kind == "session_params":
+            changes = line.get("changes")
+            return [
+                {
+                    "type": "session_params",
+                    "first": line.get("first") is True,
+                    "changes": changes if isinstance(changes, list) else [],
+                }
+            ]
         if kind == "security_rule_added":
             return [
                 {

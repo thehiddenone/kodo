@@ -23,8 +23,15 @@ Routing is by **feed**:
 A feed is a **delay-aware FIFO admission controller**: a request honors its
 ``ready_at`` delay first, then competes for a slot strictly in arrival order.
 
+A local request that names its llama-server command line
+(:attr:`LLMRouting.launch`) first takes the gateway's :class:`LlamaLease`
+for its session (:attr:`LLMRouting.holder`): a session bound to another
+command line waits there until every other holder's turn has ended
+(doc/SESSION_LLM_BINDING.md §3). The engine releases its hold with
+:meth:`LLMGateway.release_local` when the turn ends.
+
 The gateway is the only component that constructs and emits the
-``llm.waiting`` envelopes (queued + throttled indicators).
+``llm.waiting`` envelopes (queued, throttled and model-swap indicators).
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ from kodo.common import Envelope
 from kodo.transport import EVT_LLM_WAITING
 
 from ._interface import LLMPlugin, RateLimited, StreamEvent
+from ._llama_lease import LlamaLease
 
 __all__ = ["EventSink", "LLMGateway", "LLMRouting", "RateLimited"]
 
@@ -66,10 +74,18 @@ class LLMRouting:
         residence: ``"local"`` or ``"cloud"``.
         vendor: Cloud vendor key (e.g. ``"anthropic"``) — selects the per-vendor
             feed.  Ignored for local requests (all local share one feed).
+        launch: For a local request served by kodo's managed llama-server,
+            the exact argv it needs (:func:`kodo.llms.llamacpp.plan_llama_command`);
+            ``None`` for a self-hosted or remote endpoint, which never waits
+            for the lease.
+        holder: Who holds the lease for this request — the session id. Empty
+            means no lease is taken.
     """
 
     residence: str
     vendor: str | None = None
+    launch: tuple[str, ...] | None = None
+    holder: str = ""
 
 
 class _Feed:
@@ -211,6 +227,39 @@ class LLMGateway:
         self.__sleep = sleep
         self.__jitter = jitter
         self.__feeds: dict[str, _Feed] = {}
+        self.__lease = LlamaLease()
+
+    @property
+    def local_holders(self) -> frozenset[str]:
+        """Sessions (or one-off callers) holding the managed llama-server right now."""
+        return self.__lease.holders
+
+    async def acquire_local(
+        self, holder: str, command: tuple[str, ...], sink: EventSink | None = None
+    ) -> None:
+        """Hold the managed llama-server on *command* outside a request.
+
+        For callers that launch llama-server themselves (the sidebar's Start):
+        waits exactly like a session request would, and must be paired with
+        :meth:`release_local`.
+
+        Args:
+            holder: A tag unique to this caller.
+            command: The argv it is about to launch.
+            sink: Where to push ``llm.waiting {reason: "model_swap"}`` while
+                waiting, if anywhere.
+        """
+        await self.__lease.acquire(holder, command, self.__swap_notice(sink))
+
+    def release_local(self, holder: str) -> None:
+        """Release *holder*'s hold on the managed llama-server (no-op if it has none).
+
+        The engine calls this when a turn ends (doc/SESSION_LLM_BINDING.md §3).
+
+        Args:
+            holder: The holder named in :attr:`LLMRouting.holder`.
+        """
+        self.__lease.release(holder)
 
     async def stream_query(
         self,
@@ -223,7 +272,8 @@ class LLMGateway:
         """Schedule and run ``plugin.stream_query(**stream_kwargs)`` through the
         appropriate feed, yielding its events.
 
-        Emits ``llm.waiting`` while queued (``reason:"queued"``) or throttled
+        Emits ``llm.waiting`` while waiting for the llama-server lease
+        (``reason:"model_swap"``), queued (``reason:"queued"``) or throttled
         (``reason:"throttled"`` with ``retry_in_seconds``); clears it once the
         request is admitted.  A 429 (``RateLimited``) raised before any event is
         yielded re-queues the request with an exponential vendor delay; a 429
@@ -241,6 +291,10 @@ class LLMGateway:
         feed = self.__feed_for(routing)
         ready_at = self.__now()
         waiting = False
+        if routing.residence == "local" and routing.launch is not None and routing.holder:
+            waiting = await self.__lease.acquire(
+                routing.holder, routing.launch, self.__swap_notice(sink)
+            )
 
         while True:
             if feed.would_block(ready_at) and not waiting:
@@ -280,6 +334,15 @@ class LLMGateway:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def __swap_notice(self, sink: EventSink | None) -> Callable[[], Awaitable[None]] | None:
+        if sink is None:
+            return None
+
+        async def notice() -> None:
+            await self.__emit(sink, waiting=True, reason="model_swap")
+
+        return notice
 
     @staticmethod
     def __key(routing: LLMRouting) -> str:

@@ -196,6 +196,9 @@ class _FakeHost:
     def _resolve_model_key(self, capability: str) -> str:
         return f"model-for-{capability}"
 
+    def _launch_choice_for(self, model_key: str) -> None:
+        return None
+
     def _top_agent_capability(self) -> str:
         return "medium"
 
@@ -276,7 +279,9 @@ def _make_compactor(
 @pytest.fixture(autouse=True)
 def _fixed_context_window(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the context window so tests don't depend on the real registry/user dir."""
-    monkeypatch.setattr(_compaction, "get_context_window", lambda model_key, kodo_dir: 1000)
+    monkeypatch.setattr(
+        _compaction, "get_context_window", lambda model_key, kodo_dir, choice=None: 1000
+    )
 
 
 def test_context_tokens_property_getter_setter() -> None:
@@ -549,7 +554,7 @@ async def test_handle_config_changed_shrinking_window_compacts_with_old_model(
     compactor.note_active_model("old-model")
     compactor.context_tokens = 999  # bigger than the new (shrunk) limit below
 
-    def _window(model_key: str, kodo_dir: object) -> int:
+    def _window(model_key: str, kodo_dir: object, choice: object = None) -> int:
         return 500 if model_key == "model-for-medium" else 1000
 
     monkeypatch.setattr(_compaction, "get_context_window", _window)

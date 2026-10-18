@@ -20,8 +20,8 @@ from pathlib import Path
 from kodo.llms import (
     MTP_DRAFT_MODEL_FLAG,
     REASONING_BUDGET_MESSAGE,
+    LaunchChoice,
     LocalLLMEntry,
-    get_active_profile,
     get_llama_server_override_path,
     get_mtp_sidecars,
     get_selected_mtp_sidecar,
@@ -29,12 +29,13 @@ from kodo.llms import (
     mtp_sidecar_model_id,
     prune_unknown_model_state,
     resolve_effective_llama_config,
+    resolve_profile_id,
     stale_mtp_sidecar_model_ids,
 )
 from kodo.llms.local import LocalModelError, LocalModelManager
 
 from ._installer import LlamaInstall, find_installed
-from ._llama_server import LlamaServer, LlamaServerConfig
+from ._llama_server import LlamaServer, LlamaServerConfig, build_llama_command
 
 __all__ = [
     "LlamaLaunch",
@@ -43,6 +44,7 @@ __all__ = [
     "find_installed_model_path",
     "get_local_model_manager",
     "missing_mtp_sidecars",
+    "plan_llama_command",
     "prune_mtp_sidecars",
     "purge_unknown_local_models",
     "resolve_llama_launch",
@@ -228,43 +230,92 @@ async def download_mtp_sidecars(
         raise LocalModelError("; ".join(failures))
 
 
-async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaServer:
-    """Start llama-server for *entry* if not already running.
+def _launch_config(
+    entry: LocalLLMEntry, kodo_dir: Path, choice: LaunchChoice | None
+) -> tuple[LlamaServerConfig, LlamaLaunch]:
+    """The server config and resolved launch for *entry* under *choice*.
 
-    If a server is already running with the same model, return it immediately
-    — this does **not** re-check whether *entry*'s launch configuration
-    changed since that server was launched, since neither a profile switch nor
-    a knob change alters ``entry.name``. Callers that just changed the
-    currently-running entry's configuration (the ``local_llm.set_active_profile``
-    and ``local_llm.set_knobs`` handlers) must explicitly stop the server
-    themselves before calling this, or the change silently
-    won't take effect until some other reason forces a restart. If a server
-    is running with a different model, stop it first then start fresh. Not
-    valid for ``custom_server_url`` entries — those are not managed by kodo
-    at all; callers must special-case that kind before reaching here (see
-    :class:`kodo.llms.llamacpp.LlamaPlugin`).
+    Raises:
+        RuntimeError: *entry* is a ``custom_server_url``, llama.cpp is not
+            installed, or the model is not present.
+    """
+    if entry.kind == "custom_server_url":
+        raise RuntimeError(
+            "custom_server_url entries are not managed by kodo — connect to entry.url directly"
+        )
+    launch = resolve_llama_launch(entry, kodo_dir, choice)
+    if entry.kind == "custom_file":
+        model_path: Path | None = Path(entry.path)
+        if model_path is None or not model_path.is_file():
+            raise RuntimeError(f"Model file not found: {entry.path!r}")
+    else:
+        model_path = get_local_model_manager(kodo_dir).get_model_path(entry.name)
+        if model_path is None:
+            raise RuntimeError(f"Model {entry.name!r} is not installed")
+    cfg = LlamaServerConfig(
+        executable=launch.executable,
+        model_path=model_path,
+        kodo_dir=kodo_dir,
+        model_name=entry.name,
+    )
+    return cfg, launch
+
+
+def plan_llama_command(
+    entry: LocalLLMEntry, kodo_dir: Path, choice: LaunchChoice | None = None
+) -> tuple[str, ...]:
+    """The exact llama-server argv kodo would launch for *entry* under *choice*.
+
+    What a session binds to (doc/SESSION_LLM_BINDING.md D2) and what the
+    gateway's :class:`~kodo.llms.LlamaLease` compares between sessions. Built
+    by the same :func:`~._llama_server.build_llama_command` that
+    :meth:`LlamaServer.start` uses, so a planned command equals the running
+    server's :attr:`LlamaServer.command` exactly when reusing it is correct.
+
+    Args:
+        entry (LocalLLMEntry): A kodo-launched local entry.
+        kodo_dir (Path): User-level ``~/.kodo`` directory.
+        choice (LaunchChoice | None): The session's own profile and knobs;
+            ``None`` uses the registry's stored choice.
+
+    Returns:
+        tuple[str, ...]: The argv, executable first.
+
+    Raises:
+        RuntimeError: *entry* is a ``custom_server_url``, llama.cpp is not
+            installed, or the model is not present.
+    """
+    cfg, launch = _launch_config(entry, kodo_dir, choice)
+    return tuple(build_llama_command(cfg, launch.llama_args))
+
+
+async def ensure_llama_running(
+    entry: LocalLLMEntry, kodo_dir: Path, choice: LaunchChoice | None = None
+) -> LlamaServer:
+    """Make the managed llama-server run *entry* under *choice*, reusing it when it already does.
+
+    The running server is reused only when its recorded command line
+    (:attr:`LlamaServer.command`) equals the one planned for *entry* and
+    *choice* (:func:`plan_llama_command`); any difference — another model,
+    another profile, another knob value, a llama.cpp update, a new MTP head —
+    stops it and starts a fresh one (doc/SESSION_LLM_BINDING.md D2). An
+    adopted server whose runtime file predates the recorded command line
+    never matches, so it is restarted once.
+
+    Callers coordinate *when* this may swap the model: every session request
+    reaches it under the gateway's :class:`~kodo.llms.LlamaLease`, which keeps
+    a different command line out while another session's turn is running.
 
     Resolves *entry*'s effective ``llama_args`` fresh on every call via
-    :func:`kodo.llms.resolve_effective_llama_config` (the active user-defined
-    profile's args, or the Default profile's base args plus its current knob
-    selection — see doc/LLM_REGISTRY.md §4.6) — so a restart triggered for
-    any other reason (a plain model switch, a crash recovery, etc.) always
-    launches with whatever is currently selected, not a stale snapshot. The
-    resolved numeric ``context_window`` is not used here — only
-    :func:`kodo.llms.get_context_window` (compaction budgeting) reads it; the
-    actual launched context size lives inside ``llama_args`` itself (a context
-    knob's, or a profile's own, ``--ctx-size``).
+    :func:`kodo.llms.resolve_effective_llama_config` (the chosen user-defined
+    profile's args, or the Default profile's base args plus the chosen knob
+    selection — see doc/LLM_REGISTRY.md §4.6). If a llama-server binary
+    override is configured (see :func:`kodo.llms.set_llama_server_override_path`),
+    it is used as the executable in place of the bundled llama.cpp build.
 
-    If a llama-server binary override is configured (see
-    :func:`kodo.llms.set_llama_server_override_path`), it is used as the
-    executable in place of the bundled llama.cpp build — the CLI-argument
-    generation in :class:`LlamaServerConfig`/:class:`LlamaServer` is unchanged
-    either way.
-
-    Also passes *entry*'s active profile id (:func:`kodo.llms.get_active_profile`,
-    ``""`` for the Default profile) to :class:`LlamaServer` purely for crash
+    Passes the effective profile id to :class:`LlamaServer` purely for crash
     messaging: if the process exits before becoming ready while a user-defined
-    profile is active, :class:`LlamaServer` suggests switching back to the
+    profile is selected, :class:`LlamaServer` suggests switching back to the
     Default profile, since hand-written launch args are the most likely cause.
 
     Args:
@@ -272,6 +323,9 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
             ``hardcoded_hf``/``custom_hf`` entry (resolved via the download
             index) or a ``custom_file`` entry (its own ``path``, not indexed).
         kodo_dir (Path): User-level ``~/.kodo`` directory.
+        choice (LaunchChoice | None): The profile and knobs to launch with — a
+            bound session's own; ``None`` (default) uses the registry's
+            stored choice (the sidebar's).
 
     Returns:
         LlamaServer: The running server instance.
@@ -281,34 +335,20 @@ async def ensure_llama_running(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaSer
             installed, the model is not downloaded/present, or the server
             fails to start.
     """
-    if entry.kind == "custom_server_url":
-        raise RuntimeError(
-            "custom_server_url entries are not managed by kodo — connect to entry.url directly"
-        )
+    cfg, launch = _launch_config(entry, kodo_dir, choice)
+    planned = tuple(build_llama_command(cfg, launch.llama_args))
 
     server = LlamaServer.get_active_llama_server()
     if server is not None and server.is_running:
-        if server.model_name == entry.name:
+        if server.command == planned:
             return server
+        _log.info(
+            "llama-server runs %r with another command line than %r needs — restarting",
+            server.model_name,
+            entry.name,
+        )
         await server.stop()
 
-    launch = resolve_llama_launch(entry, kodo_dir)
-
-    if entry.kind == "custom_file":
-        model_path: Path | None = Path(entry.path)
-        if model_path is None or not model_path.is_file():
-            raise RuntimeError(f"Model file not found: {entry.path!r}")
-    else:
-        model_path = get_local_model_manager(kodo_dir).get_model_path(entry.name)
-        if model_path is None:
-            raise RuntimeError(f"Model {entry.name!r} is not installed")
-
-    cfg = LlamaServerConfig(
-        executable=launch.executable,
-        model_path=model_path,
-        kodo_dir=kodo_dir,
-        model_name=entry.name,
-    )
     server = LlamaServer(cfg, launch.llama_args, profile_id=launch.profile_id)
     await server.start()
     return server
@@ -332,7 +372,9 @@ class LlamaLaunch:
     profile_id: str
 
 
-def resolve_llama_launch(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaLaunch:
+def resolve_llama_launch(
+    entry: LocalLLMEntry, kodo_dir: Path, choice: LaunchChoice | None = None
+) -> LlamaLaunch:
     """Resolve how llama-server must be launched for *entry*.
 
     The single source of launch configuration for both the kodo server's own
@@ -346,9 +388,11 @@ def resolve_llama_launch(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaLaunch:
     Args:
         entry (LocalLLMEntry): The local registry entry to launch.
         kodo_dir (Path): User-level ``~/.kodo`` directory.
+        choice (LaunchChoice | None): The profile and knobs to launch with;
+            ``None`` (default) uses the registry's stored choice.
 
     Returns:
-        LlamaLaunch: Executable, resolved flags and active profile id.
+        LlamaLaunch: Executable, resolved flags and effective profile id.
 
     Raises:
         RuntimeError: If llama.cpp is not installed.
@@ -362,9 +406,9 @@ def resolve_llama_launch(entry: LocalLLMEntry, kodo_dir: Path) -> LlamaLaunch:
 
     # The active profile — user-defined, or the knob-driven Default one —
     # supplies the complete llama_args; see resolve_effective_llama_config.
-    llama_args, _ = resolve_effective_llama_config(kodo_dir, entry)
-    profile_id = get_active_profile(kodo_dir, entry.name)
-    _resolve_mtp_head(entry, kodo_dir, llama_args, install=None if override else install)
+    llama_args, _ = resolve_effective_llama_config(kodo_dir, entry, choice)
+    profile_id = resolve_profile_id(kodo_dir, entry, choice)
+    _resolve_mtp_head(entry, kodo_dir, llama_args, choice, install=None if override else install)
     if local_thinking_family(entry.base_llm) == "qwen_reasoning_budget":
         # Forced (plain assignment), not defaulted: -1 is mandatory here, not
         # just the default — it's what makes the per-request
@@ -384,6 +428,7 @@ def _resolve_mtp_head(
     entry: LocalLLMEntry,
     kodo_dir: Path,
     llama_args: dict[str, str],
+    choice: LaunchChoice | None,
     *,
     install: LlamaInstall | None,
 ) -> None:
@@ -401,10 +446,11 @@ def _resolve_mtp_head(
         entry: The entry being launched.
         kodo_dir: User-level ``~/.kodo`` directory.
         llama_args: The resolved launch args, edited in place.
+        choice: The profile and knobs being launched; ``None`` = the registry's.
         install: The llama.cpp build about to run, or ``None`` when that is
             unknown (a user's binary override) — then no version check.
     """
-    sidecar = get_selected_mtp_sidecar(kodo_dir, entry)
+    sidecar = get_selected_mtp_sidecar(kodo_dir, entry, choice)
     if sidecar is None:
         return
     model_id = mtp_sidecar_model_id(entry.base_llm, sidecar.id)

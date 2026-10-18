@@ -13,16 +13,21 @@ from ._agenttools import agent_tool_specs
 from ._checkpoints import CheckpointEntry, CheckpointState, MirrorDirtyError
 from ._engine import WorkflowEngine
 from ._gates import ApprovalResponse, GateOrchestrator, PermissionResponse
+from ._llm_selection import LlmSelection, resolve_model_key
 from ._security_rules import delete_global_security_rules, list_global_security_rules
 from ._session import SessionState
 from ._session_log import SessionLog
+from ._session_params import ParamsSnapshot, ParamValue, diff_params
 
 __all__ = [
     "ApprovalResponse",
     "CheckpointEntry",
     "CheckpointState",
     "GateOrchestrator",
+    "LlmSelection",
     "MirrorDirtyError",
+    "ParamValue",
+    "ParamsSnapshot",
     "PermissionResponse",
     "SessionLog",
     "SessionState",
@@ -30,6 +35,8 @@ __all__ = [
     "WorkflowEngine",
     "agent_tool_specs",
     "delete_global_security_rules",
+    "diff_params",
     "list_global_security_rules",
+    "resolve_model_key",
     "tools_for_agent",
 ]

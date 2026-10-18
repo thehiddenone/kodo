@@ -46,6 +46,7 @@ from kodo.transport import (
     EVT_SECURITY_RULE_ADDED,
     EVT_SESSION_GREETING,
     EVT_SESSION_NAMING,
+    EVT_SESSION_PARAMS,
     EVT_STATE,
     EVT_USAGE_UPDATE,
     EVT_WEB_SEARCH_NOTE,
@@ -291,6 +292,22 @@ class EngineEmitters:
         """
         self._append_marker({"type": "greeting", "text": text})
         await self._sink.send(Envelope.make_event(EVT_SESSION_GREETING, {"text": text}))
+
+    async def emit_session_params(self, first: bool, changes: list[dict[str, object]]) -> None:
+        """Push what changed in the session's parameters since the last prompt, and persist it.
+
+        The change element shown right before a prompt
+        (doc/SESSION_LLM_BINDING.md §4). Persisted as a ``session_params``
+        marker so it replays in place on reload; a marker never reaches the
+        LLM context.
+
+        Args:
+            first: Whether this is the session's first prompt ("Started on …").
+            changes: The rows :func:`~kodo.runtime._session_params.diff_params` built.
+        """
+        payload: dict[str, object] = {"first": first, "changes": changes}
+        self._append_marker({"type": "session_params", **payload})
+        await self._sink.send(Envelope.make_event(EVT_SESSION_PARAMS, payload))
 
     async def emit_error(self, message: str, *, recoverable: bool) -> None:
         """Push a user-facing runtime error, and persist it as a marker.

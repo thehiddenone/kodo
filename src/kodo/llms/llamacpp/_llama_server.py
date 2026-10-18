@@ -35,6 +35,7 @@ __all__ = [
     "LlamaServer",
     "LlamaServerConfig",
     "RunningServer",
+    "build_llama_command",
     "find_running_server",
     "is_pid_alive",
     "kill_pid",
@@ -65,10 +66,15 @@ def _runtime_path(kodo_dir: Path) -> Path:
     return kodo_dir / "llama.cpp" / "llama-server.json"
 
 
-def _write_runtime(path: Path, pid: int, host: str, port: int, model: str) -> None:
+def _write_runtime(
+    path: Path, pid: int, host: str, port: int, model: str, command: list[str]
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"pid": pid, "host": host, "port": port, "model": model}, indent=2),
+        json.dumps(
+            {"pid": pid, "host": host, "port": port, "model": model, "command": command},
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
@@ -174,12 +180,17 @@ class RunningServer:
         host: Bind address the server is listening on.
         port: TCP port the server is listening on.
         model: Registry name of the model the server is running.
+        command: The exact argv it was launched with, as recorded in the
+            runtime file; ``()`` for a file written before the argv was
+            recorded — which never equals a planned command line, so such a
+            server is restarted once by the next prompt that needs llama.
     """
 
     pid: int
     host: str
     port: int
     model: str
+    command: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -225,6 +236,55 @@ class LlamaServerConfig:
     alias: str = ""
 
 
+def build_llama_command(config: LlamaServerConfig, llama_args: dict[str, str]) -> list[str]:
+    """The exact argv :meth:`LlamaServer.start` launches for *config* and *llama_args*.
+
+    The single builder for both launching and planning: a session's binding
+    records this list, and :func:`~kodo.llms.llamacpp.ensure_llama_running`
+    compares it with the running server's own :attr:`LlamaServer.command`
+    before reusing that server (doc/SESSION_LLM_BINDING.md §3). Returned as
+    argv with no shell involved, so an argument containing spaces (e.g.
+    ``--reasoning-budget-message``'s sentence) is one element, unquoted.
+
+    Args:
+        config (LlamaServerConfig): Executable, model path, bind address,
+            port, log file and alias.
+        llama_args (dict[str, str]): The resolved launch flags; a bare flag
+            has an empty-string value.
+
+    Returns:
+        list[str]: The argv, executable first.
+    """
+    log_file = (
+        config.log_file
+        if config.log_file is not None
+        else config.kodo_dir / "logs" / "llama-server.log"
+    )
+    cmd: list[str] = [
+        str(config.executable),
+        "--log-timestamps",
+        "--log-file",
+        str(log_file),
+        "--model",
+        str(config.model_path),
+        "--host",
+        config.host,
+        "--port",
+        str(config.port),
+    ]
+    if config.alias:
+        cmd += ["--alias", config.alias]
+    # Everything model-specific (context size, GPU offload, KV cache type,
+    # --jinja, ...) comes entirely from the resolved profile — see
+    # resolve_effective_llama_config in kodo/llms/local_registry/. No defaults
+    # are merged in here, so a resolved flag never appears twice.
+    for k, v in llama_args.items():
+        cmd.append(k)
+        if v:
+            cmd.append(v)
+    return cmd
+
+
 # ---------------------------------------------------------------------------
 # Server manager
 # ---------------------------------------------------------------------------
@@ -253,6 +313,7 @@ class LlamaServer:
     __pid: int | None
     __active_host: str
     __active_port: int
+    __command: tuple[str, ...]
 
     def __init__(
         self,
@@ -281,6 +342,7 @@ class LlamaServer:
         self.__pid = None
         self.__active_host = config.host
         self.__active_port = config.port
+        self.__command = ()
         LlamaServer.__active_llama_server = self
 
     @property
@@ -308,6 +370,15 @@ class LlamaServer:
         """Registry name of the model the server is configured to serve."""
         return self.__config.model_name
 
+    @property
+    def command(self) -> tuple[str, ...]:
+        """The argv the running process was launched with (:func:`build_llama_command`).
+
+        ``()`` before :meth:`start`, and for an adopted process whose runtime
+        file predates the recorded argv.
+        """
+        return self.__command
+
     @classmethod
     def get_active_llama_server(cls) -> LlamaServer | None:
         return cls.__active_llama_server
@@ -329,6 +400,7 @@ class LlamaServer:
         self.__pid = running.pid
         self.__active_host = running.host
         self.__active_port = running.port
+        self.__command = running.command
         _log.info("Adopted llama-server pid=%d at %s", running.pid, self.base_url)
 
     async def start(self) -> None:
@@ -351,7 +423,7 @@ class LlamaServer:
         self.__active_host = self.__config.host
         self.__active_port = self.__config.port
 
-        cmd = self.__build_command()
+        cmd = build_llama_command(self.__config, self.__llama_args)
         _log.debug("Starting llama-server: %s", shlex.join(cmd))
 
         startup_log_path = self.__startup_log_path()
@@ -366,12 +438,14 @@ class LlamaServer:
 
         await self.__wait_ready()
 
+        self.__command = tuple(cmd)
         _write_runtime(
             self.__runtime_path(),
             self.__pid,
             self.__active_host,
             self.__active_port,
             self.__config.model_name,
+            cmd,
         )
         _log.info("llama-server ready at %s (pid=%d)", self.base_url, self.__pid)
 
@@ -399,42 +473,9 @@ class LlamaServer:
             kill_pid(pid)
 
         self.__pid = None
+        self.__command = ()
         self.__runtime_path().unlink(missing_ok=True)
         _log.info("llama-server stopped")
-
-    def __build_command(self) -> list[str]:
-        # Returned as argv (list[str]), passed straight into
-        # create_subprocess_exec(*cmd, ...) with no shell involved — so an
-        # argument containing spaces (e.g. --reasoning-budget-message's
-        # sentence) is fine as one list element, no quoting needed here.
-        # Only the debug log of this command needs shlex.join to render such
-        # arguments unambiguously, since plain " ".join() would make them
-        # look like separate bare tokens.
-        cfg = self.__config
-        cmd: list[str] = [
-            str(cfg.executable),
-            "--log-timestamps",
-            "--log-file",
-            str(self.__log_path()),
-            "--model",
-            str(cfg.model_path),
-            "--host",
-            cfg.host,
-            "--port",
-            str(cfg.port),
-        ]
-        if cfg.alias:
-            cmd += ["--alias", cfg.alias]
-        # Everything model-specific (context size, GPU offload, KV cache
-        # type, --jinja, ...) comes entirely from the resolved profile — see
-        # resolve_effective_llama_config in kodo/llms/local_registry/. No
-        # defaults are merged in here, so there is no risk of a resolved
-        # flag appearing twice on the command line.
-        for k, v in self.__llama_args.items():
-            cmd.append(k)
-            if v:
-                cmd.append(v)
-        return cmd
 
     async def __wait_ready(self) -> None:
         url = f"{self.base_url}/health"
@@ -460,14 +501,6 @@ class LlamaServer:
         if log_file is not None:
             return log_file.with_name(f"{log_file.stem}-startup.log")
         return self.__config.kodo_dir / "logs" / _STARTUP_LOG_NAME
-
-    def __log_path(self) -> Path:
-        log_file = self.__config.log_file
-        return (
-            log_file
-            if log_file is not None
-            else self.__config.kodo_dir / "logs" / "llama-server.log"
-        )
 
     def __runtime_path(self) -> Path:
         runtime_file = self.__config.runtime_file
@@ -526,6 +559,12 @@ def find_running_server(kodo_dir: Path) -> RunningServer | None:
         host = str(data.get("host", "127.0.0.1"))
         port = int(cast(int, data["port"]))
         model = str(data.get("model", ""))
+        raw_command = data.get("command")
+        command = (
+            tuple(str(arg) for arg in cast(list[object], raw_command))
+            if isinstance(raw_command, list)
+            else ()
+        )
     except Exception:
         _log.warning("Could not parse llama-server runtime file — removing")
         path.unlink(missing_ok=True)
@@ -533,7 +572,7 @@ def find_running_server(kodo_dir: Path) -> RunningServer | None:
 
     if is_pid_alive(pid):
         _log.info("Detected running llama-server pid=%d at %s:%d model=%r", pid, host, port, model)
-        return RunningServer(pid=pid, host=host, port=port, model=model)
+        return RunningServer(pid=pid, host=host, port=port, model=model, command=command)
 
     _log.info("Stale llama-server runtime file (pid=%d no longer alive) — removing", pid)
     path.unlink(missing_ok=True)

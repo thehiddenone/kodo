@@ -47,6 +47,9 @@ class SessionManager:
         sandbox_root: Headless server only (doc/HEADLESS.md) — every session's
             engine confines tool-call mutations to this directory with the
             sandbox security posture. ``None`` (the default) is interactive.
+        default_settings: Returns the shipped settings defaults, which each
+            engine's change element measures cloud tier models against
+            (doc/SESSION_LLM_BINDING.md §4). ``None`` means no defaults.
     """
 
     def __init__(
@@ -58,8 +61,10 @@ class SessionManager:
         layout: WorkspaceLayout,
         grace_seconds: float = _DEFAULT_GRACE_SECONDS,
         sandbox_root: Path | None = None,
+        default_settings: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         self.__registry = registry
+        self.__default_settings = default_settings
         self.__sandbox_root = sandbox_root
         self.__gateway = gateway
         self.__get_settings = get_settings
@@ -412,6 +417,7 @@ class SessionManager:
             gateway=self.__gateway,
             session_workspace=session_workspace,
             sandbox_root=self.__sandbox_root,
+            default_settings=self.__default_settings,
         )
         await engine.start(session_id, resumed, greet=greet)
         session = Session(

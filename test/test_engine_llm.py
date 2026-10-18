@@ -88,6 +88,8 @@ def _make_engine(
 ) -> WorkflowEngine:
     engine = object.__new__(WorkflowEngine)
     engine._get_settings = lambda: settings if settings is not None else {}
+    # An unbound session: every lookup reads the settings above as-is.
+    engine._transient = SimpleNamespace(llm_binding=None, llm_selection=None)
     engine._sink = SimpleNamespace()
     engine._orch_session_id = "sess-1"
     engine._workspace_layout = SimpleNamespace(llm_requests_dir=Path("/tmp/llm_requests"))
@@ -144,7 +146,7 @@ def test_resolve_model_key_local_mode_uses_configured_local_model() -> None:
 
 def test_resolve_model_key_local_mode_default_when_unset() -> None:
     engine = _make_engine(settings={"mode": "local"})
-    assert engine._resolve_model_key("high") == "llamacpp-qwen36-27b-q4-k-xl"
+    assert engine._resolve_model_key("high") == "unsloth-qwen38-27b-ud-q4-k-xl"
 
 
 def test_resolve_model_key_cloud_mode_exact_capability_hit() -> None:

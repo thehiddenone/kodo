@@ -253,6 +253,17 @@ MSG_THINKING_LEVEL_SET = "thinking_level.set"
 # false`` only when *model* is blank or not a known local entry.
 MSG_SAMPLING_SET = "sampling.set"
 
+# Client → Server. Snapshot the sidebar's current LLM card into this session's
+# pending selection — the LLM its next prompt binds to
+# (doc/SESSION_LLM_BINDING.md D7). kodo-vsix sends it on the active session's
+# connection after every sidebar edit (card, cloud vendor, tier models,
+# profile, knobs) while that session is bound. No payload: the server reads
+# the same ``settings.json`` + registry the sidebar wrote. An unbound session
+# ignores it (it follows the sidebar anyway). Replies ``{type:
+# "llm_selection.capture.ack", ok: true, bound: bool}`` and follows with an
+# updated EVT_STATE carrying ``llm``.
+MSG_LLM_SELECTION_CAPTURE = "llm_selection.capture"
+
 # Client → Server. Push the VS Code workspace folder map (logical name →
 # physical path) plus the physical root. Sent on connect and on every
 # workspace-folders change; the server rebuilds its WorkspaceLayout
@@ -1352,6 +1363,17 @@ EVT_SESSION_NAMING = "session.naming"
 # ``HistoryProjector.load_main_messages`` into the live LLM context: the
 # coding agent itself never sees its own greeting.
 EVT_SESSION_GREETING = "session.greeting"
+
+# Server → Client event. What changed in the session's parameters since its
+# previous prompt — the LLM, the top-level agent, Mode, Edit/Tool Control,
+# Thinking, the local profile, llama-server flags, sampling overrides and the
+# cloud tier snapshot — pushed right before the prompt's turn starts
+# (doc/SESSION_LLM_BINDING.md §4). ``{first: bool, changes: [{param, label,
+# from, to, [from_<k>, to_<k>]}]}``; ``first`` marks a session's first prompt
+# ("Started on …", listing every non-default parameter). Persisted as a
+# ``session_params`` marker so it replays via ``session.history``; never part
+# of the LLM context.
+EVT_SESSION_PARAMS = "session.params"
 
 # Subsession (sub-agent takeover) boundaries — drive the WebView feed dividers
 # ("Narrative Author subagent took over from Kōdo" / "Kōdo resumed").

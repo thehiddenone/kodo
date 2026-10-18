@@ -786,7 +786,7 @@ async def test_llama_plugin_ensure_running_with_existing_server(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When an identical server is already running, __ensure_running short-circuits."""
+    """A server already running the planned command line is reused without events."""
     from kodo.common._protocols import MessageSink
     from kodo.llms.llamacpp._llama_server import LlamaServer
 
@@ -811,10 +811,15 @@ async def test_llama_plugin_ensure_running_with_existing_server(
     mock_server.is_running = True
     mock_server.model_name = "qwen36-27b"
     mock_server.base_url = "http://localhost:8081"
+    mock_server.command = ("llama-server", "--model", "qwen36-27b.gguf")
 
     monkeypatch.setattr(
         "kodo.llms.llamacpp._llama.get_local_registry",
         MagicMock(return_value=fake_registry),
+    )
+    monkeypatch.setattr(
+        "kodo.llms.llamacpp._llama.plan_llama_command",
+        MagicMock(return_value=mock_server.command),
     )
     monkeypatch.setattr(
         LlamaServer,
@@ -832,11 +837,11 @@ async def test_llama_plugin_ensure_running_with_existing_server(
 
 
 @pytest.mark.asyncio
-async def test_llama_plugin_ensure_running_custom_server_stops_managed(
+async def test_llama_plugin_ensure_running_custom_server_leaves_managed_running(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Custom server URL: stops any running managed server and sends event."""
+    """Custom server URL: kodo's managed server is left alone — another session may use it."""
     from kodo.common._protocols import MessageSink
     from kodo.llms import LocalLLMEntry
     from kodo.llms.llamacpp._llama_server import LlamaServer
@@ -870,10 +875,8 @@ async def test_llama_plugin_ensure_running_custom_server_stops_managed(
     # Call __ensure_running directly.
     await plugin._LlamaPlugin__ensure_running("custom")
 
-    # The managed server should have been stopped.
-    mock_managed.stop.assert_awaited_once()
-    # An event should have been sent.
-    sink.send.assert_called_once()
+    mock_managed.stop.assert_not_awaited()
+    sink.send.assert_not_called()
     # The client should be an AsyncOpenAI.
     assert plugin._LlamaPlugin__client is not None
 

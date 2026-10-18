@@ -43,6 +43,8 @@ class WorkerMixin:
                 self._session.agent = None
                 await self._emitters.emit_error(str(exc), recoverable=True)
                 await self._emitters.emit_state()
+            finally:
+                self._release_llama_lease()
 
         while True:
             task = await self._queue.get()
@@ -55,6 +57,7 @@ class WorkerMixin:
                     _log.exception("Manual compaction failed: %s", exc)
                     await self._emitters.emit_error(f"Compaction failed: {exc}", recoverable=True)
                 finally:
+                    self._release_llama_lease()
                     self._queue.task_done()
                 continue
             if task.get("kind") == "config_changed":
@@ -66,6 +69,7 @@ class WorkerMixin:
                 except Exception as exc:
                     _log.exception("Config-change handling failed: %s", exc)
                 finally:
+                    self._release_llama_lease()
                     self._queue.task_done()
                 continue
             text = str(task.get("text", ""))
@@ -86,6 +90,12 @@ class WorkerMixin:
             # end and the client can tell "in effect" from "queued".
             self._freeze_effective_modes()
             try:
+                # Bind the session to its LLM for this prompt and show what
+                # changed since the last one (doc/SESSION_LLM_BINDING.md §2.2).
+                # Nothing usable selected → the user was told; skip the prompt.
+                if not await self._bind_for_prompt():
+                    continue
+
                 # Name the session from its first prompt. Fire-and-forget: the
                 # titler runs the local summarizer in a background thread and
                 # reports the result whenever it lands (session.naming/
@@ -165,6 +175,9 @@ class WorkerMixin:
                 if crashed:
                     self._enqueue_subsession_crash_report(crashed, exc)
             finally:
+                # The turn is over: a session waiting to swap llama-server in
+                # may go now (doc/SESSION_LLM_BINDING.md §3).
+                self._release_llama_lease()
                 self._queue.task_done()
 
     async def _recover_crashed_subsession(

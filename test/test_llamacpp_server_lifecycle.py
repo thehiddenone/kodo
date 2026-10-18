@@ -168,8 +168,10 @@ async def test_start_launches_with_profile_flags_and_records_runtime_file(
     assert argv[-1] == "--jinja"  # a bare flag gets no value
     assert _flag_value(argv, "--log-file") == str(tmp_path / "kodo" / "logs" / "llama-server.log")
 
+    # The runtime file records the exact argv, so an adopting kodo can tell
+    # whether this server runs the command line a session needs.
     assert find_running_server(tmp_path / "kodo") == RunningServer(
-        pid=_PID, host="127.0.0.1", port=health.port, model="fake-model"
+        pid=_PID, host="127.0.0.1", port=health.port, model="fake-model", command=tuple(argv)
     )
 
 

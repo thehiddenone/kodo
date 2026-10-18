@@ -25,6 +25,7 @@ from typing import Protocol
 from kodo.agents import AgentRegistry, SubAgent
 from kodo.common import Envelope, MessageSink
 from kodo.llms import (
+    LaunchChoice,
     LLMPlugin,
     LLMRouting,
     Message,
@@ -176,6 +177,8 @@ class CompactorHost(Protocol):
 
     def _resolve_model_key(self, capability: str) -> str: ...
 
+    def _launch_choice_for(self, model_key: str) -> LaunchChoice | None: ...
+
     def _top_agent_capability(self) -> str: ...
 
     async def _resolve_plugin(
@@ -270,15 +273,17 @@ class ContextCompactor:
     def context_limit(self) -> int:
         """Token budget for the main context = current model's context window.
 
-        Resolved from the top-level agent model selected in settings (see
-        the engine's ``_resolve_model_key``) via the per-model
-        ``context_window`` in the LLM registry. This is *not* session-specific:
-        switching the model mid-session changes the limit, and the gauge/auto-
-        compaction threshold follow it on the next stats emission (or
-        immediately, via ``handle_config_changed``).
+        Resolved from the top-level agent's model (the engine's
+        ``_resolve_model_key`` — the session's own binding once it has one,
+        doc/SESSION_LLM_BINDING.md §2.1) via the per-model ``context_window``
+        in the LLM registry, with a bound local model's own profile and knobs.
+        A binding switch changes the limit, and the gauge/auto-compaction
+        threshold follow it on the next stats emission.
         """
         model_key = self._host._resolve_model_key(self._host._top_agent_capability())
-        return get_context_window(model_key, kodo_user_dir())
+        return get_context_window(
+            model_key, kodo_user_dir(), self._host._launch_choice_for(model_key)
+        )
 
     def can_compact(self) -> bool:
         """True when a manual compaction would be honoured right now.
@@ -308,7 +313,11 @@ class ContextCompactor:
         """
         if self._subsession_model_key is None:
             return None
-        limit = get_context_window(self._subsession_model_key, kodo_user_dir())
+        limit = get_context_window(
+            self._subsession_model_key,
+            kodo_user_dir(),
+            self._host._launch_choice_for(self._subsession_model_key),
+        )
         current = self._subsession_context_tokens
         percent = round(100.0 * current / limit, 1) if limit > 0 else 0.0
         return {
@@ -367,7 +376,9 @@ class ContextCompactor:
         new_key = self._host._resolve_model_key(self._host._top_agent_capability())
         old_key = self._active_model_key
         if old_key is not None and new_key != old_key:
-            new_limit = get_context_window(new_key, kodo_user_dir())
+            new_limit = get_context_window(
+                new_key, kodo_user_dir(), self._host._launch_choice_for(new_key)
+            )
             if self._context_tokens > new_limit and self.can_compact():
                 _log.info(
                     "Model switch %s → %s shrinks context window to %d < %d live tokens "
@@ -380,6 +391,26 @@ class ContextCompactor:
                 await self._run_compaction("model_switch", force_model_key=old_key)
         self._active_model_key = new_key
         await self._emitters.emit_context_stats()
+
+    async def compact_before_switch(self, new_limit: int) -> None:
+        """Compact on the current model when the next one's window is smaller than the context.
+
+        Called by the engine when a prompt binds the session to another LLM
+        (doc/SESSION_LLM_BINDING.md §2.2), before the binding changes — so the
+        summary is written by the model that owns the live context, and the
+        switch only takes effect on a context that fits the new window.
+
+        Args:
+            new_limit: The incoming model's context window, in tokens.
+        """
+        if self._context_tokens > new_limit and self.can_compact():
+            _log.info(
+                "Binding switch shrinks the context window to %d < %d live tokens "
+                "— compacting with the outgoing model first",
+                new_limit,
+                self._context_tokens,
+            )
+            await self._run_compaction("model_switch")
 
     async def _run_compaction(self, reason: str, force_model_key: str | None = None) -> None:
         """Summarise the live main context with the compactor and reset it.

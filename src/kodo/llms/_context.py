@@ -14,7 +14,7 @@ from pathlib import Path
 from ._bedrock_catalog import get_bedrock_model
 from ._cloud_registry import get_cloud_registry
 from ._openrouter_catalog import get_openrouter_model
-from .local_registry import get_local_registry, resolve_effective_llama_config
+from .local_registry import LaunchChoice, get_local_registry, resolve_effective_llama_config
 
 __all__ = ["get_context_window"]
 
@@ -23,7 +23,7 @@ __all__ = ["get_context_window"]
 _DEFAULT_CONTEXT_WINDOW = 262_144
 
 
-def get_context_window(model_key: str, kodo_dir: Path) -> int:
+def get_context_window(model_key: str, kodo_dir: Path, choice: LaunchChoice | None = None) -> int:
     """Return the maximum context window (in tokens) for *model_key*.
 
     Checks the cloud registry (by ``model_id``) first, then the two
@@ -45,6 +45,9 @@ def get_context_window(model_key: str, kodo_dir: Path) -> int:
         kodo_dir: User-level ``~/.kodo`` directory (needed to load the local
             registry's external/custom entries and both aggregator catalog
             caches).
+        choice: For a local key, the profile and knobs it launches with — a
+            bound session's own (doc/SESSION_LLM_BINDING.md D6); ``None``
+            (default) uses the registry's stored choice. Ignored for cloud keys.
 
     Returns:
         int: The model's context window in tokens (always > 0).
@@ -68,7 +71,7 @@ def get_context_window(model_key: str, kodo_dir: Path) -> int:
 
     local_entry = get_local_registry(kodo_dir).get(model_key)
     if local_entry is not None:
-        _, context_window = resolve_effective_llama_config(kodo_dir, local_entry)
+        _, context_window = resolve_effective_llama_config(kodo_dir, local_entry, choice)
         if context_window > 0:
             return context_window
 

@@ -96,6 +96,7 @@ from kodo.llms.llamacpp import (
     get_local_model_manager,
     install_llamacpp,
     missing_mtp_sidecars,
+    plan_llama_command,
     prune_mtp_sidecars,
     purge_unknown_local_models,
     uninstall_llamacpp,
@@ -173,6 +174,7 @@ from kodo.transport import (
     MSG_LLAMACPP_UNINSTALL,
     MSG_LLAMACPP_UPDATE,
     MSG_LLAMACPP_VERSION_INFO,
+    MSG_LLM_SELECTION_CAPTURE,
     MSG_LOCAL_LLM_ADD_FILE,
     MSG_LOCAL_LLM_ADD_PROFILE,
     MSG_LOCAL_LLM_ADD_SERVER_URL,
@@ -874,8 +876,7 @@ def _current_housekeeper_llm_id() -> str:
     """The persisted ``housekeeper_llm`` selection from settings.json.
 
     Falls back to :data:`DEFAULT_HOUSEKEEPER_LLM_ID` if unset, unreadable, or
-    naming an id no longer in the catalog — same defensive shape as
-    ``_current_local_model_name``. Read directly off the raw file (not
+    naming an id no longer in the catalog. Read directly off the raw file (not
     ``config.reload_settings()``) so the ``start_titling`` call sites below
     (startup, llamacpp install/update) don't need a ``Config`` in scope.
     """
@@ -1775,6 +1776,20 @@ async def _handle_sampling_set(req: Request) -> None:
         raw if isinstance(raw, dict) else {},
     )
     await req.reply({"type": "sampling.accepted", "ok": ok, "sampling": stored})
+
+
+async def _handle_llm_selection_capture(req: Request) -> None:
+    """``llm_selection.capture`` (WS_PROTOCOL.md §7.4i, doc/SESSION_LLM_BINDING.md D7).
+
+    Takes the sidebar's current card as the session's pending selection when
+    the session is bound; an unbound session follows the sidebar anyway and
+    replies ``bound: false``.
+    """
+    session = await _require_session(req)
+    if session is None:
+        return
+    bound = await session.engine.handle_llm_selection_capture()
+    await req.reply({"type": "llm_selection.capture.ack", "ok": True, "bound": bound})
 
 
 async def _handle_workspace_folders(req: Request) -> None:
@@ -2746,55 +2761,6 @@ async def _handle_local_llm_remove(req: Request) -> None:
     await _send_registry_state(req)
 
 
-def _current_local_model_name() -> str:
-    """The ``models.local`` entry name from settings.json, or ``""`` if unset/unreadable."""
-    path = WorkspaceLayout().settings_json
-    if not path.exists():
-        return ""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return ""
-    models = data.get("models") if isinstance(data, dict) else None
-    return str(models.get("local", "")) if isinstance(models, dict) else ""
-
-
-async def _restart_llama_server_if_running(req: Request, entry_name: str) -> None:
-    """Force a fresh llama-server launch for *entry_name* to pick up a config change.
-
-    Only meaningful when llama-server is *actually currently running*
-    *entry_name* — a profile switch or knob change for a
-    selected-but-not-started model has nothing to restart. Stops it
-    unconditionally first even though
-    :func:`kodo.llms.llamacpp.ensure_llama_running` would normally treat a
-    same-name request as "already running, nothing to do" — neither a profile
-    switch nor a knob change alters ``entry.name``, so that shortcut would
-    otherwise mask the new args entirely (see its docstring).
-    """
-    kodo_dir = kodo_user_dir()
-    entry = get_local_registry(kodo_dir).get(entry_name)
-    if entry is None or entry.kind == "custom_server_url":
-        return
-    server = LlamaServer.get_active_llama_server()
-    if server is None or not server.is_running or server.model_name != entry_name:
-        return
-    await server.stop()
-    try:
-        server = await ensure_llama_running(entry, kodo_dir)
-    except Exception as exc:  # noqa: BLE001 — startup failure surfaces as llama.state, not a crash
-        await req.connection.send(
-            Envelope.make_event(
-                EVT_LLAMA_STATE, {"running": False, "model": None, "error": str(exc)}
-            )
-        )
-        return
-    await req.connection.send(
-        Envelope.make_event(
-            EVT_LLAMA_STATE, {"running": True, "model": server.model_name, "port": server.port}
-        )
-    )
-
-
 async def _handle_local_llm_add_profile(req: Request) -> None:
     payload = req.env.payload
     entry_name = str(payload.get("name", "")).strip()
@@ -2818,9 +2784,6 @@ async def _handle_local_llm_update_profile(req: Request) -> None:
     entry_name = str(payload.get("name", "")).strip()
     profile_id = str(payload.get("profile_id", "")).strip()
     kodo_dir = kodo_user_dir()
-    # Only a restart-worthy change if this profile is the one currently
-    # selected — editing an inactive profile changes nothing that is running.
-    was_active = get_active_profile(kodo_dir, entry_name) == profile_id
     try:
         profile = update_profile(
             kodo_dir,
@@ -2834,8 +2797,8 @@ async def _handle_local_llm_update_profile(req: Request) -> None:
         await _reply_local_llm_error(req, str(exc))
         return
     _log.info("Updated profile %r (%r) on %r", profile.name, profile.id, entry_name)
-    if was_active and entry_name == _current_local_model_name():
-        await _restart_llama_server_if_running(req, entry_name)
+    # No restart: the next prompt of a session using this profile sees a new
+    # command line and restarts llama-server then (doc/SESSION_LLM_BINDING.md D1).
     await _send_registry_state(req)
 
 
@@ -2843,14 +2806,11 @@ async def _handle_local_llm_remove_profile(req: Request) -> None:
     entry_name = str(req.env.payload.get("name", "")).strip()
     profile_id = str(req.env.payload.get("profile_id", "")).strip()
     kodo_dir = kodo_user_dir()
-    was_active = get_active_profile(kodo_dir, entry_name) == profile_id
     try:
         remove_profile(kodo_dir, entry_name, profile_id)
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
         return
-    if was_active and entry_name == _current_local_model_name():
-        await _restart_llama_server_if_running(req, entry_name)
     await _send_registry_state(req)
 
 
@@ -2858,40 +2818,31 @@ async def _handle_local_llm_set_active_profile(req: Request) -> None:
     entry_name = str(req.env.payload.get("name", "")).strip()
     profile_id = str(req.env.payload.get("profile_id", "")).strip()
     kodo_dir = kodo_user_dir()
-    changed = get_active_profile(kodo_dir, entry_name) != profile_id
     try:
         set_active_profile(kodo_dir, entry_name, profile_id)
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
         return
-    if changed and entry_name == _current_local_model_name():
-        await _restart_llama_server_if_running(req, entry_name)
     await _send_registry_state(req)
 
 
 async def _handle_local_llm_set_knobs(req: Request) -> None:
     """Apply the Configure modal's whole knob selection for one entry.
 
-    Restarts llama-server only when the knobs actually resolve to different
-    launch args *and* this entry is both the selected local model and the one
-    currently running — re-applying an unchanged selection (the user opened
-    Configure, changed nothing, hit Apply) must not interrupt a window that is
-    mid-generation. Compared on the resolved args rather than on the selection
-    map because the two are not equivalent: a selection can change from an
-    absent key to an explicit one that means the same thing.
+    Only the sidebar's stored choice changes: llama-server is not restarted.
+    A session that binds to the new values sees a different command line at
+    its next prompt and restarts it then (doc/SESSION_LLM_BINDING.md D1, D6).
     """
     entry_name = str(req.env.payload.get("name", "")).strip()
     raw = req.env.payload.get("knobs")
     selections = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
     kodo_dir = kodo_user_dir()
     entry = get_local_registry(kodo_dir).get(entry_name)
-    before = resolve_default_profile_args(kodo_dir, entry) if entry is not None else {}
     try:
         set_knobs(kodo_dir, entry_name, selections)
     except ValueError as exc:
         await _reply_local_llm_error(req, str(exc))
         return
-    after = resolve_default_profile_args(kodo_dir, entry) if entry is not None else {}
     _log.info("Set knobs on %r: %s", entry_name, selections)
     # Picking an MTP head that is not on disk — the model predates its family's
     # heads, or their download failed — fetches the family's heads now; until
@@ -2900,10 +2851,6 @@ async def _handle_local_llm_set_knobs(req: Request) -> None:
         head = get_selected_mtp_sidecar(kodo_dir, entry)
         if head is not None and head.id in missing_mtp_sidecars(entry, kodo_dir):
             _start_mtp_head_download(req, entry, None)
-    # A user-defined profile being active means the knobs aren't what launches.
-    on_default = get_active_profile(kodo_dir, entry_name) == ""
-    if on_default and before != after and entry_name == _current_local_model_name():
-        await _restart_llama_server_if_running(req, entry_name)
     await _send_registry_state(req)
 
 
@@ -2922,7 +2869,15 @@ async def _handle_llama_server_override_remove(req: Request) -> None:
     await _send_registry_state(req)
 
 
-def _make_llama_start_handler(config: Config) -> HandlerFn:
+def _make_llama_start_handler(config: Config, gateway: LLMGateway) -> HandlerFn:
+    """Build ``llama.start``: launch the sidebar's local card, through the llama-server lease.
+
+    The sidebar's Start waits like any session request would while another
+    session's turn holds llama-server on a different command line
+    (doc/SESSION_LLM_BINDING.md §3), so it can never swap the model out from
+    under a running turn.
+    """
+
     async def _handle_llama_start(req: Request) -> None:
         user_dir = kodo_user_dir()
         settings = config.reload_settings()
@@ -2948,18 +2903,22 @@ def _make_llama_start_handler(config: Config) -> HandlerFn:
             return
 
         if entry.kind == "custom_server_url":
-            # Not managed by kodo — stop our own server (if any) and report it
-            # stopped; the plugin itself points its client at entry.url on the
-            # next dispatch (see LlamaPlugin.__ensure_running).
+            # Not managed by kodo — stop our own server unless a session's turn
+            # is using it, and report it stopped; the plugin itself points its
+            # client at entry.url on the next dispatch.
             managed = LlamaServer.get_active_llama_server()
-            if managed is not None and managed.is_running:
+            if managed is not None and managed.is_running and not gateway.local_holders:
                 await managed.stop()
             await req.connection.send(
                 Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None})
             )
             return
 
+        holder = f"llama.start:{uuid.uuid4().hex}"
         try:
+            await gateway.acquire_local(
+                holder, plan_llama_command(entry, user_dir), sink=req.connection
+            )
             server = await ensure_llama_running(entry, user_dir)
         except Exception as exc:  # noqa: BLE001
             await req.connection.send(
@@ -2968,6 +2927,8 @@ def _make_llama_start_handler(config: Config) -> HandlerFn:
                 )
             )
             return
+        finally:
+            gateway.release_local(holder)
         await req.connection.send(
             Envelope.make_event(
                 EVT_LLAMA_STATE, {"running": True, "model": server.model_name, "port": server.port}
@@ -2977,13 +2938,32 @@ def _make_llama_start_handler(config: Config) -> HandlerFn:
     return _handle_llama_start
 
 
-async def _handle_llama_stop(req: Request) -> None:
-    server = LlamaServer.get_active_llama_server()
-    if server is not None:
-        await server.stop()
-    await req.connection.send(
-        Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None})
-    )
+def _make_llama_stop_handler(gateway: LLMGateway) -> HandlerFn:
+    """Build ``llama.stop``: refused while a session's turn holds llama-server (§3)."""
+
+    async def _handle_llama_stop(req: Request) -> None:
+        server = LlamaServer.get_active_llama_server()
+        if gateway.local_holders and server is not None and server.is_running:
+            await req.connection.send(
+                Envelope.make_event(
+                    EVT_LLAMA_STATE,
+                    {
+                        "running": True,
+                        "model": server.model_name,
+                        "port": server.port,
+                        "error": "llama.cpp is in use by a running session turn. "
+                        "Stop it after the turn ends.",
+                    },
+                )
+            )
+            return
+        if server is not None:
+            await server.stop()
+        await req.connection.send(
+            Envelope.make_event(EVT_LLAMA_STATE, {"running": False, "model": None})
+        )
+
+    return _handle_llama_stop
 
 
 def _make_server_shutdown_handler(conn_registry: ConnectionRegistry) -> HandlerFn:
@@ -3168,6 +3148,7 @@ def create_app(config: Config) -> web.Application:
         get_settings=config.reload_settings,
         layout=layout,
         sandbox_root=sandbox_root,
+        default_settings=Config.default_settings,
     )
     conn_registry = ConnectionRegistry(manager)
     conn_registry.set_gpu_release_hook(_release_llama_gpu)
@@ -3222,6 +3203,7 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_COMMAND_CONTROL_SET, _handle_command_control)
     conn_registry.register_handler(MSG_THINKING_LEVEL_SET, _handle_thinking_level)
     conn_registry.register_handler(MSG_SAMPLING_SET, _handle_sampling_set)
+    conn_registry.register_handler(MSG_LLM_SELECTION_CAPTURE, _handle_llm_selection_capture)
     conn_registry.register_handler(MSG_WORKSPACE_FOLDERS, _handle_workspace_folders)
     conn_registry.register_handler(MSG_PROJECT_CREATE, _handle_project_create)
     conn_registry.register_handler(MSG_STOP, _handle_stop)
@@ -3260,8 +3242,8 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(
         MSG_LLAMA_SERVER_OVERRIDE_REMOVE, _handle_llama_server_override_remove
     )
-    conn_registry.register_handler(MSG_LLAMA_START, _make_llama_start_handler(config))
-    conn_registry.register_handler(MSG_LLAMA_STOP, _handle_llama_stop)
+    conn_registry.register_handler(MSG_LLAMA_START, _make_llama_start_handler(config, gateway))
+    conn_registry.register_handler(MSG_LLAMA_STOP, _make_llama_stop_handler(gateway))
     conn_registry.register_handler(
         MSG_SERVER_SHUTDOWN, _make_server_shutdown_handler(conn_registry)
     )

@@ -78,7 +78,9 @@ seamlessly across the change.
                          — WS_PROTOCOL.md §7.1b, CHECKPOINTS.md §8), and the running
                          token totals (cumulative_input_tokens,
                          cumulative_input_tokens_uncached, cumulative_output_tokens
-                         — WS_PROTOCOL.md §5.7)
+                         — WS_PROTOCOL.md §5.7), and the session's own LLM:
+                         llm_binding, llm_selection, params_snapshot
+                         (SESSION_LLM_BINDING.md §2)
     session.jsonl      — the MAIN session log (see below)
     subsessions/
         <subsession-id>.jsonl   — one per sub-agent run; the sub-agent's full,
@@ -194,7 +196,7 @@ order):
   `read_attachment` tool, not re-read from the links), so the reconstructed
   context matches submit time without the log ever holding the file bytes. See
   WS_PROTOCOL.md §7.1 / `kodo.runtime._attachments`.
-- **Marker lines** — `{"type": "subsession_start"|"subsession_end"|"compaction"|"error"|"security_rule_added"|"agent_stuck_critical"|"usage"|"greeting", ...}`.
+- **Marker lines** — `{"type": "subsession_start"|"subsession_end"|"compaction"|"error"|"security_rule_added"|"agent_stuck_critical"|"usage"|"greeting"|"session_params", ...}`.
   `subsession_start`/`subsession_end` record, *in chronological position*, when
   a sub-agent took over and when it handed control back. They carry
   `subsession_id`, `agent`, `display_name`, and `parent_display_name`;
@@ -222,6 +224,11 @@ order):
   `usd_cost`/`stop_reason`/`agent` straight into this marker, so a call's
   full audit trail lives in the one file (session or subsession) it actually
   happened in, with nothing split out to a separate directory.
+  `session_params` (`{first, changes}`) records the change element pushed
+  right before a prompt — what changed in the session's LLM and parameters
+  since the previous prompt (`EngineEmitters.emit_session_params`,
+  SESSION_LLM_BINDING.md §4); like `greeting` it replays via `session.history`
+  and never enters the LLM context.
   All of these except `subsession_start`/`subsession_end`/`greeting` can
   equally appear inside a **subsession's own log** (below) — an error, a
   granted security rule, or the stuck watchdog can just as easily happen to a
@@ -438,6 +445,27 @@ schemas either — those reach the caller as real JSON Schema on its own
   (`runtime/_engine/_titling.py`), doc/INTERNALS.md §10c, and §5.9a/§5.9b of
   `WS_PROTOCOL.md`.
 
+## LLM binding
+
+Since 2026-10-17 each session runs on its **own** LLM
+([SESSION_LLM_BINDING.md](SESSION_LLM_BINDING.md)). A new session is
+**unbound**: it follows the sidebar's machine-wide selection (`settings.json`
++ each local entry's stored profile and knobs) until its first prompt. When the
+worker dequeues a prompt, `BindingMixin._bind_for_prompt` binds the session:
+its pending `llm_selection` — or, while unbound, a snapshot of the sidebar —
+becomes `llm_binding` (for a kodo-managed local entry together with the exact
+llama-server command line). From then on every LLM lookup the engine makes
+reads the settings with that binding overlaid
+(`BindingMixin._effective_settings`), so another window's sidebar pick no
+longer moves the session; a sidebar edit made while the session's tab is in
+front reaches it as its next LLM through `llm_selection.capture`.
+
+The same moment diffs the session's parameters against the previous prompt's
+(`params_snapshot`) and, when something is worth listing, pushes the
+`session.params` change element and persists it as a `session_params`
+marker. A session written before bindings existed resumes unbound and binds at
+its next prompt without a change element.
+
 ## Thinking level
 
 Each session tracks its own **`thinking_level`** (`SessionState.thinking_level`,
@@ -485,20 +513,22 @@ the source of truth and validates every change:
   now-removed `kodo.validator`'s judge session, was removed with it; a client
   that wants another tier sends `thinking_level.set` once the session exists.
 - **A resumed session** restores its persisted value, but only if it is
-  still valid for the *currently* active model — the active local model /
-  cloud vendor is a machine-global selection, not per-session, so it may have
-  changed while this session was closed (and a switch between two cloud
-  vendors changes the valid tier set just as a local model switch does). An invalid persisted value
-  self-heals to the current model's family default rather than being kept.
-- **A live model switch** (`config.reload`, broadcast to every open
-  session — WS_PROTOCOL.md §7.5) re-derives `thinking_level` the same way if
-  the active model's thinking-family identity actually changed
-  (`WorkflowEngine._sync_thinking_level_to_model`, called from the worker's
-  `config_changed` handling alongside `ContextCompactor.handle_config_changed`)
-  — a tier valid for one family (e.g. Qwen's `"huge"`) is not necessarily
-  valid for another (GPT-OSS has no `"huge"` tier, Google no `"max"`,
-  DeepSeek no `"medium"`), so the reset avoids silently carrying over a
-  meaningless value. Switching cloud vendors counts as such a switch.
+  still valid for the model its next prompt runs on — its own pending LLM
+  once bound, the sidebar's for an unbound session (which may have changed
+  while it was closed; a switch between two cloud vendors changes the valid
+  tier set just as a local model switch does). An invalid persisted value
+  self-heals to that model's family default rather than being kept.
+- **A model switch** re-derives `thinking_level` the same way if the
+  thinking-family identity of the session's *next* LLM actually changed
+  (`WorkflowEngine._sync_thinking_level_to_model`): for an unbound session a
+  `config.reload` (the worker's `config_changed` handling, alongside
+  `ContextCompactor.handle_config_changed`), for a bound one an
+  `llm_selection.capture` or a binding switch at the prompt
+  (SESSION_LLM_BINDING.md §2.2) — a tier valid for one family (e.g. Qwen's
+  `"huge"`) is not necessarily valid for another (GPT-OSS has no `"huge"`
+  tier, Google no `"max"`, DeepSeek no `"medium"`), so the reset avoids
+  silently carrying over a meaningless value. Switching cloud vendors counts
+  as such a switch.
 - **A user request** (`thinking_level.set`, WS_PROTOCOL.md §7.4e) is
   validated against the active model's tiers and rejected outright if
   invalid (`WorkflowEngine.handle_thinking_level_set`) — unlike
@@ -507,9 +537,10 @@ the source of truth and validates every change:
   model family.
 
 `WorkflowEngine._current_base_llm()` is the shared resolver behind all of
-this: it resolves the top-level agent's model key the same way `_resolve_plugin`
-does, then looks up its `base_llm` in the local registry — `""` for a cloud
-model or a local entry with none.
+this: it resolves the top-level agent's model key for the session's *next*
+LLM (`BindingMixin._selection_settings` — the pending selection once bound,
+the sidebar's otherwise), then looks up its `base_llm` in the local registry —
+the vendor key for a cloud model, `""` for a local entry with none.
 
 ## Sampling parameters
 

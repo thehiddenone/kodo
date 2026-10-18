@@ -137,6 +137,23 @@ def _make_engine(*, top_agent: str = "kodo_guide") -> WorkflowEngine:
 
     engine._resume_main_turn = _resume_main_turn
 
+    # Binding (doc/SESSION_LLM_BINDING.md §2.2) has its own tests; here it only
+    # says whether the dequeued prompt may run, and records that it was asked.
+    engine.bind_ok = True
+    engine.binds = 0
+
+    async def _bind_for_prompt() -> bool:
+        engine.binds += 1
+        return engine.bind_ok
+
+    engine._bind_for_prompt = _bind_for_prompt
+    engine.lease_releases = 0
+
+    def _release_llama_lease() -> None:
+        engine.lease_releases += 1
+
+    engine._release_llama_lease = _release_llama_lease
+
     return engine
 
 
@@ -224,6 +241,75 @@ async def test_config_changed_task_runs_handler() -> None:
     await _drive(engine)
 
     assert engine._compactor.config_changed_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_prompt_is_bound_before_its_top_agent_runs() -> None:
+    engine = _make_engine()
+    engine._queue.put_nowait({"text": "hi", "attachments": []})
+
+    await _drive(engine)
+
+    assert engine.binds == 1
+    assert engine.calls == [("kodo_guide", "hi", [])]
+
+
+@pytest.mark.asyncio
+async def test_prompt_that_cannot_bind_never_reaches_a_top_agent() -> None:
+    engine = _make_engine()
+    engine.bind_ok = False
+    engine._queue.put_nowait({"text": "hi", "attachments": []})
+    engine._queue.put_nowait({"text": "again", "attachments": []})
+
+    await _drive(engine)
+
+    # Both prompts were dequeued (the worker keeps serving), neither ran.
+    assert engine.binds == 2
+    assert engine.calls == []
+    assert engine._titler.titled == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "task",
+    [
+        {"text": "hi", "attachments": []},
+        {"kind": "compact"},
+        {"kind": "config_changed"},
+    ],
+)
+async def test_every_task_releases_the_llama_lease(task: dict[str, object]) -> None:
+    engine = _make_engine()
+    engine._queue.put_nowait(task)
+
+    await _drive(engine)
+
+    assert engine.lease_releases == 1
+
+
+@pytest.mark.asyncio
+async def test_resume_releases_the_llama_lease() -> None:
+    engine = _make_engine()
+    engine._resume_subsession_pending = True
+
+    await _drive(engine)
+
+    assert engine.lease_releases == 1
+
+
+@pytest.mark.asyncio
+async def test_failing_prompt_still_releases_the_llama_lease() -> None:
+    engine = _make_engine()
+
+    async def _boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    engine._run_top_agent = _boom
+    engine._queue.put_nowait({"text": "hi", "attachments": []})
+
+    await _drive(engine)
+
+    assert engine.lease_releases == 1
 
 
 @pytest.mark.asyncio

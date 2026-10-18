@@ -9,6 +9,7 @@ fill any missing keys.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 from dataclasses import dataclass, field
@@ -36,7 +37,7 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
     # See ContextCompactor.context_limit (runtime/_engine/_compaction.py) and
     # doc/STATE_AND_LIFECYCLE.md §4.5.
     "models": {
-        "local": "llamacpp-qwen36-27b-q4-k-xl",
+        "local": "unsloth-qwen38-27b-ud-q4-k-xl",
         "cloud": {
             "anthropic": {
                 "low": "claude-haiku-4-5-20251001",
@@ -342,6 +343,18 @@ class Config:
             dict[str, object]: Fresh merged settings (defaults ← file).
         """
         return _load_settings()
+
+    @staticmethod
+    def default_settings() -> dict[str, object]:
+        """The settings a fresh install starts with — what the change element measures against.
+
+        A session's change element lists a cloud card's tier models only when
+        they differ from these (doc/SESSION_LLM_BINDING.md §4).
+
+        Returns:
+            dict[str, object]: A deep copy of the shipped defaults.
+        """
+        return copy.deepcopy(_DEFAULT_USER_SETTINGS)
 
 
 def _ensure_user_settings() -> None:

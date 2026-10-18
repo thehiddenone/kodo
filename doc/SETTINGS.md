@@ -37,9 +37,18 @@ Python logging level for the server process.
 
 ### 2.2 `mode`, `active_cloud_vendor`, `models`
 
-Together these three keys select the model used for every LLM call. Full
-design (registries, effort levels, resolution order) is in
+Together these three keys are the **sidebar's** LLM selection. Full design
+(registries, effort levels, resolution order) is in
 [LLM_REGISTRY.md](LLM_REGISTRY.md) §2/§5 — this is the settings-file summary.
+
+Since 2026-10-17 they no longer select the model of every session
+([SESSION_LLM_BINDING.md](SESSION_LLM_BINDING.md)): an **unbound** session
+(one that has not sent a prompt) follows them and copies them at its first
+prompt; a **bound** session keeps its own copy — the local entry with its
+profile and knobs, or the cloud vendor with a snapshot of its tier models — in
+its `transient.json`. kodo-vsix writes a bound session's card back into these
+keys when that session's tab comes to the front, so the sidebar always shows
+the front session's LLM.
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -53,7 +62,7 @@ design (registries, effort levels, resolution order) is in
   "mode": "cloud",
   "active_cloud_vendor": "anthropic",
   "models": {
-    "local": "llamacpp-qwen36-27b-q4-k-xl",
+    "local": "unsloth-qwen38-27b-ud-q4-k-xl",
     "cloud": {
       "anthropic": { "low": "claude-haiku-4-5-20251001", "medium": "claude-sonnet-5",
                       "high": "claude-opus-5", "max": "claude-fable-5" },
@@ -86,7 +95,7 @@ Every vendor also has a `models.cloud_uniform.<vendor>` entry (a sibling of
 `models.cloud`, not shown in the trimmed example above) — the "use one model
 for all effort levels" shortcut. See §2.2d.
 
-**Model switching**: change the relevant key(s), save the file, send `config.reload`. In local mode there is one active model regardless of a sub-agent's declared `capability`; in cloud mode, `capability` selects which of the active vendor's four effort-level assignments is used. There is no `default_model`/flat-`models`-dict scheme any more (an older revision of this document described one; it never matched the shipped code — see `_resolve_model_key` in `kodo/runtime/_engine/_llm.py` for the actual resolution logic).
+**Model switching**: change the relevant key(s), save the file, send `config.reload` — that moves every unbound session; a bound one moves at its next prompt after kodo-vsix sends `llm_selection.capture` on its connection (WS_PROTOCOL.md §7.4i). In local mode there is one active model regardless of a sub-agent's declared `capability`; in cloud mode, `capability` selects which of the active vendor's four effort-level assignments is used. There is no `default_model`/flat-`models`-dict scheme any more (an older revision of this document described one; it never matched the shipped code — see `resolve_model_key` in `kodo/runtime/_llm_selection.py` for the actual resolution logic).
 
 **Registering a new model**: cloud models are 100% hardcoded (`kodo/llms/_cloud_registry.py`) — adding one is a code change, not a settings change — **except the two aggregators, OpenRouter and AWS Bedrock** (doc/LLM_REGISTRY.md §3a/§3b): their catalogs are fetched at runtime and cached, so `models.cloud.openrouter.<effort>` can be set to any of OpenRouter's 400+ model ids, and `models.cloud.bedrock.<effort>` to any model id or cross-region inference-profile id available in the configured `bedrock_region`, without a kodo code change. Local models can be added live from the Local Inference Settings webview — from Hugging Face by the Model Importer agent (user catalog files, doc/LLM_REGISTRY.md §4.0b; the hand-filled `local_llm.add_huggingface` form was removed 2026-10-05), or with `local_llm.add_file`/`add_server_url` (WS_PROTOCOL.md §7.6) — without touching `settings.json` at all; only *which* installed local model is active goes through `models.local` here.
 
@@ -142,7 +151,7 @@ literal API request and in the `Usage.model` reported back for pricing
 
 Whether OpenRouter's Cloud AI Settings tab is in Auto mode (doc/LLM_REGISTRY.md
 §3a). `false` by default (Manual mode). When `true`,
-`kodo/runtime/_engine/_llm.py`'s `_resolve_model_key` returns the router
+`kodo/runtime/_llm_selection.py`'s `resolve_model_key` returns the router
 pseudo-model `"openrouter/auto"` for every effort tier, **regardless** of
 `models.cloud.openrouter` above — that map is deliberately left untouched
 while Auto is on, so turning it back off restores whatever was picked
@@ -200,7 +209,7 @@ model handling every call to that vendor.
 | `models.cloud_uniform.<vendor>.enabled` | boolean | Whether the shortcut is active for that vendor. `false` by default for every vendor. |
 | `models.cloud_uniform.<vendor>.model_id` | string \| `null` | The model every effort tier resolves to while `enabled` is `true`. `null` until the user first picks one — a `null`/missing `model_id` with `enabled: true` is treated as "not actually configured yet" and falls through to `models.cloud.<vendor>` exactly as if `enabled` were `false`. |
 
-When `enabled` is `true`, `kodo/runtime/_engine/_llm.py`'s `_resolve_model_key`
+When `enabled` is `true`, `kodo/runtime/_llm_selection.py`'s `resolve_model_key`
 returns `model_id` for **every** capability, regardless of
 `models.cloud.<vendor>` — that per-tier map is deliberately left untouched
 while this is on (same non-destructive-override shape as
@@ -356,7 +365,7 @@ session from Session Parameters.
   "cloud_concurrency": 2,
   "active_cloud_vendor": "anthropic",
   "models": {
-    "local": "llamacpp-qwen36-27b-q4-k-xl",
+    "local": "unsloth-qwen38-27b-ud-q4-k-xl",
     "cloud": {
       "anthropic": {
         "low": "claude-haiku-4-5-20251001",

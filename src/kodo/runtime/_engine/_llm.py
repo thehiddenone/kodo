@@ -53,6 +53,7 @@ from kodo.project import kodo_user_dir
 from kodo.tools import ToolDispatcher
 
 from .._agenttools import agent_tool_specs
+from .._llm_selection import resolve_model_key
 from ._proto import EngineHost
 
 # Dotted plugin module (kodo.llms._cloud_registry's _CLOUD_VENDOR_MODULE
@@ -130,22 +131,14 @@ class LLMPlumbingMixin:
     _last_thinking_base_llm: str | None
 
     def _resolve_model_key(self: EngineHost, capability: str) -> str:
-        """Resolve the registry model key for *capability* from current settings.
+        """Resolve the registry model key for *capability* from this session's settings.
 
         Pure settings lookup (no plugin construction, no key request), so it is
         safe to call synchronously from the context-limit/auto-compaction paths.
-        In ``local`` mode every capability maps to the single selected local
-        model; otherwise, if the active vendor's "use one model for all
-        effort levels" shortcut is enabled (``models.cloud_uniform.<vendor>``,
-        alongside OpenRouter's ``openrouter_auto_mode``), that one model wins
-        regardless of *capability*. Failing both, the per-vendor,
-        per-capability cloud model is used, falling back through the other
-        capability tiers (``medium`` first, since that's the safest default)
-        and finally to the vendor's first hardcoded registry model. A bare
-        capability name (``"high"``, etc.) is never returned as a model key
-        — an incomplete or stale ``models.cloud.<vendor>`` map (e.g. one
-        predating a newly added tier) would otherwise 404 against the
-        provider.
+        Reads :meth:`~._binding.BindingMixin._effective_settings` — the
+        machine-wide settings, with a bound session's own LLM overlaid
+        (doc/SESSION_LLM_BINDING.md §2.1) — through
+        :func:`~kodo.runtime._llm_selection.resolve_model_key`.
 
         Args:
             capability: ``'max'``, ``'high'``, ``'medium'``, or ``'low'``.
@@ -154,45 +147,7 @@ class LLMPlumbingMixin:
             str: A local registry name (local mode) or a cloud ``model_id``
                 (cloud mode).
         """
-        settings = self._get_settings()
-        mode = str(settings.get("mode", "cloud"))
-        models_map = settings.get("models", {})
-        if not isinstance(models_map, dict):
-            models_map = {}
-        if mode == "local":
-            return str(models_map.get("local", "llamacpp-qwen36-27b-q4-k-xl"))
-
-        vendor = str(settings.get("active_cloud_vendor", "anthropic"))
-        # Auto mode overrides every tier to the router pseudo-model,
-        # regardless of what models.cloud.openrouter holds -- that map is
-        # deliberately left untouched (not overwritten) so toggling Auto back
-        # off restores whatever the user had picked in Manual mode. See
-        # kodo/server/_config.py's openrouter_auto_mode default.
-        if vendor == "openrouter" and bool(settings.get("openrouter_auto_mode", False)):
-            return "openrouter/auto"
-        # "Use one model for all effort levels" shortcut -- checked after
-        # openrouter_auto_mode (so Auto mode wins if a hand-edited
-        # settings.json somehow set both) and before the per-tier map, which
-        # is deliberately left untouched by this override. See
-        # kodo/server/_config.py's models.cloud_uniform default.
-        uniform_map = models_map.get("cloud_uniform", {})
-        uniform_vendor = uniform_map.get(vendor, {}) if isinstance(uniform_map, dict) else {}
-        if isinstance(uniform_vendor, dict) and uniform_vendor.get("enabled"):
-            uniform_model_id = uniform_vendor.get("model_id")
-            if uniform_model_id:
-                return str(uniform_model_id)
-        cloud_map = models_map.get("cloud", {})
-        vendor_map = cloud_map.get(vendor, {}) if isinstance(cloud_map, dict) else {}
-        if not isinstance(vendor_map, dict):
-            vendor_map = {}
-        for key in (capability, "medium", "high", "max", "low"):
-            model_id = vendor_map.get(key)
-            if model_id:
-                return str(model_id)
-        registry_models = get_cloud_registry().get(vendor, ())
-        if registry_models:
-            return registry_models[0].model_id
-        return capability
+        return resolve_model_key(self._effective_settings(), capability)
 
     async def _resolve_plugin(
         self: EngineHost, capability: str, force_model_key: str | None = None
@@ -222,14 +177,23 @@ class LLMPlumbingMixin:
             RuntimeError: If the client rejects or cancels the key request, or
                 the resolved cloud vendor has no registered plugin.
         """
-        settings = self._get_settings()
+        settings = self._effective_settings()
         model_key = force_model_key or self._resolve_model_key(capability)
 
         kodo_dir = kodo_user_dir()
         if model_key in get_local_registry(kodo_dir):
             self._current_vendor = None
-            plugin: LLMPlugin = LlamaPlugin(sink=self._sink, kodo_dir=kodo_dir)
-            routing = LLMRouting(residence="local")
+            plugin: LLMPlugin = LlamaPlugin(
+                sink=self._sink, kodo_dir=kodo_dir, choice=self._launch_choice_for(model_key)
+            )
+            # The command line + holder make the gateway hold this session on
+            # the managed llama-server for the rest of its turn
+            # (doc/SESSION_LLM_BINDING.md §3).
+            routing = LLMRouting(
+                residence="local",
+                launch=self._llama_command_for(model_key),
+                holder=self._lease_holder(),
+            )
             return LoggingLLMPlugin(plugin, self._llm_logs_dir()), model_key, routing
 
         vendor = _find_cloud_vendor_for_model_id(model_key) or str(
@@ -251,9 +215,12 @@ class LLMPlumbingMixin:
         return LoggingLLMPlugin(plugin, self._llm_logs_dir()), model_key, routing
 
     def _current_base_llm(self: EngineHost) -> str:
-        """``base_llm`` of the session's currently active model.
+        """``base_llm`` of the model the session's *next* prompt runs on.
 
-        Reads fresh settings each call (same as :meth:`_resolve_model_key`).
+        Reads :meth:`~._binding.BindingMixin._selection_settings` fresh each
+        call: the machine-wide settings for an unbound session, its pending
+        selection for a bound one (doc/SESSION_LLM_BINDING.md §2.1) — the
+        thinking tiers describe what the next prompt will run.
         In cloud mode this is the synthetic per-vendor identity -- the vendor
         key itself (``"anthropic"``, ``"openai"``, ...), whose tier table
         lives in :data:`~kodo.llms._cloud_thinking.CLOUD_THINKING_FAMILIES`
@@ -266,11 +233,11 @@ class LLMPlumbingMixin:
         ``_session.thinking_level`` in sync with whatever model is actually
         selected (doc/SESSIONS.md).
         """
-        settings = self._get_settings()
+        settings = self._selection_settings()
         if str(settings.get("mode", "cloud")) == "cloud":
             vendor = str(settings.get("active_cloud_vendor", "anthropic"))
             return vendor if vendor in CLOUD_THINKING_FAMILIES else ""
-        model_key = self._resolve_model_key(self._top_agent_capability())
+        model_key = resolve_model_key(settings, self._top_agent_capability())
         entry = get_local_registry(kodo_user_dir()).get(model_key)
         return entry.base_llm if entry is not None else ""
 

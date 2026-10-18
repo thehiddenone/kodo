@@ -155,7 +155,7 @@ def _make_engine(
         transient=transient,
         workspace_layout=workspace_layout,
         registry=registry or _FakeRegistry(),
-        gateway=SimpleNamespace(),
+        gateway=SimpleNamespace(release_local=lambda holder: None),
         session_workspace=session_workspace,
     )
     return engine, transient, sink, gate
