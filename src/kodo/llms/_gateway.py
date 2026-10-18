@@ -28,10 +28,13 @@ A local request that names its llama-server command line
 for its session (:attr:`LLMRouting.holder`): a session bound to another
 command line waits there until every other holder's turn has ended
 (doc/SESSION_LLM_BINDING.md §3). The engine releases its hold with
-:meth:`LLMGateway.release_local` when the turn ends.
+:meth:`LLMGateway.release_local` when the turn ends. A benchmark run holds the
+lease **exclusively** (doc/BENCHMARK_SESSIONS.md §4.6): every local request
+waits for the whole run, and is told so with ``reason:"benchmark"``.
 
 The gateway is the only component that constructs and emits the
-``llm.waiting`` envelopes (queued, throttled and model-swap indicators).
+``llm.waiting`` envelopes (queued, throttled, model-swap and benchmark
+indicators).
 """
 
 from __future__ import annotations
@@ -235,21 +238,33 @@ class LLMGateway:
         return self.__lease.holders
 
     async def acquire_local(
-        self, holder: str, command: tuple[str, ...], sink: EventSink | None = None
+        self,
+        holder: str,
+        command: tuple[str, ...],
+        sink: EventSink | None = None,
+        *,
+        exclusive: bool = False,
+        label: str = "",
     ) -> None:
         """Hold the managed llama-server on *command* outside a request.
 
-        For callers that launch llama-server themselves (the sidebar's Start):
-        waits exactly like a session request would, and must be paired with
-        :meth:`release_local`.
+        For callers that launch llama-server themselves (the sidebar's Start,
+        a benchmark run): waits exactly like a session request would, and
+        must be paired with :meth:`release_local`.
 
         Args:
             holder: A tag unique to this caller.
             command: The argv it is about to launch.
-            sink: Where to push ``llm.waiting {reason: "model_swap"}`` while
-                waiting, if anywhere.
+            sink: Where to push ``llm.waiting`` (``model_swap`` or
+                ``benchmark``) while waiting, if anywhere.
+            exclusive: Share the server with nobody until released, not even
+                a request on *command* (a benchmark run).
+            label: With *exclusive*, the title other sessions are told they
+                wait for (``llm.waiting {reason: "benchmark", title}``).
         """
-        await self.__lease.acquire(holder, command, self.__swap_notice(sink))
+        await self.__lease.acquire(
+            holder, command, self.__swap_notice(sink, exclusive), exclusive=exclusive, label=label
+        )
 
     def release_local(self, holder: str) -> None:
         """Release *holder*'s hold on the managed llama-server (no-op if it has none).
@@ -273,7 +288,8 @@ class LLMGateway:
         appropriate feed, yielding its events.
 
         Emits ``llm.waiting`` while waiting for the llama-server lease
-        (``reason:"model_swap"``), queued (``reason:"queued"``) or throttled
+        (``reason:"model_swap"``, or ``reason:"benchmark"`` with the run's
+        ``title`` when an exclusive hold is in the way), queued (``reason:"queued"``) or throttled
         (``reason:"throttled"`` with ``retry_in_seconds``); clears it once the
         request is admitted.  A 429 (``RateLimited``) raised before any event is
         yielded re-queues the request with an exponential vendor delay; a 429
@@ -293,7 +309,7 @@ class LLMGateway:
         waiting = False
         if routing.residence == "local" and routing.launch is not None and routing.holder:
             waiting = await self.__lease.acquire(
-                routing.holder, routing.launch, self.__swap_notice(sink)
+                routing.holder, routing.launch, self.__swap_notice(sink, False)
             )
 
         while True:
@@ -335,12 +351,19 @@ class LLMGateway:
     # Internals
     # ------------------------------------------------------------------
 
-    def __swap_notice(self, sink: EventSink | None) -> Callable[[], Awaitable[None]] | None:
+    def __swap_notice(
+        self, sink: EventSink | None, exclusive: bool
+    ) -> Callable[[], Awaitable[None]] | None:
         if sink is None:
             return None
 
         async def notice() -> None:
-            await self.__emit(sink, waiting=True, reason="model_swap")
+            # An exclusive request waits for running turns, never for itself.
+            blocker = None if exclusive else self.__lease.exclusive_label
+            if blocker is None:
+                await self.__emit(sink, waiting=True, reason="model_swap")
+            else:
+                await self.__emit(sink, waiting=True, reason="benchmark", title=blocker)
 
         return notice
 
@@ -375,10 +398,13 @@ class LLMGateway:
         waiting: bool,
         reason: str | None = None,
         retry_in_seconds: float | None = None,
+        title: str | None = None,
     ) -> None:
         payload: dict[str, object] = {"waiting": waiting}
         if reason is not None:
             payload["reason"] = reason
+        if title is not None:
+            payload["title"] = title
         if retry_in_seconds is not None:
             payload["retry_in_seconds"] = retry_in_seconds
         await sink.send(Envelope.make_event(EVT_LLM_WAITING, payload))

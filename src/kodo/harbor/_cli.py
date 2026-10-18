@@ -9,7 +9,7 @@
         [--thinking-level TIER] [--timeout SEC] [--platform OS/ARCH]
         [--kodo-wheel PATH | --kodo-version VERSION]
         [--jobs-dir jobs] [--job-name NAME]
-        [--llama-port 8090] [--llama-bind ADDR] [--keep-llama]
+        [--llama-port 8090] [--llama-bind ADDR] [--keep-llama | --llama-url URL]
         [--dry-run] [-- HARBOR_RUN_ARGS...]
     kodo-harbor summarize JOB_DIR [--json]
     kodo-harbor list-suites [--json]
@@ -18,7 +18,8 @@
 
 ``run`` checks everything it can before Docker starts (the model, its
 credential, the tasks, Docker itself), starts the host llama-server for a
-local model, writes ``<job>/kodo-job.json``, runs Harbor on it, and writes
+local model (or, with ``--llama-url``, checks and attaches to one already
+running on this host), writes ``<job>/kodo-job.json``, runs Harbor on it, and writes
 ``kodo-summary.md`` / ``kodo-summary.json`` next to Harbor's own results.
 Exit code: Harbor's, or ``2`` when the run could not start (doc/HARBOR.md).
 ``list-models`` prints the ``--model`` values ``run`` can run: installed local
@@ -34,6 +35,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -60,6 +62,7 @@ _SUMMARY_JSON = "kodo-summary.json"
 _BUILTIN_PREFIX = "kodo_"
 _STARTUP_FAILURE = 2
 _INTERRUPTED = 130
+_DEFAULT_LLAMA_PORT = 8090
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -107,9 +110,16 @@ def _parser() -> argparse.ArgumentParser:
     out.add_argument("--jobs-dir", type=Path, default=Path("jobs"), help="Harbor jobs directory.")
     out.add_argument("--job-name", help="Job name (default: derived and timestamped).")
     local = run.add_argument_group("local model")
-    local.add_argument("--llama-port", type=int, default=8090, help="Host llama-server port.")
+    local.add_argument(
+        "--llama-port", type=int, help=f"Host llama-server port (default {_DEFAULT_LLAMA_PORT})."
+    )
     local.add_argument("--llama-bind", help="Host address the llama-server listens on.")
     local.add_argument("--keep-llama", action="store_true", help="Leave it running afterwards.")
+    local.add_argument(
+        "--llama-url",
+        help="Attach to a llama-server already running on this host (http://HOST:PORT); "
+        "never started or stopped. Excludes --llama-port/--llama-bind/--keep-llama.",
+    )
     run.add_argument("--dry-run", action="store_true", help="Write the job config; run nothing.")
     run.add_argument("harbor_args", nargs=argparse.REMAINDER, help="-- then harbor run args.")
 
@@ -147,7 +157,20 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         int: The exit code.
     """
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.command == "run" and args.llama_url is not None:
+        given = [
+            flag
+            for flag, value in (
+                ("--llama-port", args.llama_port is not None),
+                ("--llama-bind", args.llama_bind is not None),
+                ("--keep-llama", args.keep_llama),
+            )
+            if value
+        ]
+        if given:
+            parser.error(f"--llama-url cannot be combined with {', '.join(given)}")
     catalog = SuiteCatalog.for_user()
     try:
         if args.command == "list-suites":
@@ -158,10 +181,23 @@ def main(argv: list[str] | None = None) -> int:
             return _list_models(args.kind, args.json)
         if args.command == "summarize":
             return _summarize(args.job_dir, args.json)
+        _interrupt_on_break()
         return _run(args, catalog)
     except HarborRunError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return _STARTUP_FAILURE
+
+
+def _interrupt_on_break() -> None:
+    # Windows has no SIGINT for one process group: a parent (the Kodo
+    # server's Stop, doc/BENCHMARK_SESSIONS.md §4.4) sends CTRL_BREAK_EVENT to
+    # this run's own group, and it must wind down exactly as Ctrl+C does.
+    if sys.platform == "win32":
+        signal.signal(signal.SIGBREAK, _raise_interrupt)
+
+
+def _raise_interrupt(signum: int, frame: object) -> None:
+    raise KeyboardInterrupt
 
 
 def _list_suites(catalog: SuiteCatalog, as_json: bool) -> int:
@@ -248,6 +284,11 @@ def _run(args: argparse.Namespace, catalog: SuiteCatalog) -> int:
     job_dir = jobs_dir / job_name
     if (job_dir / "config.json").exists():
         raise HarborRunError(f"Job {job_dir} already exists; pass another --job-name")
+    attached: LlamaAccess | None = None
+    if args.llama_url is not None:
+        if not model.is_local:
+            raise HarborRunError(f"--llama-url is for a local model, not {model.spec.label!r}")
+        attached = LlamaAccess.attach(model.spec.name, args.llama_url, kodo_dir)
     platform = platform_overlay(args.platform) if args.platform is not None else None
     uv = find_uv(kodo_dir)
     if not args.dry_run:
@@ -266,11 +307,13 @@ def _run(args: argparse.Namespace, catalog: SuiteCatalog) -> int:
         raise HarborRunError(f"{args.agent!r} is not built in, and {agents_dir} does not exist")
 
     llama: HostLlama | None = None
-    access: LlamaAccess | None = None
+    access = attached
     registry: Path | None = None
+    port = args.llama_port or _DEFAULT_LLAMA_PORT
     bind = str(args.llama_bind or HostLlama.default_bind())
     if model.is_local:
-        llama = HostLlama(model.spec.name, args.llama_port, bind)
+        if attached is None:
+            llama = HostLlama(model.spec.name, port, bind)
         registry_path = kodo_dir / "etc" / "local-llm-registry.json"
         registry = registry_path if registry_path.is_file() else None
         text = HostLlama.compose_overlay()
@@ -282,7 +325,7 @@ def _run(args: argparse.Namespace, catalog: SuiteCatalog) -> int:
         if llama is not None:
             # A dry run starts nothing, so the served context is not known yet.
             access = (
-                LlamaAccess(model.spec.name, args.llama_port, bind, 0)
+                LlamaAccess(model.spec.name, f"http://{bind}:{port}", 0)
                 if args.dry_run
                 else llama.start()
             )

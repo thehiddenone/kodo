@@ -1,7 +1,9 @@
 # Benchmark sessions
 
-> Status: **proposed 2026-10-17, not built.** Every decision in §1 was made by
-> the user when asked. Supersedes [AGENT_BUILDER.md](AGENT_BUILDER.md) D19 (run
+> Status: **proposed 2026-10-17; being built.** Part A (§3) and the
+> exclusive lease (§4.6) — steps 1–2 of §8 — landed 2026-10-18; the rest is
+> not built yet. Every decision in §1 was made
+> by the user when asked. Supersedes [AGENT_BUILDER.md](AGENT_BUILDER.md) D19 (run
 > in a terminal, no server-side job management) and D20 (GPU warning) once
 > built. Related: [HARBOR.md](HARBOR.md) (`kodo-harbor`),
 > [HEADLESS.md](HEADLESS.md) (`--llama-url`), [LLM_GATEWAY.md](LLM_GATEWAY.md)
@@ -104,6 +106,14 @@ kodo-harbor run --model ENTRY --llama-url http://127.0.0.1:8042 …
 
 Part A is usable on its own from the CLI, and §4 depends on it.
 
+**Built 2026-10-18.** `LlamaAccess(entry, host_url, context_per_slot)` takes
+the URL; `LlamaAccess.attach(entry, url, kodo_dir)` makes the check by running
+`RemoteLlamaEndpoint.verify` once (restoring the process's previous endpoint
+afterwards). `kodo-harbor` also installs a `SIGBREAK` handler on Windows that
+raises `KeyboardInterrupt` (§4.4), so Stop has the Ctrl+C path to use.
+`--llama-port` lost its argparse default (8090 is applied in `_run`) so the
+exclusion check can tell a given flag from a default.
+
 ## 4. Part C — the benchmark session
 
 ### 4.1 Starting one
@@ -199,6 +209,14 @@ group, which is what Ctrl+C in a terminal does today:
   has for Ctrl+C: Harbor winds its trials down and the summary covers what
   finished.
 
+**Harbor on Windows (decided by the user 2026-10-18).** `CTRL_BREAK_EVENT`
+reaches every process in the group, and Harbor (`uv tool run harbor …`) has no
+`SIGBREAK` handler, so it would exit at once instead of winding its trials
+down. So on Windows `kodo-harbor` starts Harbor in **its own** process group
+(`CREATE_NEW_PROCESS_GROUP`), and its `SIGBREAK` handler forwards the
+interrupt to Harbor's group. Harbor then takes its Ctrl+C path, as it does on
+macOS and Linux. Build this with §4.4 (step 3).
+
 The status becomes `stopping`. After a 120 s grace period the whole process
 group is killed, and the outcome is `stopped` either way. Containers Harbor
 didn't get to remove after a kill are a known limit (§6).
@@ -230,6 +248,25 @@ didn't get to remove after a kill are a known limit (§6).
   replaces `model_swap`, which would be misleading here.
 - The sidebar's `llama.start` waits the same way. `llama.stop` is already
   refused while the lease is held.
+
+**Built 2026-10-18** (`LlamaLease.acquire(..., exclusive=, label=)`,
+`LLMGateway.acquire_local(..., exclusive=, label=)`, `exclusive_label`). The
+`llm.waiting` payload carries the title as `title`. The exclusive request's own
+wait reports `model_swap`, never `benchmark`. A cancelled waiter now lets the
+same-command waiters at the front of the queue join the current holders.
+
+**Other paths that stop the managed llama-server** and ignore the lease
+(found 2026-10-18; §4.2 must guard each while a job holds it):
+
+- `llamacpp.update` and `llamacpp.uninstall` (`server/_app.py`) stop it
+  unconditionally. They must be refused while a job runs.
+- The GPU-release hook (`_release_llama_gpu`, armed in
+  `ConnectionRegistry`) stops it as soon as the last client disconnects,
+  with no grace period, when `SessionManager.any_running()` is false. A
+  window reload during a run would kill the trials' server. The hook, and
+  the idle self-reap's deferral, must count a running job as running.
+- A `llama.start` for a `custom_server_url` entry stops the managed server
+  when `local_holders` is empty. It already sees the job's hold.
 
 The housekeeper LLM (titles, greetings) runs on its own llama-server
 (`titling/_server.py`) and isn't affected. Self-hosted cards and cloud models

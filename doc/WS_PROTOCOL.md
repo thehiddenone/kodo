@@ -64,6 +64,12 @@ share; everything else is internal.
 >   commands (§7.6) no longer restart llama-server; `llama.stop` is refused
 >   while a session's turn holds llama-server.
 
+> **Benchmark sessions (2026-10-18, in progress — [BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md)).**
+> - `llm.waiting` gained `reason: "benchmark"` with **`title`** (the
+>   benchmark session's): a local request waiting for an exclusive benchmark
+>   hold on llama-server. The gateway emits it; nothing takes such a hold yet
+>   (⟪planned⟫ `harbor.run`, §7.4j), and the webview doesn't render it yet.
+
 Where a message is **specified but not yet emitted/handled** (a planned
 extension or a stubbed feature), it is flagged **⟪planned⟫** inline. Everything
 not so flagged is live in the current build.

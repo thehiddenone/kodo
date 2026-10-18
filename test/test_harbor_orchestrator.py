@@ -297,7 +297,7 @@ def test_local_job_attaches_to_the_host_llama(tmp_path: Path) -> None:
     registry.write_text("{}", encoding="utf-8")
     overlay = tmp_path / "overlay.yaml"
     overlay.write_text("services: {}\n", encoding="utf-8")
-    access = LlamaAccess(entry, 8090, "127.0.0.1", 32768)
+    access = LlamaAccess(entry, "http://127.0.0.1:8090", 32768)
     plan = JobPlan(
         job_name="j",
         jobs_dir=tmp_path / "jobs",
@@ -348,7 +348,7 @@ def test_local_model_refuses_a_control_that_runs_in_the_container(tmp_path: Path
             agent="kodo_problem_solver",
             selection=_selection("hello-world"),
             controls=["claude-code"],
-            llama=LlamaAccess(entry, 1, "127.0.0.1", 1),
+            llama=LlamaAccess(entry, "http://127.0.0.1:1", 1),
         )
 
 

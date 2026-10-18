@@ -9,6 +9,12 @@ the middle of another session's turn (D4). A same-command request that
 arrives while a swap is waiting queues behind it, so a busy model cannot
 starve the swap.
 
+An **exclusive** hold (a benchmark run, doc/BENCHMARK_SESSIONS.md §4.6) shares
+with nobody, not even a holder on the same command line: it waits until every
+holder has released, and while it holds — or waits — every later request
+queues behind it in arrival order. Its label (the benchmark session's title)
+is what a waiter is told it is waiting for.
+
 Purely an ordering primitive: it never starts or stops llama-server. The
 :class:`~kodo.llms.LLMGateway` acquires it before a local request competes
 for the local feed, and the actual restart happens later, inside the plugin,
@@ -31,6 +37,8 @@ class _Waiter:
     holder: str
     command: tuple[str, ...]
     granted: asyncio.Future[None]
+    exclusive: bool
+    label: str
 
 
 class LlamaLease:
@@ -39,12 +47,14 @@ class LlamaLease:
     __command: tuple[str, ...] | None
     __holders: set[str]
     __waiters: deque[_Waiter]
+    __exclusive_label: str | None
 
     def __init__(self) -> None:
         """Start with no holder and no waiter."""
         self.__command = None
         self.__holders = set()
         self.__waiters = deque()
+        self.__exclusive_label = None
 
     @property
     def command(self) -> tuple[str, ...] | None:
@@ -56,11 +66,24 @@ class LlamaLease:
         """Who holds the lease right now."""
         return frozenset(self.__holders)
 
+    @property
+    def exclusive_label(self) -> str | None:
+        """The exclusive hold's label, else the first waiting exclusive request's, else ``None``."""
+        if self.__holders and self.__exclusive_label is not None:
+            return self.__exclusive_label
+        for waiter in self.__waiters:
+            if waiter.exclusive and not waiter.granted.done():
+                return waiter.label
+        return None
+
     async def acquire(
         self,
         holder: str,
         command: tuple[str, ...],
         on_wait: Callable[[], Awaitable[None]] | None = None,
+        *,
+        exclusive: bool = False,
+        label: str = "",
     ) -> bool:
         """Hold *command* for *holder*, waiting while others hold a different one.
 
@@ -73,24 +96,35 @@ class LlamaLease:
             holder: Who holds it — a session id, or a one-off caller's tag.
             command: The llama-server argv the holder needs.
             on_wait: Awaited once, right before the caller starts waiting.
+            exclusive: Share the hold with nobody, even on *command*.
+            label: What waiters are told they wait for (:attr:`exclusive_label`);
+                only meaningful with *exclusive*.
 
         Returns:
             bool: ``True`` when the caller had to wait.
         """
         if holder in self.__holders:
-            if command == self.__command:
+            sole = self.__holders == {holder}
+            if command == self.__command and (not exclusive or sole):
+                if exclusive:
+                    self.__exclusive_label = label
                 return False
-            if self.__holders == {holder}:
+            if sole:
                 self.__command = command
+                if exclusive:
+                    self.__exclusive_label = label
                 return False
             self.__holders.discard(holder)
             self.__wake()
-        if not self.__waiters and (not self.__holders or command == self.__command):
+        if not self.__waiters and self.__admits(command, exclusive):
             self.__command = command
             self.__holders.add(holder)
+            self.__exclusive_label = label if exclusive else None
             return False
 
-        waiter = _Waiter(holder, command, asyncio.get_running_loop().create_future())
+        waiter = _Waiter(
+            holder, command, asyncio.get_running_loop().create_future(), exclusive, label
+        )
         self.__waiters.append(waiter)
         if on_wait is not None:
             await on_wait()
@@ -115,17 +149,50 @@ class LlamaLease:
         self.__holders.discard(holder)
         self.__wake()
 
+    def __admits(self, command: tuple[str, ...], exclusive: bool) -> bool:
+        if not self.__holders:
+            return True
+        return not exclusive and self.__exclusive_label is None and command == self.__command
+
     def __wake(self) -> None:
         if self.__holders:
+            if self.__exclusive_label is None:
+                self.__admit_joiners()
             return
+        self.__exclusive_label = None
         while self.__waiters and self.__waiters[0].granted.done():
             self.__waiters.popleft()
         if not self.__waiters:
             return
-        self.__command = self.__waiters[0].command
+        head = self.__waiters[0]
+        self.__command = head.command
+        if head.exclusive:
+            self.__waiters.popleft()
+            self.__holders.add(head.holder)
+            self.__exclusive_label = head.label
+            head.granted.set_result(None)
+            return
         for waiter in list(self.__waiters):
-            if waiter.command != self.__command or waiter.granted.done():
+            if waiter.granted.done():
+                continue
+            if waiter.exclusive:
+                # Nobody behind an exclusive request gets ahead of it.
+                break
+            if waiter.command != self.__command:
                 continue
             self.__waiters.remove(waiter)
             self.__holders.add(waiter.holder)
             waiter.granted.set_result(None)
+
+    def __admit_joiners(self) -> None:
+        # Waiters at the front on the held command line join it (the request
+        # that kept them waiting was cancelled); nobody overtakes the first
+        # waiter that needs another line or an exclusive hold.
+        while self.__waiters:
+            waiter = self.__waiters[0]
+            if not waiter.granted.done():
+                if waiter.exclusive or waiter.command != self.__command:
+                    return
+                self.__holders.add(waiter.holder)
+                waiter.granted.set_result(None)
+            self.__waiters.popleft()

@@ -4,19 +4,24 @@ reuses, the Harbor/uv/Docker processes it drives, and full (non-dry) runs.
 Every process is a stand-in: ``subprocess.run`` is replaced by a scripted
 :class:`_Processes` that answers each command the way the real tool would, and
 the llama-server's ``/props`` endpoint by a scripted ``urlopen``. Nothing here
-starts Docker, Harbor, uv or a llama-server, or touches the network.
+starts Docker, Harbor, uv or a llama-server, or touches the network beyond a
+loopback stand-in for the server ``--llama-url`` attaches to.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
 import json
+import signal
 import stat
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from types import TracebackType
 
 import pytest
@@ -28,11 +33,12 @@ from kodo.harbor import (
     HarborRunError,
     HostLlama,
     KodoSource,
+    LlamaAccess,
     check_docker,
     find_uv,
     main,
 )
-from kodo.llms import get_local_registry
+from kodo.llms import get_cloud_registry, get_local_registry
 
 # ---------------------------------------------------------------------------
 # Stand-ins
@@ -157,6 +163,49 @@ class _Dist:
 
     def read_text(self, filename: str) -> str | None:
         return self.__direct_url if filename == "direct_url.json" else None
+
+
+class _RunningLlama:
+    """A loopback HTTP stand-in for a running llama-server: ``/v1/models`` and ``/props``."""
+
+    def __init__(self) -> None:
+        self.models: object = {"data": []}
+        self.props: object = {"default_generation_settings": {"n_ctx": 1 << 22}}
+        self.paths: list[str] = []
+        stand_in = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 — http.server's name
+                stand_in.paths.append(self.path)
+                body = {"/v1/models": stand_in.models, "/props": stand_in.props}.get(self.path)
+                self.send_response(200 if body is not None else 404)
+                self.end_headers()
+                self.wfile.write(json.dumps(body).encode("utf-8"))
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+                return None
+
+        self.__server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.__server.server_address[1]
+        self.url = f"http://127.0.0.1:{self.port}"
+        self.__thread = Thread(target=self.__server.serve_forever, daemon=True)
+        self.__thread.start()
+
+    def serve(self, model_id: str) -> None:
+        """Answer ``/v1/models`` as an unaliased llama-server serving *model_id*."""
+        self.models = {"data": [{"id": model_id}]}
+
+    def close(self) -> None:
+        self.__server.shutdown()
+        self.__server.server_close()
+        self.__thread.join()
+
+
+@pytest.fixture
+def running_llama() -> Iterator[_RunningLlama]:
+    stand_in = _RunningLlama()
+    yield stand_in
+    stand_in.close()
 
 
 @pytest.fixture
@@ -303,6 +352,97 @@ def test_a_server_without_a_readable_context_is_refused(
     props.error = error
     with pytest.raises(HarborRunError, match=message):
         HostLlama("qwen", 8090, "127.0.0.1").start()
+
+
+# ---------------------------------------------------------------------------
+# Attaching to a running llama-server (--llama-url)
+# ---------------------------------------------------------------------------
+
+
+def _gguf_path(entry: str, kodo_dir: Path) -> str:
+    # An unaliased llama-server lists its GGUF's full path as the model id.
+    return f"/models/{get_local_registry(kodo_dir)[entry].filename}"
+
+
+def test_attaching_checks_the_served_gguf_and_reads_its_context(
+    tmp_path: Path, running_llama: _RunningLlama, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    entry = next(iter(get_local_registry(tmp_path)))
+    running_llama.serve(_gguf_path(entry, tmp_path))
+
+    access = LlamaAccess.attach(entry, f"{running_llama.url}/", tmp_path)
+
+    assert access.entry == entry
+    assert access.host_url == running_llama.url
+    assert access.container_url == f"http://{CONTAINER_HOST}:{running_llama.port}"
+    assert access.context_per_slot == 1 << 22
+    assert {"/v1/models", "/props"} <= set(running_llama.paths)
+
+
+def test_attaching_to_a_server_with_another_model_is_refused(
+    tmp_path: Path, running_llama: _RunningLlama, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    entry = next(iter(get_local_registry(tmp_path)))
+    running_llama.serve("/models/other-model.gguf")
+
+    with pytest.raises(HarborRunError, match=f"other-model.gguf.*not {entry!r}"):
+        LlamaAccess.attach(entry, running_llama.url, tmp_path)
+
+
+def test_attaching_to_a_server_with_too_small_a_context_is_refused(
+    tmp_path: Path, running_llama: _RunningLlama, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    entry = next(iter(get_local_registry(tmp_path)))
+    running_llama.serve(_gguf_path(entry, tmp_path))
+    running_llama.props = {"default_generation_settings": {"n_ctx": 512}}
+
+    with pytest.raises(HarborRunError, match="512-token context"):
+        LlamaAccess.attach(entry, running_llama.url, tmp_path)
+
+
+def test_attaching_to_nothing_is_refused(
+    tmp_path: Path, running_llama: _RunningLlama, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    entry = next(iter(get_local_registry(tmp_path)))
+    url = running_llama.url
+    running_llama.close()
+
+    with pytest.raises(HarborRunError, match="Cannot reach llama-server"):
+        LlamaAccess.attach(entry, url, tmp_path)
+
+
+def test_attaching_to_an_unknown_model_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(HarborRunError, match="No local model 'nope'"):
+        LlamaAccess.attach("nope", "http://192.0.2.1:8042", tmp_path)
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
+def test_linux_refuses_a_loopback_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    entry = next(iter(get_local_registry(tmp_path)))
+    with pytest.raises(HarborRunError, match="loopback address"):
+        LlamaAccess.attach(entry, f"http://{host}:8042", tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("url", "message"),
+    [
+        ("127.0.0.1:8042", "is not http://HOST:PORT"),
+        ("http://127.0.0.1", "is not http://HOST:PORT"),
+        ("http://127.0.0.1:port", "is not http://HOST:PORT"),
+        ("ftp://127.0.0.1:8042", "is not http://HOST:PORT"),
+        ("http://127.0.0.1:8042/v1", "must not have a path"),
+    ],
+)
+def test_a_malformed_url_is_refused(url: str, message: str) -> None:
+    with pytest.raises(HarborRunError, match=message):
+        LlamaAccess("qwen", url, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +612,87 @@ def test_an_interrupted_run_still_reports(home: Path, processes: _Processes, pro
     assert code == 130
     assert (home.parent / "jobs" / "j" / "kodo-summary.md").is_file()
     assert processes.commands("stop") == []
+
+
+def test_an_attached_run_neither_starts_nor_stops_the_server(
+    home: Path,
+    processes: _Processes,
+    running_llama: _RunningLlama,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    running_llama.serve(_gguf_path(_local_model(home), home / ".kodo"))
+
+    code = main(_run_args(home, "--llama-url", running_llama.url, "--job-name", "j"))
+
+    assert code == 0
+    assert processes.commands("kodo.llamaserver") == []
+    assert len(processes.commands("harbor")) == 1
+    config = (home.parent / "jobs" / "j" / "kodo-job.json").read_text(encoding="utf-8")
+    assert f"http://{CONTAINER_HOST}:{running_llama.port}" in config
+
+
+def test_a_failed_attach_creates_no_job(
+    home: Path,
+    processes: _Processes,
+    running_llama: _RunningLlama,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    running_llama.serve("/models/other-model.gguf")
+
+    code = main(_run_args(home, "--llama-url", running_llama.url, "--job-name", "j"))
+
+    assert code == 2
+    assert "other-model.gguf" in capsys.readouterr().err
+    assert not (home.parent / "jobs" / "j").exists()
+    assert processes.commands("harbor") == []
+
+
+@pytest.mark.parametrize(
+    ("extra", "named"),
+    [
+        (("--llama-port", "8090"), "--llama-port"),
+        (("--llama-bind", "127.0.0.1"), "--llama-bind"),
+        (("--keep-llama",), "--keep-llama"),
+    ],
+)
+def test_llama_url_excludes_the_standalone_server_flags(
+    home: Path, capsys: pytest.CaptureFixture[str], extra: tuple[str, ...], named: str
+) -> None:
+    with pytest.raises(SystemExit) as exited:
+        main(_run_args(home, "--llama-url", "http://127.0.0.1:8042", *extra))
+    assert exited.value.code == 2
+    assert f"--llama-url cannot be combined with {named}" in capsys.readouterr().err
+
+
+def test_llama_url_needs_a_local_model(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    model = get_cloud_registry()["anthropic"][0].model_id
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    argv = ["run", "--model", f"anthropic/{model}", "--dataset", "hello-world@1.0"]
+
+    assert main([*argv, "--llama-url", "http://127.0.0.1:8042", "--dry-run"]) == 2
+    assert "--llama-url is for a local model" in capsys.readouterr().err
+
+
+def test_ctrl_break_interrupts_a_run_on_windows(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed: dict[int, object] = {}
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(signal, "SIGBREAK", 21, raising=False)
+    monkeypatch.setattr(signal, "signal", lambda signum, h: installed.update({signum: h}))
+
+    # The handler is in place before the run starts; this run stops at --model.
+    assert main(["run", "--model", "no-such-model", "--dataset", "hello-world@1.0"]) == 2
+
+    handler = installed.get(21)
+    assert callable(handler)
+    with pytest.raises(KeyboardInterrupt):
+        handler(21, None)
 
 
 def test_a_run_without_docker_fails_before_anything_starts(

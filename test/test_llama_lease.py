@@ -2,7 +2,9 @@
 
 The lease keeps the one managed llama-server on a single command line while
 any session's turn holds it (doc/SESSION_LLM_BINDING.md §3): same command
-lines share it, a different one waits until every holder released, FIFO.
+lines share it, a different one waits until every holder released, FIFO. An
+exclusive hold (a benchmark run, doc/BENCHMARK_SESSIONS.md §4.6) shares with
+nobody, and everything that arrives after it waits for it.
 """
 
 from __future__ import annotations
@@ -172,6 +174,128 @@ async def test_releasing_a_non_holder_is_a_no_op() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Exclusive holds
+# ---------------------------------------------------------------------------
+
+
+async def test_an_exclusive_request_waits_for_every_shared_holder() -> None:
+    lease = LlamaLease()
+    await lease.acquire("a", _X)
+    await lease.acquire("b", _X)
+
+    bench = asyncio.create_task(lease.acquire("bench", _X, exclusive=True, label="Basics"))
+    await _settle()
+    assert not bench.done()  # the same command line is not enough
+    assert lease.exclusive_label == "Basics"
+
+    lease.release("a")
+    await _settle()
+    assert not bench.done()  # running turns finish; none is broken
+
+    lease.release("b")
+    await _settle()
+    assert bench.done() and bench.result() is True
+    assert lease.holders == {"bench"}
+    assert lease.command == _X
+
+
+async def test_an_exclusive_hold_admits_nobody_on_any_command_line() -> None:
+    lease = LlamaLease()
+    assert await lease.acquire("bench", _X, exclusive=True, label="Basics") is False
+
+    same = asyncio.create_task(lease.acquire("a", _X))
+    other = asyncio.create_task(lease.acquire("b", _Y))
+    await _settle()
+
+    assert not same.done() and not other.done()
+    assert lease.holders == {"bench"}
+    assert lease.exclusive_label == "Basics"
+
+
+async def test_requests_behind_an_exclusive_hold_are_admitted_in_order_after_it() -> None:
+    lease = LlamaLease()
+    await lease.acquire("bench", _X, exclusive=True, label="Basics")
+    first = asyncio.create_task(lease.acquire("a", _Y))
+    second = asyncio.create_task(lease.acquire("b", _X))
+    third = asyncio.create_task(lease.acquire("c", _Y))
+    await _settle()
+
+    lease.release("bench")
+    await _settle()
+
+    # The head's command line goes first, and the same-line waiters join it.
+    assert first.done() and third.done() and not second.done()
+    assert lease.holders == {"a", "c"}
+    assert lease.exclusive_label is None
+
+    lease.release("a")
+    lease.release("c")
+    await _settle()
+    assert second.done()
+    assert lease.holders == {"b"}
+
+
+async def test_same_command_waiters_never_overtake_a_waiting_exclusive_request() -> None:
+    lease = LlamaLease()
+    await lease.acquire("a", _Y)
+    bench = asyncio.create_task(lease.acquire("bench", _X, exclusive=True, label="Basics"))
+    await _settle()
+    late = asyncio.create_task(lease.acquire("b", _Y))
+    await _settle()
+    assert not late.done()  # does not starve the run
+
+    lease.release("a")
+    await _settle()
+    assert bench.done() and not late.done()
+
+    lease.release("bench")
+    await _settle()
+    assert late.done()
+    assert lease.holders == {"b"}
+
+
+async def test_the_sole_holder_can_turn_its_hold_exclusive() -> None:
+    lease = LlamaLease()
+    await lease.acquire("bench", _X)
+
+    assert await lease.acquire("bench", _X, exclusive=True, label="Basics") is False
+    assert lease.exclusive_label == "Basics"
+    # Asking again without exclusive keeps the exclusive hold.
+    assert await lease.acquire("bench", _X) is False
+    joiner = asyncio.create_task(lease.acquire("a", _X))
+    await _settle()
+    assert not joiner.done()
+
+
+async def test_a_cancelled_exclusive_request_lets_the_queue_move() -> None:
+    lease = LlamaLease()
+    await lease.acquire("a", _X)
+    bench = asyncio.create_task(lease.acquire("bench", _Y, exclusive=True, label="Basics"))
+    await _settle()
+    late = asyncio.create_task(lease.acquire("b", _X))
+    await _settle()
+    assert not late.done()
+
+    bench.cancel()
+    await _settle()
+
+    assert late.done()
+    assert lease.holders == {"a", "b"}
+    assert lease.exclusive_label is None
+
+
+async def test_releasing_an_exclusive_hold_clears_its_label() -> None:
+    lease = LlamaLease()
+    await lease.acquire("bench", _X, exclusive=True, label="Basics")
+
+    lease.release("bench")
+
+    assert lease.exclusive_label is None
+    assert await lease.acquire("a", _X) is False
+    assert await lease.acquire("b", _X) is False
+
+
+# ---------------------------------------------------------------------------
 # Through the gateway
 # ---------------------------------------------------------------------------
 
@@ -292,3 +416,45 @@ async def test_same_command_line_runs_side_by_side_in_the_lease(
     await gateway.acquire_local("s2", command)
 
     assert gateway.local_holders == {"s1", "s2"}
+
+
+async def test_a_request_during_a_benchmark_is_told_what_it_waits_for() -> None:
+    gateway = LLMGateway(cloud_concurrency=lambda: 2)
+    await gateway.acquire_local("harbor:s9", _X, exclusive=True, label="Basics test: a · m")
+    started: list[str] = []
+    sink = _Sink()
+
+    chat = asyncio.create_task(
+        _drain(
+            gateway.stream_query(
+                routing=_routing(_X, "s1"), plugin=_Plugin("s1", started), sink=sink
+            )
+        )
+    )
+    await _settle()
+    assert started == []
+    assert sink.reasons == ["benchmark"]
+    assert sink.events[0]["title"] == "Basics test: a · m"
+
+    gateway.release_local("harbor:s9")
+    await chat
+    assert started == ["s1"]
+    assert sink.events[-1]["waiting"] is False
+
+
+async def test_a_benchmark_waits_for_running_turns_and_reports_a_model_swap_wait() -> None:
+    gateway = LLMGateway(cloud_concurrency=lambda: 2)
+    await gateway.acquire_local("s1", _X)
+    sink = _Sink()
+
+    bench = asyncio.create_task(
+        gateway.acquire_local("harbor:s9", _X, sink=sink, exclusive=True, label="Basics")
+    )
+    await _settle()
+    assert not bench.done()
+    # Its own wait is not "waiting for the benchmark".
+    assert sink.reasons == ["model_swap"]
+
+    gateway.release_local("s1")
+    await bench
+    assert gateway.local_holders == {"harbor:s9"}

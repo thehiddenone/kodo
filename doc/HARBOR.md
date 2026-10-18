@@ -144,7 +144,8 @@ kodo-harbor run --model unsloth-qwen36-27b-q4-k-xl --path tasks/terminal-bench
   pulled task images stay in Docker's image cache. `-- --no-delete` keeps
   every container for inspection, and those containers add up over a full run.
 - **Stopping:** Ctrl+C winds down the trial in progress, stops the
-  llama-server, and reports the trials that finished. `kodo-harbor` won't reuse
+  llama-server, and reports the trials that finished. On Windows,
+  `CTRL_BREAK_EVENT` sent to `kodo-harbor`'s process group does the same. `kodo-harbor` won't reuse
   an existing job directory, so the next run needs a new `--job-name` (the
   default name is timestamped, so leaving `--job-name` off also works).
 - **Several local runs in a row:** `--keep-llama` leaves the llama-server
@@ -161,7 +162,7 @@ kodo-harbor run --model (VENDOR/MODEL_ID | ENTRY) [--agent kodo_problem_solver]
     [--thinking-level TIER] [--timeout SEC] [--platform OS/ARCH]
     [--kodo-wheel PATH | --kodo-version VERSION]
     [--jobs-dir jobs] [--job-name NAME]
-    [--llama-port 8090] [--llama-bind ADDR] [--keep-llama]
+    [--llama-port 8090] [--llama-bind ADDR] [--keep-llama | --llama-url URL]
     [--dry-run] [-- HARBOR_RUN_ARGS...]
 kodo-harbor summarize JOB_DIR [--json]
 kodo-harbor list-suites [--json]
@@ -510,6 +511,16 @@ by URL ([HEADLESS.md](HEADLESS.md) §5):
 - `kodo-harbor` starts it on `--llama-port` (default 8090), or reuses one
   already serving that model there, and stops only one it started
   (`--keep-llama` leaves it). A port serving another model is an error.
+- **`--llama-url http://HOST:PORT` attaches** to a llama-server already
+  running on this host (the Kōdo server's own, for a benchmark session,
+  [BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md) §3) and never starts or
+  stops it. Before the job directory exists it makes `kodo-headless`'s own
+  attach check (the GGUF file name or alias, and the context per slot), so a
+  server with another model or too small a context fails the run with exit
+  code 2. Containers reach it at `http://host.docker.internal:<PORT>`. It
+  can't be combined with `--llama-port`, `--llama-bind` or `--keep-llama`,
+  needs a local `--model`, and refuses a loopback URL on Linux, where
+  containers can't reach the host's loopback.
 - **macOS / Windows (Docker Desktop):** it binds `127.0.0.1`;
   `host.docker.internal` already reaches the host's loopback.
   **Linux:** it binds the `docker0` address (usually `172.17.0.1`,

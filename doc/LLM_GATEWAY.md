@@ -77,6 +77,17 @@ The **`LlamaLease`** (`llms/_llama_lease.py`) does that:
 - `acquire_local(holder, argv, sink)` / `release_local(holder)` let a caller
   outside a session (the sidebar's `llama.start`) wait the same way;
   `local_holders` tells `llama.stop` whether a turn is using llama-server.
+- **Exclusive holds** (added 2026-10-18 for benchmark runs,
+  [BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md) §4.6):
+  `acquire_local(holder, argv, sink, exclusive=True, label=title)` shares
+  with nobody, not even a holder on the same command line. It waits until
+  every holder has released (running turns finish), and while it holds or
+  waits, every later request queues behind it in arrival order. When it
+  releases, the queue is admitted as usual. `exclusive_label` on the lease
+  names the hold (or the first waiting exclusive request).
+- When a waiting request is cancelled, the waiters at the front of the queue
+  on the held command line join the current holders at once, instead of
+  waiting for those holders to release.
 
 The lease only orders requests; the restart itself happens later, inside
 `ensure_llama_running`, which compares the running server's recorded argv with
@@ -89,7 +100,10 @@ When a request cannot be admitted immediately the gateway emits
 once admitted. The webview shows "LLM is busy, waiting …". While a local request
 waits for the llama-server lease the reason is `"model_swap"`, and the webview
 says it is waiting for another session's turn to end before llama.cpp switches
-to this session's LLM.
+to this session's LLM. When an exclusive hold is in the way — held, or waiting
+ahead in the queue — the reason is `"benchmark"` and the payload carries the
+hold's `title` (the benchmark session's). The exclusive request's own wait is
+always `"model_swap"`.
 
 ## 429 throttling (cloud)
 
