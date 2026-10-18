@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import signal
 import stat
 import subprocess
@@ -61,6 +62,7 @@ class _Processes:
         self.download_dirs: list[Path] = []
         self.download_interrupt = False
         self.harbor_interrupts = 0
+        self.harbor_path = ""
         self.killed = 0
 
     def __call__(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -77,6 +79,7 @@ class _Processes:
         if args[1:3] == ["tool", "run"] and args[-6:-4] == ["datasets", "download"]:
             return self.__download(args)
         if args[1:3] == ["tool", "run"]:
+            self.harbor_path = os.environ.get("PATH", "")
             if isinstance(self.harbor, BaseException):
                 raise self.harbor
             return _done(args, self.harbor)
@@ -599,13 +602,26 @@ def test_docker_must_be_installed_and_running(
 ) -> None:
     monkeypatch.setenv("PATH", str(tmp_path / "bin"))
     with pytest.raises(HarborRunError, match="not on PATH"):
-        check_docker()
-    _executable(tmp_path / "bin" / "docker")
+        check_docker([])
+    docker = _executable(tmp_path / "bin" / "docker")
     processes.docker_code = 1
     with pytest.raises(HarborRunError, match="not reachable: Cannot connect"):
-        check_docker()
+        check_docker([])
     processes.docker_code = 0
-    check_docker()
+    assert check_docker([]) == docker
+
+
+def test_docker_off_path_is_found_where_docker_installs_it(
+    monkeypatch: pytest.MonkeyPatch, processes: _Processes, tmp_path: Path
+) -> None:
+    # A process started before Docker was installed has a PATH without it.
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    install_dir = tmp_path / "docker-desktop" / "bin"
+    with pytest.raises(HarborRunError, match="restart"):
+        check_docker([install_dir])
+    docker = _executable(install_dir / "docker")
+    assert check_docker([tmp_path / "elsewhere", install_dir]) == docker
+    assert processes.commands("info") == [[str(docker), "info", "--format", "{{.ServerVersion}}"]]
 
 
 # ---------------------------------------------------------------------------
@@ -753,6 +769,21 @@ def test_ctrl_break_interrupts_a_run_on_windows(
     assert callable(handler)
     with pytest.raises(KeyboardInterrupt):
         handler(21, None)
+
+
+def test_a_run_hands_harbor_a_docker_found_off_path(
+    home: Path, processes: _Processes, props: _Props, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Docker Desktop's per-user macOS install, in a process started before it.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    (home.parent / "bin" / "docker").unlink()
+    docker = _executable(home / ".docker" / "bin" / "docker")
+
+    code = main(_run_args(home, "--llama-bind", "127.0.0.1", "--job-name", "j"))
+
+    assert code == 0
+    assert processes.commands("info")[0][0] == str(docker)
+    assert processes.harbor_path.split(os.pathsep)[0] == str(docker.parent)
 
 
 def test_a_run_without_docker_fails_before_anything_starts(

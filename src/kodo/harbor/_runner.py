@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 from urllib.parse import unquote, urlparse
@@ -241,15 +243,57 @@ def find_uv(kodo_dir: Path) -> Path:
     raise HarborRunError("uv was not found; install it (https://docs.astral.sh/uv/)")
 
 
-def check_docker() -> None:
+def _docker_install_dirs() -> list[Path]:
+    """Where Docker installs put the docker CLI on this platform.
+
+    A process started before Docker was installed keeps its old ``PATH``;
+    on macOS that is VS Code and the Kōdo server it starts, which read the
+    login shell's ``PATH`` once, at launch. Docker Desktop's per-user macOS
+    install puts docker in ``~/.docker/bin`` and adds that to shell profiles
+    only, so it is the common case.
+
+    Returns:
+        list[Path]: Directories, most likely first.
+    """
+    home = Path.home()
+    if sys.platform == "win32":
+        program_files = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
+        return [program_files / "Docker" / "Docker" / "resources" / "bin"]
+    if sys.platform == "darwin":
+        return [
+            home / ".docker" / "bin",
+            Path("/usr/local/bin"),
+            Path("/opt/homebrew/bin"),
+            Path("/Applications/Docker.app/Contents/Resources/bin"),
+            home / ".orbstack" / "bin",
+            home / ".rd" / "bin",
+        ]
+    return [home / ".docker" / "bin", Path("/usr/bin"), Path("/usr/local/bin"), Path("/snap/bin")]
+
+
+def check_docker(install_dirs: Sequence[Path] | None = None) -> Path:
     """Fail fast when Docker is not usable.
+
+    Args:
+        install_dirs (Sequence[Path] | None): Where to look when docker is
+            not on ``PATH``; where Docker installs put it when None.
+
+    Returns:
+        Path: The docker CLI. Its directory may not be on ``PATH``.
 
     Raises:
         HarborRunError: No docker CLI, or the daemon does not answer.
     """
-    docker = shutil.which("docker")
+    dirs = _docker_install_dirs() if install_dirs is None else install_dirs
+    docker = shutil.which("docker") or shutil.which(
+        "docker", path=os.pathsep.join(str(d) for d in dirs)
+    )
     if docker is None:
-        raise HarborRunError("Docker is required: the docker CLI is not on PATH")
+        raise HarborRunError(
+            "Docker is required: the docker CLI is not on PATH or in "
+            f"{', '.join(str(d) for d in dirs)}. If Docker was installed after VS Code "
+            "(or this terminal) started, restart it"
+        )
     completed = subprocess.run(
         [docker, "info", "--format", "{{.ServerVersion}}"],
         capture_output=True,
@@ -259,3 +303,4 @@ def check_docker() -> None:
     )
     if completed.returncode != 0:
         raise HarborRunError(f"The Docker daemon is not reachable: {completed.stderr.strip()}")
+    return Path(docker)

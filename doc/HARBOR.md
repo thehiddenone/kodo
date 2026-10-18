@@ -592,7 +592,16 @@ by URL ([HEADLESS.md](HEADLESS.md) §5):
 
 - **Docker is required.** Other Harbor environments (Modal, Daytona, …) are
   reachable with `-- --env …`, but a local model needs the host reachable from
-  the sandbox, which only a local Docker gives.
+  the sandbox, which only a local Docker gives. `kodo-harbor` looks for the
+  `docker` CLI on `PATH`, then where Docker installs put it (macOS:
+  `~/.docker/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, `Docker.app`'s
+  `Resources/bin`, OrbStack, Rancher Desktop; Linux: `~/.docker/bin`,
+  `/usr/bin`, `/usr/local/bin`, `/snap/bin`; Windows: Docker Desktop's
+  `resources\bin`), and puts the directory it finds first on Harbor's `PATH`.
+  This matters because a process started before Docker was installed keeps its
+  old `PATH`. On macOS that includes VS Code and the Kōdo server it launches,
+  which read the login shell's `PATH` only at launch, and Docker Desktop's
+  per-user install adds `~/.docker/bin` only to `~/.zprofile`/`~/.profile`.
 - **Install cost per trial:** uv, Python and `py-kodo` (with Playwright's Python
   package) are installed in every container. It is the bulk of a short task's
   wall time (§8.1: 53 s total, 24 s of it the agent) and grows on a cold

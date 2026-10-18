@@ -316,7 +316,7 @@ def _run(args: argparse.Namespace, catalog: SuiteCatalog) -> int:
     platform = platform_overlay(args.platform) if args.platform is not None else None
     uv = find_uv(kodo_dir)
     if not args.dry_run:
-        check_docker()
+        _put_on_path(check_docker())
     job_dir.mkdir(parents=True, exist_ok=True)
     overlays: list[Path] = []
     if platform is not None:
@@ -397,6 +397,15 @@ def _run(args: argparse.Namespace, catalog: SuiteCatalog) -> int:
     print(summary.to_markdown())
     print(f"kodo-harbor: summary {job_dir / _SUMMARY_MD}")
     return code
+
+
+def _put_on_path(docker: Path) -> None:
+    """Let Harbor, which runs ``docker`` (and Docker its credential helpers,
+    which sit beside it) by name, find a docker :func:`check_docker` found off
+    ``PATH``."""
+    entries = [e for e in os.environ.get("PATH", "").split(os.pathsep) if e]
+    if str(docker.parent) not in entries:
+        os.environ["PATH"] = os.pathsep.join([str(docker.parent), *entries])
 
 
 def _selection(args: argparse.Namespace, catalog: SuiteCatalog) -> Selection:

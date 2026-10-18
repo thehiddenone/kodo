@@ -65,7 +65,8 @@ share; everything else is internal.
 >   while a session's turn holds llama-server.
 
 > **Benchmark sessions (2026-10-18 — [BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md)).**
-> The server side is built; kodo-vsix does not send or render any of this yet.
+> Built on both sides: the Settings panel's Basics test and Benchmark open a
+> session tab that sends `harbor.run` and renders the run.
 > - New client→server **`harbor.run`** (§7.4j): make a brand-new session a
 >   benchmark session that runs `kodo-harbor` and takes no input.
 > - `state` (§5.1) gained **`job`**; new events **`harbor.trial`** (§5.9k) and
@@ -74,6 +75,9 @@ share; everything else is internal.
 > - `llm.waiting` gained `reason: "benchmark"` with **`title`** (the
 >   benchmark session's): a local request waiting for the run's exclusive
 >   hold on llama-server.
+> - A local run pushes `llama.state` on its session connection as it loads
+>   (or, on Linux, unloads) the model, as a chat turn's load does, so the
+>   sidebar mirrors it.
 > - During a run `llama.start` is refused (a `llama.state` with `error`) rather
 >   than waiting, and `llamacpp.update` / `llamacpp.uninstall` are refused
 >   (§7.6); `stop` on a benchmark session stops the run.

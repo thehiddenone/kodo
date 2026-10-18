@@ -1,10 +1,10 @@
 # Benchmark sessions
 
-> Status: **proposed 2026-10-17; being built.** Steps 1–3 of §8 landed
-> 2026-10-18: Part A (§3), the exclusive lease (§4.6) and the server side of
-> Part C (§4, see §4.7 for what was built differently). Step 4 (kodo-vsix, §5)
-> and the manual runs (step 5) are not done, so the panel still uses the
-> terminal. Every decision in §1 was made by the user when asked. Supersedes [AGENT_BUILDER.md](AGENT_BUILDER.md) D19 (run
+> Status: **built 2026-10-18, not yet run for real.** Steps 1–4 of §8 landed:
+> Part A (§3), the exclusive lease (§4.6), the server side of Part C (§4; §4.7
+> lists what was built differently) and kodo-vsix (§5). Step 5, the manual
+> runs with Docker (macOS local and cloud, Stop, and Stop on Windows), is
+> still to do. Every decision in §1 was made by the user when asked. Supersedes [AGENT_BUILDER.md](AGENT_BUILDER.md) D19 (run
 > in a terminal, no server-side job management) and D20 (GPU warning) once
 > built. Related: [HARBOR.md](HARBOR.md) (`kodo-harbor`),
 > [HEADLESS.md](HEADLESS.md) (`--llama-url`), [LLM_GATEWAY.md](LLM_GATEWAY.md)
@@ -353,6 +353,39 @@ The server side is `kodo.server._harbor_job` (`HarborRequest`, `HarborJob`,
   - `summary_markdown` rendered when the run finishes
   - links that open the job directory and `harbor-output.log`
 - **Waiting text** for `reason: "benchmark"` in every other session tab.
+
+**As built (2026-10-18):**
+
+- **Launch.** `newSession(launch?: SessionLaunch)`, where a `SessionLaunch` is
+  `{kind: 'agent_run', run}` or `{kind: 'benchmark', run: BenchmarkRunRequest}`.
+  The controller sends `hello` `greet: false`, locks the composer at once
+  (`ModeToggleController.lockForJob`), then sends `harbor.run`. There is no
+  llama.cpp launch confirmation, since the user picked the model in the modal.
+  A `harbor_run_refused` reply shows an error and turns the tab back into an
+  ordinary blank session (`applyNewSessionDefaults` now also resets
+  `interactive`).
+- **State.** `src/benchmark-view.ts` is shared by the host and the webview, with
+  no `vscode` import. `BenchmarkProgress` folds `state.job`, `harbor.trial`
+  (deduplicated by trial name), `harbor.finished` and `session.history`.
+  History is authoritative, but trials pushed after it are kept. The controller
+  posts one `{type: 'benchmark', view}` snapshot whenever it changes, and again
+  on rehydrate. The webview reducer just stores it, and the `harbor_*` history
+  entries never reach the chat feed.
+- **Tab.** `BenchmarkPanel.tsx` shows the header, the status line
+  (`benchmarkStatusLine`), the trials table (task, arm, reward, agent time,
+  errors), the failure `detail`, the summary rendered as Markdown, and
+  **Open the run's log** (`open_path`) and **Show the job directory**
+  (`reveal_path` → `revealFileInOS`). Stop is enabled while the status is
+  `waiting` or `running`.
+- **Not in the design:** when a run ends and its tab isn't in front, a VS Code
+  notification says so, with **Show**. The terminal path used to open the
+  summary at the end, and a run can take hours. A local run also pushes
+  `llama.state` from the server as it loads the model, so the sidebar's
+  llama indicator stays right.
+- **Removed:** `runBenchmark`, `benchmarkArgs`, `benchmarkJobName`,
+  `credentialEnv`, `quoteCommandLine` and their tests. The Actions… menu's
+  Benchmark entry now says "in a new session tab", and the modal's button is
+  **Run**.
 
 ## 6. Known limits
 

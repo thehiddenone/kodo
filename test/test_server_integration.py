@@ -2348,13 +2348,14 @@ def _bench_request(**overrides: object) -> dict[str, object]:
 
 
 async def _until_event(
-    ws: aiohttp.ClientWebSocketResponse, kind: str, timeout: float = 10.0
+    ws: aiohttp.ClientWebSocketResponse, kind: str, *, key: str = "type", timeout: float = 10.0
 ) -> dict[str, object]:
+    """The next event of *kind* that carries *key*."""
     loop = asyncio.get_event_loop()
     deadline = loop.time() + timeout
     while True:
         env = await _recv(ws, timeout=max(0.1, deadline - loop.time()))
-        if env.kind == "event" and env.payload.get("type") == kind:
+        if env.kind == "event" and env.payload.get("type") == kind and key in env.payload:
             return env.payload
 
 
@@ -2392,7 +2393,8 @@ async def test_a_benchmark_session_is_locked_guards_llama_and_stops_on_stop(
 
     # llama.start must not wait out the whole run on this connection.
     await bench_ws.send_str(_make_request("llama.start", session_id=sid).to_json())
-    llama = await _until_event(bench_ws, "llama.state")
+    # The run's own llama.state events (the model loading) come first.
+    llama = await _until_event(bench_ws, "llama.state", key="error")
     assert "in use by the benchmark" in str(llama["error"])
     # Nor may llama.cpp be replaced under it.
     await bench_ws.send_str(_make_request("llamacpp.update", session_id=sid).to_json())

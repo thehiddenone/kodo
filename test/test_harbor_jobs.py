@@ -282,6 +282,10 @@ async def test_a_local_run_attaches_kodo_harbor_to_the_managed_llama_server(
     assert "--stop-on-stdin-close" in argv
     assert bench.llama.served == [_MODEL]
     assert bench.gateway.local_holders == frozenset()  # released at the end
+    # The sidebar sees the model load, as it does for a chat turn's.
+    states = bench.events(session, "llama.state")
+    assert states[0] == {"type": "llama.state", "running": False, "starting": True}
+    assert states[-1] == {"type": "llama.state", "running": True, "model": _MODEL, "port": 8042}
 
 
 async def test_linux_unloads_the_managed_server_and_lets_kodo_harbor_start_its_own(

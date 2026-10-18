@@ -34,6 +34,7 @@ import logging
 import os
 import subprocess
 import sys
+import urllib.parse
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +42,7 @@ from typing import IO, Protocol, TypeVar
 
 import psutil  # type: ignore[import-untyped]
 
+from kodo.common import Envelope
 from kodo.harbor import (
     AGENT_BASICS_SUITE,
     TERMINUS_2,
@@ -54,7 +56,7 @@ from kodo.headless import ModelSpec, resolve_vendor_api_key, vendor_credential_e
 from kodo.llms import LLMGateway, get_local_registry
 from kodo.llms.llamacpp import LlamaServer, ensure_llama_running, plan_llama_command
 from kodo.state import TransientStore
-from kodo.transport import EVT_HARBOR_FINISHED, EVT_HARBOR_TRIAL
+from kodo.transport import EVT_HARBOR_FINISHED, EVT_HARBOR_TRIAL, EVT_LLAMA_STATE
 
 from ._key_broker import KeyBroker
 from ._session import Session
@@ -488,8 +490,21 @@ class HarborJob:
             # Containers can't reach the managed server's loopback; kodo-harbor
             # starts its own on the bridge, so this one must not hold the GPU (D4).
             await self.__guard(self.__llama.unload)
+            await self.__llama_state({"running": False, "model": None})
             return env, None
-        return env, await self.__guard(lambda: self.__llama.serve(entry))
+        # The sidebar mirrors llama-server from these, as a chat turn's load does.
+        await self.__llama_state({"running": False, "starting": True})
+        try:
+            url = await self.__guard(lambda: self.__llama.serve(entry))
+        except Exception as exc:
+            await self.__llama_state({"running": False, "model": None, "error": str(exc)})
+            raise
+        port = urllib.parse.urlsplit(url).port
+        await self.__llama_state({"running": True, "model": entry, "port": port})
+        return env, url
+
+    async def __llama_state(self, payload: dict[str, object]) -> None:
+        await self.__session.channel.send(Envelope.make_event(EVT_LLAMA_STATE, payload))
 
     async def __cloud_credential(self, vendor: str, env: Mapping[str, str]) -> dict[str, str]:
         names = vendor_credential_env_names(vendor)

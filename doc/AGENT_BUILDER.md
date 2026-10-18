@@ -55,8 +55,8 @@ a fresh copy passes the lint.
 | D16 | The live tool catalog | **A builder tool (`list_tools`)**, not a skill. The tool-selection skill holds only the hand-written guidance on choosing tools. |
 | D17 | Who starts benchmarks | **The Settings panel (and the existing CLI) only.** The builder never launches Docker jobs. |
 | D18 | Benchmark options | **Minimal + a terminus-2 control checkbox.** No run history, no A/B against the original. |
-| D19 | How a benchmark runs | **In a VS Code integrated terminal**, running the `kodo-harbor` command the panel builds. No server-side job management. |
-| D20 | GPU clash with the server's llama-server | **Warn, and let the user decide.** |
+| D19 | How a benchmark runs | **In a VS Code integrated terminal**, running the `kodo-harbor` command the panel builds. No server-side job management. **Superseded 2026-10-18** by [BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md): the server runs it in a session tab. |
+| D20 | GPU clash with the server's llama-server | **Warn, and let the user decide.** **Superseded 2026-10-18** (BENCHMARK_SESSIONS.md D6): a local run uses the server's own llama-server, so there is no second copy to warn about. |
 | D21 | Labels of copies | **Suffixed from the prefix:** "Guide" → "Guide (acme)", on every copied member's `label`/`display_name`. |
 | D22 | Gating of the builder's write tools | **Like `edit_file`:** `SecurityImpact.MODERATE`. Under the default `smart` posture that does not ask; the `defensive` posture asks before each write. (Corrected 2026-10-15, O10: the original text said MODERATE asks under the default posture.) |
 | D23 | Which agents can be benchmarked from the panel | **Every selectable top-level agent**, built-in or user. |
@@ -738,6 +738,12 @@ As built (2026-10-15; details in SKILLS.md §9):
 ---
 
 ## 8. Benchmarking from the panel (D17–D20)
+
+> **Since 2026-10-18 the run is a benchmark session** ([BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md)):
+> **Run** opens a Kōdo session tab, the server runs `kodo-harbor` on its own
+> llama-server and shows the progress and summary in that tab. The GPU warning
+> (D20) and the terminal launcher (D19) below are gone; the modal's fields and
+> `harbor.options` are unchanged.
 
 - **Where (D23):** a **Benchmark…** and a **Basics test** action on every
   selectable top-level agent, built-in or user. The user rows live in the
