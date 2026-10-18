@@ -2367,6 +2367,18 @@ is the single entry point:
 - otherwise `resolve_default_profile_args` (base + knobs);
 - `({}, entry.context_window)` for `custom_server_url`.
 
+**One slot by default (2026-10-17).** In the first two cases, `--parallel 1`
+is added when the args set neither `--parallel` nor `-np`. A profile that sets
+either keeps its own value. Without the flag, llama.cpp (b11552) defaults to
+`-np -1` (auto): 4 slots sharing one unified KV cache, each reporting the whole
+context in `/props`. So `RemoteLlamaEndpoint`'s per-slot check passed while
+concurrent clients (`kodo-headless --llama-url` containers) could together run
+the shared pool out. Kōdo's own gateway never sends more than one local request
+at a time, so the extra slots served nothing. Because it's in the resolved args, the
+flag is part of the planned command line (an already-running server restarts
+once on the next prompt), `default_profile_args` shows it in the panel, and
+`kodo-llama-server` gets it too.
+
 `context_window` comes from `resolve_context_window`, which reads the resolved
 args' own `--ctx-size`/`-c` when positive and falls back to the entry's
 `context_window` otherwise (including the `--ctx-size 0` "use the GGUF's own

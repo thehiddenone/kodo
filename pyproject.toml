@@ -54,6 +54,8 @@ dependencies = [
     "pytest>=9.0",
     "pytest-asyncio>=1.0",
     "pytest-cov>=7.0",
+    # Runs the suite across all cores (`-n auto` in addopts); `-n0` runs serially.
+    "pytest-xdist>=3.6",
     "ruff>=0.9",
     "mypy>=1.13",
     "aiohttp>=3.14.0",
@@ -111,7 +113,7 @@ follow_untyped_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
-addopts = "--cov=kodo --cov-report=term-missing"
+addopts = "-n auto --cov=kodo --cov-report=term-missing"
 asyncio_mode = "auto"
 
 [tool.coverage.run]

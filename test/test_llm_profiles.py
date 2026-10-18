@@ -442,6 +442,7 @@ def test_default_profile_args_are_base_args_when_every_knob_is_default(tmp_path:
     assert resolve_default_profile_args(tmp_path, _entry(tmp_path)) == {
         "--ctx-size": "0",
         "--jinja": "",
+        "--parallel": "1",
     }
 
 
@@ -451,6 +452,7 @@ def test_default_profile_args_layer_knob_args_over_base(tmp_path: Path) -> None:
         "--ctx-size": "0",
         "--jinja": "",
         "--test-mode": "fast",
+        "--parallel": "1",
     }
 
 
@@ -701,7 +703,7 @@ def test_resolve_context_window_falls_back_when_unparseable() -> None:
 
 def test_effective_config_with_no_active_profile_uses_the_default_profile(tmp_path: Path) -> None:
     args, ctx = resolve_effective_llama_config(tmp_path, _entry(tmp_path))
-    assert args == {"--ctx-size": "0", "--jinja": ""}
+    assert args == {"--ctx-size": "0", "--jinja": "", "--parallel": "1"}
     assert ctx == 262_144
 
 
@@ -716,7 +718,7 @@ def test_effective_config_full_replace_not_merge(tmp_path: Path) -> None:
     created = add_profile(tmp_path, "fake-model", "P", llama_args={"--ctx-size": "4096"})
     set_active_profile(tmp_path, "fake-model", created.id)
     args, ctx = resolve_effective_llama_config(tmp_path, _entry(tmp_path))
-    assert args == {"--ctx-size": "4096"}
+    assert args == {"--ctx-size": "4096", "--parallel": "1"}
     assert "--jinja" not in args
     assert ctx == 4096
 
@@ -736,6 +738,38 @@ def test_effective_config_profile_context_window_zero_inherits_the_entrys_own(
     set_active_profile(tmp_path, "fake-model", created.id)
     _, ctx = resolve_effective_llama_config(tmp_path, _entry(tmp_path))
     assert ctx == 262_144
+
+
+def test_effective_config_runs_one_slot_when_nothing_sets_one(tmp_path: Path) -> None:
+    """llama.cpp's own default is auto (4 slots sharing one KV cache); Kōdo pins 1."""
+    args, _ = resolve_effective_llama_config(tmp_path, _entry(tmp_path))
+    assert args["--parallel"] == "1"
+    created = add_profile(tmp_path, "fake-model", "P", llama_args={"--ctx-size": "4096"})
+    set_active_profile(tmp_path, "fake-model", created.id)
+    args, _ = resolve_effective_llama_config(tmp_path, _entry(tmp_path))
+    assert args["--parallel"] == "1"
+
+
+@pytest.mark.parametrize("flag", ["--parallel", "-np"])
+def test_effective_config_keeps_a_profiles_own_slot_count(tmp_path: Path, flag: str) -> None:
+    created = add_profile(tmp_path, "fake-model", "P", llama_args={flag: "4"})
+    set_active_profile(tmp_path, "fake-model", created.id)
+    args, _ = resolve_effective_llama_config(tmp_path, _entry(tmp_path))
+    assert args == {flag: "4"}
+
+
+def test_default_profile_keeps_a_base_arg_slot_count(tmp_path: Path) -> None:
+    entry = replace(_entry(tmp_path), base_llama_args={"--ctx-size": "0", "-np": "2"})
+    assert resolve_default_profile_args(tmp_path, entry) == {"--ctx-size": "0", "-np": "2"}
+
+
+def test_the_launched_command_line_names_one_slot(tmp_path: Path) -> None:
+    args, _ = resolve_effective_llama_config(tmp_path, _entry(tmp_path))
+    config = LlamaServerConfig(
+        executable=tmp_path / "llama-server", model_path=tmp_path / "m.gguf", kodo_dir=tmp_path
+    )
+    command = build_llama_command(config, args)
+    assert command[command.index("--parallel") + 1] == "1"
 
 
 def test_effective_config_for_a_custom_server_url_entry_is_empty(tmp_path: Path) -> None:

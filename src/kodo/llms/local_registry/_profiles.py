@@ -50,6 +50,14 @@ from ._types import LlmProfile, LocalLLMEntry
 
 _log = logging.getLogger(__name__)
 
+#: The flags that set llama-server's slot count, and the count Kōdo launches
+#: with when a profile names neither. llama.cpp's own default is ``-1``
+#: (auto: 4 slots sharing one unified KV cache, each reporting the whole
+#: context), and Kōdo's gateway never sends more than one local request at
+#: a time anyway (doc/LLM_REGISTRY.md §4.6).
+_PARALLEL_FLAGS = ("--parallel", "-np")
+_DEFAULT_PARALLEL = "1"
+
 __all__ = [
     "LaunchChoice",
     "add_profile",
@@ -506,6 +514,8 @@ def resolve_default_profile_args(
 ) -> dict[str, str]:
     """*entry*'s Default profile args: its base args with knob args layered on top.
 
+    Plus ``--parallel 1`` when neither sets ``--parallel`` or ``-np``.
+
     The one place the base-args-are-the-floor rule is applied (see
     :mod:`._knobs`). Knob args win on conflict, which is what lets a context
     knob's ``--ctx-size 524288`` override the base ``--ctx-size 0``.
@@ -524,7 +534,7 @@ def resolve_default_profile_args(
     )
     args = dict(entry.base_llama_args)
     args.update(knob_selection_args(entry.knobs, stored, entry.knob_defaults))
-    return args
+    return _with_default_parallel(args)
 
 
 def resolve_context_window(entry: LocalLLMEntry, llama_args: dict[str, str]) -> int:
@@ -560,7 +570,9 @@ def resolve_effective_llama_config(
     The active user-defined profile's args verbatim if one is selected (a
     profile fully replaces the Default profile — it is never merged with it),
     otherwise the Default profile's computed args
-    (:func:`resolve_default_profile_args`). A ``custom_server_url`` entry —
+    (:func:`resolve_default_profile_args`). Either way, ``--parallel 1`` is
+    added when the args set neither ``--parallel`` nor ``-np``, so
+    llama-server never picks its own slot count. A ``custom_server_url`` entry —
     never launched this way — resolves to ``({}, entry.context_window)``.
 
     Args:
@@ -580,10 +592,16 @@ def resolve_effective_llama_config(
     if profile_id:
         profile = next((p for p in get_profiles(kodo_dir, entry) if p.id == profile_id), None)
         if profile is not None:
-            args = dict(profile.llama_args)
+            args = _with_default_parallel(dict(profile.llama_args))
             return args, resolve_context_window(entry, args)
     args = resolve_default_profile_args(kodo_dir, entry, choice)
     return args, resolve_context_window(entry, args)
+
+
+def _with_default_parallel(args: dict[str, str]) -> dict[str, str]:
+    if not any(flag in args for flag in _PARALLEL_FLAGS):
+        args[_PARALLEL_FLAGS[0]] = _DEFAULT_PARALLEL
+    return args
 
 
 def get_selected_mtp_sidecar(
