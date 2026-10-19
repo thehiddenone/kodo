@@ -237,7 +237,9 @@ order):
   has no messages at all; these markers are its whole feed, and they replay
   verbatim. Its `transient.json` `harbor_job` holds the run's status, which is
   also what locks the session (`interactive: false`) after a reload or
-  restart.
+  restart. What the agent did in each trial (`harbor.activity`,
+  BENCHMARK_SESSIONS.md §4.8) is **not** in the session: every `hello` reads
+  it again from the job directory.
   All of these except `subsession_start`/`subsession_end`/`greeting` can
   equally appear inside a **subsession's own log** (below) — an error, a
   granted security rule, or the stuck watchdog can just as easily happen to a

@@ -25,7 +25,7 @@ from kodo.harbor import AGENT_BASICS_SUITE
 from kodo.llms import LLMGateway, LocalLLMEntry, add_local_entry, get_cloud_registry
 from kodo.project import WorkspaceLayout
 from kodo.runtime import WorkflowEngine
-from kodo.server import HarborJobs, Session, SessionManager
+from kodo.server import HarborJobs, Session, SessionManager, push_trial_activity
 from kodo.state import TransientStore
 from kodo.transport import Connection
 
@@ -64,6 +64,14 @@ for index, reward in enumerate(plan["rewards"]):
         break
     trial = job / f"task-{index}__abc"
     trial.mkdir()
+    if plan.get("activity"):
+        (trial / "agent").mkdir()
+        (trial / "agent" / "kodo.jsonl").write_text(
+            json.dumps({"ts": f"2026-10-18T10:00:0{index}.000+00:00", "type": "run.start"}) + "\n"
+            + json.dumps({"ts": "2026-10-18T10:00:09.000+00:00", "type": "text",
+                          "text": f"solved task-{index}"}) + "\n"
+            + "KODO-RESULT outcome=completed error=\n"
+        )
     (trial / "result.json").write_text(json.dumps({
         "trial_name": trial.name,
         "task_name": f"org/task-{index}",
@@ -565,6 +573,85 @@ async def test_a_reopened_session_replays_the_run_and_stays_locked(
         assert entries[1]["reward"] == 1.0
     finally:
         await reopened.shutdown()
+
+
+def _payload(frame: dict[str, object]) -> dict[str, object]:
+    payload = frame["payload"]
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _chunk_events(chunk: dict[str, object]) -> list[dict[str, object]]:
+    events = chunk["events"]
+    assert isinstance(events, list)
+    return events
+
+
+async def test_the_agent_activity_of_each_trial_is_pushed_while_a_window_is_attached(
+    bench_factory: Callable[..., _Bench],
+) -> None:
+    bench = bench_factory()
+    bench.plan(activity=True)
+    session = await bench.session()
+    assert await bench.jobs.start(session, _request()) is None
+    await _finished(bench, session)
+
+    activity = bench.events(session, "harbor.activity")
+    by_trial = {str(chunk["trial"]): chunk for chunk in activity}
+    assert sorted(by_trial) == ["task-0__abc", "task-1__abc"]
+    chunk = by_trial["task-1__abc"]
+    assert chunk["first"] == 0
+    assert chunk["step"] is None
+    assert chunk["started"] == "2026-10-18T10:00:01.000+00:00"
+    assert [e["type"] for e in _chunk_events(chunk)] == ["run.start", "text"]
+    # Each event once, though the job directory was read many times.
+    assert sum(len(_chunk_events(c)) for c in activity) == 4
+    # Never persisted: the job directory is the record.
+    entries = (await session.engine.full_history())["entries"]
+    assert isinstance(entries, list)
+    assert [entry["type"] for entry in entries] == [
+        "harbor_job",
+        "harbor_trial",
+        "harbor_trial",
+        "harbor_finished",
+    ]
+
+
+async def test_a_detached_run_sends_no_activity_and_a_window_gets_it_all_on_attach(
+    bench_factory: Callable[..., _Bench],
+) -> None:
+    bench = bench_factory()
+    bench.plan(activity=True)
+    session = await bench.session()
+    session.channel.detach()
+    assert await bench.jobs.start(session, _request()) is None
+    job = bench.jobs.for_session(session.id)
+    assert job is not None
+    await asyncio.wait_for(job.wait(), 30)
+    ws = _FakeWS()
+    await session.channel.attach(Connection(ws))  # type: ignore[arg-type]
+    await session.channel.replay_backlog()
+    buffered = [_payload(frame)["type"] for frame in ws.sent]
+    assert "harbor.finished" in buffered
+    assert "harbor.activity" not in buffered
+
+    ws.sent.clear()
+    await push_trial_activity(session)
+    chunks = [_payload(frame) for frame in ws.sent]
+    assert [(c["trial"], c["first"], len(_chunk_events(c))) for c in chunks] == [
+        ("task-0__abc", 0, 2),
+        ("task-1__abc", 0, 2),
+    ]
+
+
+async def test_push_trial_activity_sends_nothing_for_an_ordinary_session(
+    bench_factory: Callable[..., _Bench],
+) -> None:
+    bench = bench_factory()
+    session = await bench.session()
+    before = len(bench.frames[session.id].sent)
+    await push_trial_activity(session)
+    assert len(bench.frames[session.id].sent) == before
 
 
 async def test_a_run_the_server_never_saw_end_is_marked_interrupted(

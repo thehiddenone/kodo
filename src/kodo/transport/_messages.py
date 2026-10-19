@@ -1403,6 +1403,16 @@ EVT_HARBOR_TRIAL = "harbor.trial"
 # Persisted as a ``harbor_finished`` marker.
 EVT_HARBOR_FINISHED = "harbor.finished"
 
+# Server → Client event. What the Kodo agent did in a benchmark session's
+# trials (doc/BENCHMARK_SESSIONS.md §4.8): the events ``kodo-headless`` writes
+# to each trial's ``kodo.jsonl`` (doc/HEADLESS.md §2.1), one log at a time:
+# ``{trial, log, step, started, first, events}``. ``first`` is the position of
+# ``events[0]`` in the log, so the client places events by position, and a
+# repeat is harmless. Pushed while the run is going and a window is attached,
+# and in full for every log after ``session.history`` on each ``hello``. Never
+# persisted: the job directory is the record.
+EVT_HARBOR_ACTIVITY = "harbor.activity"
+
 # Subsession (sub-agent takeover) boundaries — drive the WebView feed dividers
 # ("Narrative Author subagent took over from Kōdo" / "Kōdo resumed").
 EVT_SUBSESSION_STARTED = "subsession.started"

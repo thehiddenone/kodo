@@ -6,6 +6,7 @@ llama-server for a local model, writes a Harbor ``JobConfig``
 (:class:`JobPlan`), runs a pinned Harbor through ``uv tool run``
 (:class:`HarborInvocation`) with Docker sandboxes, and summarizes every arm —
 Kodo and any control agent — from Harbor's results (:class:`JobSummary`).
+:class:`TrialActivity` reads what the agent does in each trial as it runs.
 
 Harbor is **not** imported here: it runs in its own ``uv`` environment, where
 it loads the adapter subpackage ``kodo.harbor.agent`` (the only Kodo code that
@@ -15,6 +16,7 @@ Imports: ``kodo.headless`` (model spelling, credentials), ``kodo.llms``
 llama-server is driven as ``python -m kodo.llamaserver``.
 """
 
+from ._activity import TrialActivity
 from ._cli import main
 from ._errors import HarborRunError
 from ._job import (
@@ -56,6 +58,7 @@ __all__ = [
     "SuiteCatalog",
     "TaskGroup",
     "TaskLister",
+    "TrialActivity",
     "check_docker",
     "find_uv",
     "main",

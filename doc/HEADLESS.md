@@ -197,12 +197,13 @@ renders the same events for people.
 | `llm.turn` | the agent and model starting an LLM call |
 | `thinking` / `text` | one event per segment. The server uses one stream id for a whole agent turn ([WS_PROTOCOL.md](WS_PROTOCOL.md) §2.3), so the client cuts it wherever the chunk kind flips and at every `llm.turn` / `tool.start` / sub-session / `error` boundary. `--stream-deltas` switches to raw `thinking.delta` / `text.delta` |
 | `tool.start` | tool name and call id, when the call is announced |
-| `tool.call` | the tool's full input and output: the per-call document the server writes (`agent.tool_call_detail.file`), since the wire `rows` are visibility-filtered |
+| `tool.call` | the tool's full input and output: the per-call document the server writes (`agent.tool_call_detail.file`), since the wire `rows` are visibility-filtered; also those `rows`, `schema_compliance` and `success` (whether the call succeeded, `null` when unknown) |
 | `tool.denied` | a call the sandbox refused, with its reason |
-| `subsession.start` / `subsession.end` | a sub-agent run (with its task brief) |
+| `subsession.start` / `subsession.end` | a sub-agent run: its `display_name`, the task brief on `start`, `failed` on `end` |
 | `agent.start` / `agent.finish` | agent invocation boundaries |
 | `usage` | per LLM call: model, `input_tokens` (cache included), `cache_read_tokens`, `output_tokens`, USD, stop reason, duration |
-| `question`, `nudge`, `autonomous.changed`, `error`, `warning`, `transcript.exported` | as named |
+| `nudge` | a watchdog nudge: `reasons`, `mode` and `ui_text` (what the feed would show) |
+| `question`, `autonomous.changed`, `error`, `warning`, `transcript.exported` | as named |
 | `run.result` | the result record (§2.2), always last |
 
 After `run.result`, one plain line follows:

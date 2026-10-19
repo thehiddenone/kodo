@@ -16,7 +16,11 @@ in the background:
 2. **Run** ``kodo-harbor`` in its own process group (Windows: its own hidden
    console), output to ``<session dir>/harbor-output.log``.
 3. **Watch** the job directory: each finished trial is pushed as
-   ``harbor.trial`` and persisted; the end as ``harbor.finished``.
+   ``harbor.trial`` and persisted; the end as ``harbor.finished``. What the
+   agent does in each trial is pushed as ``harbor.activity`` while a window
+   is attached (:class:`~kodo.harbor.TrialActivity`), never persisted; a
+   ``hello`` gets all of it again from the job directory
+   (:func:`push_trial_activity`).
 
 **Stop** closes ``kodo-harbor``'s stdin (``--stop-on-stdin-close``), which then
 interrupts its own process group — Harbor winds its trials down as on Ctrl+C —
@@ -51,17 +55,30 @@ from kodo.harbor import (
     JobSummary,
     ListedModel,
     SuiteCatalog,
+    TrialActivity,
 )
 from kodo.headless import ModelSpec, resolve_vendor_api_key, vendor_credential_env_names
 from kodo.llms import LLMGateway, get_local_registry
 from kodo.llms.llamacpp import LlamaServer, ensure_llama_running, plan_llama_command
 from kodo.state import TransientStore
-from kodo.transport import EVT_HARBOR_FINISHED, EVT_HARBOR_TRIAL, EVT_LLAMA_STATE
+from kodo.transport import (
+    EVT_HARBOR_ACTIVITY,
+    EVT_HARBOR_FINISHED,
+    EVT_HARBOR_TRIAL,
+    EVT_LLAMA_STATE,
+)
 
 from ._key_broker import KeyBroker
 from ._session import Session
 
-__all__ = ["HarborJob", "HarborJobs", "HarborRequest", "LocalLlama", "ManagedLlama"]
+__all__ = [
+    "HarborJob",
+    "HarborJobs",
+    "HarborRequest",
+    "LocalLlama",
+    "ManagedLlama",
+    "push_trial_activity",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -317,6 +334,7 @@ class HarborJob:
     __stop_requested: bool
     __kill_timer: asyncio.TimerHandle | None
     __seen: set[str]
+    __activity: TrialActivity
 
     def __init__(
         self,
@@ -380,6 +398,7 @@ class HarborJob:
         self.__stop_requested = False
         self.__kill_timer = None
         self.__seen = set()
+        self.__activity = TrialActivity(jobs_dir / job_name)
 
     @property
     def session_id(self) -> str:
@@ -605,6 +624,13 @@ class HarborJob:
 
     async def __scan(self) -> None:
         job_dir = Path(str(self.__record["job_dir"]))
+        # Before the trial rows, so a trial's last events land before its row.
+        chunks = await asyncio.to_thread(self.__activity.read)
+        if self.__session.channel.connection is not None:
+            # Detached, nothing is sent (it would pile up in the outbox for
+            # hours); the next hello reads it all again (push_trial_activity).
+            for chunk in chunks:
+                await self.__session.channel.send(Envelope.make_event(EVT_HARBOR_ACTIVITY, chunk))
         rows, total = await asyncio.to_thread(_read_progress, job_dir)
         for row in rows:
             name = str(row["trial"])
@@ -828,6 +854,25 @@ class HarborJobs:
             marked.append(session_dir.name)
             _log.info("Benchmark in %s marked interrupted", session_dir.name)
         return marked
+
+
+async def push_trial_activity(session: Session) -> None:
+    """Send a benchmark session's whole agent activity, read from its job directory.
+
+    For a (re)attached window, after ``session.history``: the activity is
+    never persisted, and a running job only pushes it while a window is
+    attached. A no-op for a session that is no benchmark session.
+
+    Args:
+        session (Session): The session a window just attached to.
+    """
+    job = session.engine.session.job
+    job_dir = job.get("job_dir") if job is not None else None
+    if not isinstance(job_dir, str) or not job_dir:
+        return
+    chunks = await asyncio.to_thread(TrialActivity(Path(job_dir)).read)
+    for chunk in chunks:
+        await session.channel.send(Envelope.make_event(EVT_HARBOR_ACTIVITY, chunk))
 
 
 def _read_progress(job_dir: Path) -> tuple[list[dict[str, object]], int | None]:

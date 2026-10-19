@@ -229,7 +229,7 @@ from ._connection_registry import (
     HandlerFn,
     Request,
 )
-from ._harbor_job import HarborJobs
+from ._harbor_job import HarborJobs, push_trial_activity
 from ._session import Session
 from ._session_manager import SessionManager
 
@@ -368,6 +368,8 @@ async def _handle_session_hello(
     history = await session.engine.full_history()
     if history["entries"]:
         await session.channel.send(Envelope.make_event("session.history", history))
+    # A benchmark session's agent activity lives only in its job directory.
+    await push_trial_activity(session)
 
     # Running usage totals (WS_PROTOCOL.md §5.7) aren't part of the `state`
     # snapshot above, so push them explicitly here — otherwise a (re)connecting

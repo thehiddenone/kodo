@@ -72,7 +72,8 @@ so the modal offers exactly the models and suites `kodo-harbor run` accepts,
 and for benchmark sessions (`server/_harbor_job.py`,
 [BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md)): `harbor.run` makes the same
 checks `kodo-harbor run` does before it spawns `python -m kodo.harbor run`,
-and reads progress with `JobSummary`. It never runs Harbor in-process;
+and reads progress with `JobSummary` and each trial's agent log with
+`TrialActivity`. It never runs Harbor in-process;
 nothing else imports `harbor`. `harbor.agent` is the one
 module in `kodo` that imports the third-party `harbor` package, and only
 Harbor's own process imports it: nothing in `kodo` imports `harbor.agent`, and

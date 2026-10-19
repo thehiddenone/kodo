@@ -2405,3 +2405,40 @@ async def test_a_benchmark_session_is_locked_guards_llama_and_stops_on_stop(
     assert (await _send_and_reply(bench_ws, "stop", sid))["type"] == "stop.accepted"
     finished = await _until_event(bench_ws, "harbor.finished")
     assert finished["outcome"] == "stopped"
+
+
+async def test_a_benchmark_pushes_trial_activity_live_and_again_after_history_on_hello(
+    bench_ws: aiohttp.ClientWebSocketResponse,
+) -> None:
+    sid = await _open_session(bench_ws)
+    req = _make_request("harbor.run", session_id=sid, **_bench_request())
+    await bench_ws.send_str(req.to_json())
+    resp, events = await _recv_until_response(bench_ws, req.id)
+    assert resp.payload["type"] == "harbor.run.accepted"
+    job_dir = Path(str(cast("dict[str, object]", _last_state(events)["job"])["job_dir"]))
+    # What Harbor's bind mount shows on the host while the agent runs.
+    log = job_dir / "task__abc" / "agent" / "kodo.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_text(
+        '{"ts": "2026-10-19T10:00:00.000+00:00", "type": "run.start"}\n'
+        '{"ts": "2026-10-19T10:00:01.000+00:00", "type": "text", "text": "hello"}\n',
+        encoding="utf-8",
+    )
+    live = await _until_event(bench_ws, "harbor.activity")
+    assert (live["trial"], live["first"]) == ("task__abc", 0)
+    assert await _send_and_reply(bench_ws, "stop", sid)
+    await _until_event(bench_ws, "harbor.finished")
+
+    # A reattaching window gets it all again, after the history.
+    hello = _make_request("hello", client="vsix", window_id="w1", session_id=sid)
+    await bench_ws.send_str(hello.to_json())
+    kinds: list[str] = []
+    while "harbor.activity" not in kinds:
+        env = await _recv(bench_ws, timeout=10.0)
+        if env.kind == "event":
+            kinds.append(str(env.payload.get("type")))
+            if env.payload.get("type") == "harbor.activity":
+                assert env.payload["first"] == 0
+                events_ = env.payload["events"]
+                assert isinstance(events_, list) and len(events_) == 2
+    assert kinds.index("session.history") < kinds.index("harbor.activity")

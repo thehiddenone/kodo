@@ -3,7 +3,14 @@
 from ._app import create_app
 from ._config import Config
 from ._connection_registry import SERVER_STATE_HEADER, ConnectionRegistry, Request
-from ._harbor_job import HarborJob, HarborJobs, HarborRequest, LocalLlama, ManagedLlama
+from ._harbor_job import (
+    HarborJob,
+    HarborJobs,
+    HarborRequest,
+    LocalLlama,
+    ManagedLlama,
+    push_trial_activity,
+)
 from ._key_broker import KeyBroker
 from ._lifecycle import Lifecycle, port_busy
 from ._session import Session
@@ -25,4 +32,5 @@ __all__ = [
     "SessionManager",
     "create_app",
     "port_busy",
+    "push_trial_activity",
 ]

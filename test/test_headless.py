@@ -204,7 +204,12 @@ async def test_client_walks_a_turn_and_reports_everything(
         await _event(ws, type="agent.tool_call_prep", tool_name="run_command", tool_call_id="tu_1")
         await _event(ws, type="agent.tool_call_detail", tool_call_id="tu_1", file=str(denied_doc))
         await _event(
-            ws, type="subsession.started", subsession_id="sub-1", agent="planner", task="plan it"
+            ws,
+            type="subsession.started",
+            subsession_id="sub-1",
+            agent="planner",
+            display_name="Planner",
+            task="plan it",
         )
         await _event(ws, type="llm.turn_start", agent="planner", model="fake-q4")
         await _stream(ws, "stream_chunk", "st2", "the plan")
@@ -220,9 +225,18 @@ async def test_client_walks_a_turn_and_reports_everything(
             agent="planner",
             usd_cost=0.0,
         )
-        await _event(ws, type="subsession.ended", subsession_id="sub-1", agent="planner")
+        await _event(
+            ws,
+            type="subsession.ended",
+            subsession_id="sub-1",
+            agent="planner",
+            display_name="Planner",
+            failed=False,
+        )
         await _event(ws, type="agent.tool_call_prep", tool_name="create_file", tool_call_id="tu_2")
-        await _event(ws, type="agent.tool_call_detail", tool_call_id="tu_2", file=str(ok_doc))
+        await _event(
+            ws, type="agent.tool_call_detail", tool_call_id="tu_2", file=str(ok_doc), success=True
+        )
         for request_type in sorted(HEADLESS_ANSWERED_REQUESTS):
             payload: dict[str, object] = {"type": request_type}
             if request_type == "prompt.question":
@@ -281,6 +295,13 @@ async def test_client_walks_a_turn_and_reports_everything(
     assert (plan["agent"], plan["subsession_id"]) == ("planner", "sub-1")
     denied_call = next(e for e in events if e["type"] == "tool.call" and e["tool"] == "run_command")
     assert "git commit" in str(denied_call["document"])
+    assert denied_call["success"] is None
+    created = next(e for e in events if e["type"] == "tool.call" and e["tool"] == "create_file")
+    assert created["success"] is True
+    start = next(e for e in events if e["type"] == "subsession.start")
+    assert (start["display_name"], start["task"]) == ("Planner", "plan it")
+    end = next(e for e in events if e["type"] == "subsession.end")
+    assert (end["display_name"], end["failed"]) == ("Planner", False)
 
     answers = fake_server.answers
     assert answers["prompt.permission"]["action"] == "deny"

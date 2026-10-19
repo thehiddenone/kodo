@@ -499,6 +499,7 @@ class HeadlessClient:
                 "subsession.start",
                 agent=agent,
                 subsession_id=subsession_id,
+                display_name=payload.get("display_name"),
                 task=payload.get("task"),
             )
         elif kind == EVT_SUBSESSION_ENDED:
@@ -508,7 +509,9 @@ class HeadlessClient:
                 "subsession.end",
                 agent=payload.get("agent"),
                 subsession_id=subsession_id,
+                display_name=payload.get("display_name"),
                 status=payload.get("status"),
+                failed=payload.get("failed"),
             )
         elif kind == EVT_AGENT_TOOL_CALL_PREP:
             tool_call_id = str(payload.get("tool_call_id", ""))
@@ -523,7 +526,11 @@ class HeadlessClient:
         elif kind == EVT_NUDGE:
             self.__nudges += 1
             self.__sink.emit(
-                "nudge", **self.__scope(), reasons=payload.get("reasons"), mode=payload.get("mode")
+                "nudge",
+                **self.__scope(),
+                reasons=payload.get("reasons"),
+                mode=payload.get("mode"),
+                ui_text=payload.get("ui_text"),
             )
         elif kind == EVT_AUTONOMOUS_CHANGED:
             self.__autonomous_dropped = True
@@ -563,6 +570,7 @@ class HeadlessClient:
             document=document,
             rows=payload.get("rows"),
             schema_compliance=payload.get("schema_compliance"),
+            success=payload.get("success"),
         )
         if _DENIAL_MARKER in document:
             self.__tool_denials += 1

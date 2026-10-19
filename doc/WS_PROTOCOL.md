@@ -78,6 +78,9 @@ share; everything else is internal.
 > - A local run pushes `llama.state` on its session connection as it loads
 >   (or, on Linux, unloads) the model, as a chat turn's load does, so the
 >   sidebar mirrors it.
+> - **2026-10-19:** new event **`harbor.activity`** (§5.9m): each trial's
+>   `kodo.jsonl` events, pushed live while a window is attached and in full
+>   after `session.history` on every `hello`; never persisted.
 > - During a run `llama.start` is refused (a `llama.state` with `error`) rather
 >   than waiting, and `llamacpp.update` / `llamacpp.uninstall` are refused
 >   (§7.6); `stop` on a benchmark session stops the run.
@@ -956,6 +959,36 @@ summary covers the trials that finished) or `interrupted` (the server stopped
 mid-run; written at the next start). A `state` with the final `job.status`
 comes just before it. Persisted as a `harbor_finished` marker and replayed the
 same way.
+
+### 5.9m `harbor.activity` — what the agent did in a benchmark trial
+
+**Added 2026-10-19.** The events `kodo-headless` writes to a trial's
+`kodo.jsonl` ([HEADLESS.md](HEADLESS.md) §2.1), one log at a time, read from
+the job directory on the host (Harbor bind-mounts the container's
+`/logs/agent` there; [BENCHMARK_SESSIONS.md](BENCHMARK_SESSIONS.md) §4.8):
+
+```json
+{ "type": "harbor.activity", "trial": "instruction-following__xvzkfR3",
+  "log": "3f0c9a51d2e4b786", "step": "s1-exact-output",
+  "started": "2026-10-18T17:15:10.948+00:00", "first": 12,
+  "events": [ { "ts": "…", "type": "tool.call", "agent": "kodo_problem_solver", … } ] }
+```
+
+`log` names the log within its trial: a multi-step trial has one per step,
+and the name stays the same when Harbor moves the log under `steps/`.
+`step` is that step's name once Harbor has, else `null` (the step still
+running, or a single-step task). `started` is the `ts` of the log's first
+event and orders a trial's logs. `first` is the position of `events[0]` among
+the log's events: the client places events by position, so a chunk it already
+has changes nothing, in any order.
+
+Sent two ways. While the run goes and a window is attached, every poll of the
+job directory (2 s) pushes what each log gained; while no window is attached
+nothing is sent or buffered. And on every `hello` (§4.1) of a benchmark
+session, right after `session.history`, the server reads the job directory
+again and sends every log in full, `first: 0`, live run or long finished.
+Never persisted: the job directory is the record, so a deleted job directory
+leaves the session with only its table and summary.
 
 ### 5.10 `error` — unsolicited server error
 
@@ -1965,7 +1998,8 @@ server (`--llama-url`); on Linux the server unloads it and `kodo-harbor`
 starts its own. For a cloud model with no key in the server's environment, the
 server asks this session's window with `api_key.request` (§6.3) and passes the
 key only in `kodo-harbor`'s environment. Progress arrives as `harbor.trial`
-(§5.9k), the end as `harbor.finished` (§5.9l). `kodo-harbor`'s output goes to
+(§5.9k), the end as `harbor.finished` (§5.9l), and what the agent does in each
+trial as `harbor.activity` (§5.9m). `kodo-harbor`'s output goes to
 `job.log_path`, never to the wire.
 
 **Stop and delete.** `stop` (§7.2) on a benchmark session stops the run as

@@ -37,6 +37,9 @@ port 8042). While the run holds that llama-server, nothing else uses it.
 | D9 | Persistence | **A real session.** It's in the session list and reopens like an `agent.run` session; reopening replays the progress and the summary. If the server restarts mid-run, the session is marked **interrupted**. It's never resumed. |
 | D10 | Which llama-server configuration | **The entry's stored configuration**: the profile and knobs stored for that card in the registry. That's the command line an unbound session would bind to, and what `kodo-llama-server` uses today. |
 | D11 | Concurrent runs | **One at a time, server-wide**, local or cloud. A second request is refused with an error that names the running session. |
+| D12 | Showing what the agent did (added 2026-10-19) | **Read each trial's `kodo.jsonl` from the job directory on the host**, not through `docker exec` (§4.8). |
+| D13 | Agent activity on reopen | **Read the job directory again on every `hello`**; nothing is copied into the session. |
+| D14 | Grouping a multi-step trial | **One flat collapsible block per trial**, with a divider where each step starts. |
 
 ## 2. Feasibility (what exists, what's missing)
 
@@ -335,6 +338,58 @@ The server side is `kodo.server._harbor_job` (`HarborRequest`, `HarborJob`,
   POSIX test of the real `kodo-harbor --stop-on-stdin-close` with a fake `uv`
   that traps `SIGINT` (`test/test_harbor_host.py`).
 
+### 4.8 Agent activity (added 2026-10-19)
+
+The trials table only says how each trial ended. What the agent did in it is
+in the trial's `kodo.jsonl`: `kodo.harbor.agent` sends `kodo-headless`'s
+JSONL events there (HEADLESS.md §2.1). The tab shows those events as one
+collapsible block per trial, drawn like a chat feed.
+
+**Source (D12).** Harbor's `docker` environment bind-mounts the container's
+`/logs/agent` to `<job_dir>/<trial>/agent/` on the host, so the file grows
+there as the agent runs. The user first proposed `docker exec <id> tail -n
+1000 -f /logs/agent/kodo.jsonl`. Reading the host file needs no matching of
+containers to trials and no Docker CLI on the server's `PATH`, keeps logs
+longer than 1000 lines whole, and still works once the container is gone.
+`kodo-harbor` only ever uses the `docker` environment (`JobPlan`), whose
+capabilities say `mounted=True`.
+
+**Following the files.** After each step of a multi-step task, Harbor
+(0.23, `MultiStepTrial._archive_step_outputs`) moves `agent/`'s contents to
+`steps/<step>/agent/`, and the next step writes a new `agent/kodo.jsonl`.
+`kodo.harbor.TrialActivity` names each log by a digest of its first line
+(the `run.start` event, whose timestamp and temporary home are unique to the
+run), so a moved log keeps its name and its read position, and only gains its
+step's name. It never holds a log open between reads, and a half-written last
+line waits for the next read. On Windows it opens a log with
+`FILE_SHARE_DELETE`: Windows refuses to move a file someone holds open
+without it, and Harbor would fail the step. A trial whose `result.json` was
+there before a read isn't read again after it, since Harbor files every log
+before it writes that file.
+
+**Delivery (D13).** `HarborJob.__scan` reads it on every poll (2 s), before
+the trial rows, and pushes `harbor.activity` (WS_PROTOCOL §5.9m) only while a
+window is attached. Sending while none is attached would fill the session's
+outbox (50 MB, then frames are dropped) for hours. On every `hello` of a
+benchmark session, right after `session.history`, `push_trial_activity` reads
+the whole job directory again and sends every log in full. The client places
+events by position, so it doesn't matter which of the two arrives first.
+Nothing is persisted. A full Basics run is about 480 KB on the wire.
+
+**Headless additions** (so the feed matches a live session's): `tool.call`
+carries `success`, `subsession.start`/`end` carry `display_name` (`end` also
+`failed`), and `nudge` carries `ui_text`. These need a container with this
+Kodo, which an editable install's auto-built wheel gives. Older logs still
+render, without ✅/⚠️ badges and with internal agent names.
+
+**Client.** See §5, "Agent activity".
+
+**Limits.** The terminus-2 control arm writes no `kodo.jsonl`, so its trials
+have no block. A tool card shows the call's visibility-filtered `rows`, as a
+live session's does. The `tool.call` `document` (full input and output) is
+sent but not shown, and a failed call's error output is often only in it.
+Tool cards have no "open file" link, because their paths are the container's.
+
 ## 5. Client (kodo-vsix)
 
 - **Modal.** `BenchmarkModal.tsx` drops the GPU warning. Run posts the
@@ -386,6 +441,24 @@ The server side is `kodo.server._harbor_job` (`HarborRequest`, `HarborJob`,
   `credentialEnv`, `quoteCommandLine` and their tests. The Actions… menu's
   Benchmark entry now says "in a new session tab", and the modal's button is
   **Run**.
+
+**Agent activity (2026-10-19, §4.8).** `src/benchmark-view.ts` gained
+`ActivityLog`, `BenchmarkActivity` and `mergeActivity`, which places a
+chunk's events by position and orders a trial's logs by `started`. Both the
+controller and the webview reducer use it. The controller caches the
+activity and forwards each `harbor.activity` as a `benchmark_activity`
+webview message. On rehydrate it re-posts every log as one full chunk
+(`activityChunks`). `src/webview/benchmarkActivity.ts`'s `activityEntries`
+turns a log's events into the feed's `SessionEntry` shapes: thinking, text,
+tool cards filled by `tool.call`, `usage` as the status line, subsessions,
+errors and nudges. `BenchmarkPanel` draws one block per trial
+(`TrialActivityView`) between the trials table and the summary, with the
+subsession block's styling and collapse rules: open while the trial runs, and
+folded when it ends, but only on that transition. Inside a block, a divider
+names each step (`Step N` while its name is unknown), and the entries
+render through `groupSessionEntries`, `SessionEntryView` and
+`SubsessionGroupView`. `SessionEntryView` gained `fileLinks` (default
+`true`); the panel passes `false`.
 
 ## 6. Known limits
 
