@@ -24,4 +24,8 @@ class ReadAgentTool(Tool):
             result = await self.context.services.agent_workshop().read_agent(name.strip())
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
+        # The workshop reports an agent that loads with an empty ``error``; a
+        # top-level ``error`` key marks the call itself as failed, so drop it.
+        if not result.get("error"):
+            result = {key: value for key, value in result.items() if key != "error"}
         return json.dumps(result, ensure_ascii=False)

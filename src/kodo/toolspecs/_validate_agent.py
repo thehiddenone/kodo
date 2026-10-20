@@ -18,7 +18,7 @@ VALIDATE_AGENT: ToolSpec = ToolSpec(
     user_description="Validate an agent",
     description=(
         "Report on one agent, built-in or user, loaded or broken. `load` is `ok` or "
-        "`error`, and `error` says why it does not load — the agent loader's rules, "
+        "`error`; on `error`, `error` says why it does not load — the agent loader's rules, "
         "the only ones that stop an agent running. `findings` are the prompt lint's "
         "warnings (`rule` `L1`…`L7`, `line` in the prompt file counted from the top, "
         "frontmatter included, or null for something missing, and `message`); "
@@ -38,11 +38,11 @@ VALIDATE_AGENT: ToolSpec = ToolSpec(
             "name": _STR,
             "kind": {**_STR, "description": "`agent` or `subagent`."},
             "load": {**_STR, "description": "`ok` or `error`."},
-            "error": {**_STR, "description": "Why it does not load; empty when it does."},
+            "error": {**_STR, "description": "Why it does not load; absent when it does."},
             "path": {**_STR, "description": "The prompt file the line numbers refer to."},
             "findings": {"type": "array", "description": "rule, severity, line, message."},
         },
-        "required": ["name", "kind", "load", "error", "path", "findings"],
+        "required": ["name", "kind", "load", "path", "findings"],
     },
     security_impact=SecurityImpact.MINIMAL,
     input_visibility={"name": "always"},

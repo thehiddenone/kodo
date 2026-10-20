@@ -1435,10 +1435,12 @@ async def test_agent_builder_read_tools_compliance(tmp_path: Path) -> None:
     assert "return_result" not in {row["name"] for row in tools["tools"]}  # type: ignore[union-attr]
     read = _assert_compliant("read_agent", await _dispatch(d, "read_agent", {"name": "kodo_guide"}))
     assert read["source"] == "builtin"
+    assert "error" not in read
     report = _assert_compliant(
         "validate_agent", await _dispatch(d, "validate_agent", {"name": "kodo_guide"})
     )
     assert report["load"] == "ok"
+    assert "error" not in report
     lint = _assert_compliant(
         "lint_agent",
         await _dispatch(
@@ -1458,6 +1460,17 @@ async def test_agent_builder_read_tools_compliance(tmp_path: Path) -> None:
     ):
         parsed = _assert_compliant(name, await _dispatch(d, name, payload))
         assert "error" in parsed, (name, payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["read_agent", "validate_agent"])
+async def test_agent_builder_read_tools_keep_a_broken_agents_error(
+    tool_name: str, tmp_path: Path
+) -> None:
+    (tmp_path / "agents" / "acme_broken").mkdir(parents=True)
+    d = _builder_dispatcher(tmp_path)
+    parsed = await _dispatch(d, tool_name, {"name": "acme_broken"})
+    assert isinstance(parsed, dict) and parsed["error"], parsed
 
 
 @pytest.mark.asyncio

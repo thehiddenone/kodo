@@ -25,7 +25,7 @@ READ_AGENT: ToolSpec = ToolSpec(
         "frontmatter as the loader resolves it (`tools` sorted, `subagents` in "
         "order); it is empty when the prompt does not parse. `source` is `builtin` "
         "or `user`; built-ins are read-only. `error` is why a broken user agent "
-        "does not load, and empty otherwise. Works on broken user agents too, so "
+        "does not load, and absent otherwise. Works on broken user agents too, so "
         "they can be fixed.\n\n"
         "When to use: before editing a user agent (to copy `old_string` exactly), "
         "to study a built-in as an example of a pattern, and to read a sub-agent's "
@@ -42,7 +42,7 @@ READ_AGENT: ToolSpec = ToolSpec(
             "name": _STR,
             "kind": {**_STR, "description": "`agent` or `subagent`."},
             "source": {**_STR, "description": "`builtin` or `user`."},
-            "error": {**_STR, "description": "Why it does not load; empty when it does."},
+            "error": {**_STR, "description": "Why it does not load; absent when it does."},
             "prompt_path": _STR,
             "prompt": {**_STR, "description": "The prompt file's whole text."},
             "json_path": _STR,
