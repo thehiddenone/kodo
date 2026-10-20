@@ -437,17 +437,23 @@ class HarborJob:
         self.__task = asyncio.create_task(self.__run(), name=f"harbor-{self.session_id}")
         return None
 
-    def stop(self) -> None:
+    def stop(self, requested_by: str = "user") -> None:
         """Ask the run to stop as Ctrl+C would; the trials that finished are kept.
 
         Before ``kodo-harbor`` starts this abandons the wait (for the lease,
         the key or the model). Once it runs, its stdin is closed, which
         interrupts its process group; the whole tree is killed if it has not
         exited after the grace period. No-op once the run ended.
+
+        Args:
+            requested_by (str): ``user`` for the tab's Stop, ``server`` for a
+                shutdown; the record keeps it as ``stopped_by``, and the tab
+                says the user stopped the run only for ``user``.
         """
         if not self.active or self.__stop_requested:
             return
         self.__stop_requested = True
+        self.__record["stopped_by"] = requested_by
         if self.__process is None:
             if self.__cancel_preparing is not None:
                 self.__cancel_preparing()
@@ -565,7 +571,7 @@ class HarborJob:
             if self.__stop_requested:
                 # Stop landed while the process was starting.
                 self.__stop_requested = False
-                self.stop()
+                self.stop(str(self.__record["stopped_by"]))
             while True:
                 try:
                     return await asyncio.wait_for(process.wait(), self.__poll_seconds)
@@ -796,7 +802,7 @@ class HarborJobs:
         """Stop every active run as Stop does and wait for them (server shutdown, D5)."""
         jobs = [job for job in self.__jobs.values() if job.active]
         for job in jobs:
-            job.stop()
+            job.stop("server")
         for job in jobs:
             await job.wait()
 

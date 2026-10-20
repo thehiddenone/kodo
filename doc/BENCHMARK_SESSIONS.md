@@ -185,7 +185,7 @@ shows the reason without opening the log.
 | Name | Kind | Payload |
 |---|---|---|
 | `harbor.run` / `harbor.run.accepted` | session command (§7.4j) | §4.1 |
-| `state.job` | field on `state` (§5.1) | `null`, or `{status, kind:"basics"\|"benchmark", agent, model, suite, attempts, control, job_dir, log_path, started_at}` with `status` one of `waiting` · `running` · `stopping` · `completed` · `failed` · `stopped` · `interrupted` |
+| `state.job` | field on `state` (§5.1) | `null`, or `{status, kind:"basics"\|"benchmark", agent, model, suite, attempts, control, job_dir, log_path, started_at}` with `status` one of `waiting` · `running` · `stopping` · `completed` · `failed` · `stopped` · `interrupted`, plus `stopped_by` (`user` · `server`) once a Stop was requested |
 | `harbor.trial` | event | `{task, arm, reward, seconds, exceptions, finished, total}`; `total` is `null` while it's unknown |
 | `harbor.finished` | event | `{outcome, exit_code, summary_markdown, detail, job_dir, log_path}` |
 | `llm.waiting` | existing event | new `reason: "benchmark"` with the job session's title (§4.6) |
@@ -244,6 +244,12 @@ re-raises it; a second interrupt kills it. This also fixes the terminal path.
 The status becomes `stopping`. After a 120 s grace period the whole process
 tree is killed (`psutil`, children first), and the outcome is `stopped` either
 way. Containers Harbor didn't get to remove after a kill are a known limit (§6).
+
+The job record gets `stopped_by` when the Stop is requested: `user` for the
+tab's Stop (the `stop` command), `server` for a shutdown's (§4.5,
+`HarborJobs.stop_all`). It reaches the tab with the `stopping` status (or with
+`stopped`, for a Stop before `kodo-harbor` started) and survives a reload, as
+the rest of `state.job` does. A deleted session's kill sets none.
 
 ### 4.5 Idle shutdown, `server.shutdown`, restart
 
@@ -477,6 +483,12 @@ ends, but only on that transition. The entries render through
 `groupSessionEntries`, `SessionEntryView` and `SubsessionGroupView`.
 `ActivityLog` keeps the first `prompt` a log gets. `SessionEntryView` gained `fileLinks` (default
 `true`); the panel passes `false`.
+
+**Stopped by the user (2026-10-19).** When `state.job.stopped_by` is `user`,
+`BenchmarkPanel` shows a red `<kodo_crit>` callout below the trials' activity
+and above the summary, as the chat feed does for a Stop: from the click
+(status `stopping`) on, and after a reload. A shutdown's stop
+(`stopped_by: "server"`) and a record from before the field show none.
 
 ## 6. Known limits
 

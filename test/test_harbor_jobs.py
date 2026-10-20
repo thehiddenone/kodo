@@ -465,6 +465,7 @@ async def test_stop_winds_the_run_down_and_keeps_the_finished_trials(
     finished = await _finished(bench, session)
 
     assert finished["outcome"] == "stopped"
+    assert session.engine.session.job["stopped_by"] == "user"  # type: ignore[index]
     assert finished["exit_code"] == 130
     assert finished["summary_markdown"] == "# Benchmark summary\n"
     assert 1 <= len(bench.events(session, "harbor.trial")) < 4
@@ -505,6 +506,7 @@ async def test_stop_while_waiting_for_llama_server_never_starts_kodo_harbor(
     finished = await _finished(bench, session)
 
     assert finished["outcome"] == "stopped"
+    assert session.engine.session.job["stopped_by"] == "user"  # type: ignore[index]
     assert not bench.record.exists()
     assert bench.gateway.local_holders == {"a-chat-turn"}  # its hold never taken
 
@@ -522,6 +524,7 @@ async def test_stop_all_stops_every_run_for_shutdown(
 
     assert bench.jobs.running is None
     assert bench.events(session, "harbor.finished")[0]["outcome"] == "stopped"
+    assert session.engine.session.job["stopped_by"] == "server"  # type: ignore[index]
 
 
 async def test_discarding_a_session_kills_its_run(bench_factory: Callable[..., _Bench]) -> None:

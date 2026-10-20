@@ -826,8 +826,9 @@ class WorkflowEngine(
 
         Args:
             job: ``{status, kind, agent, model, suite, attempts, control,
-                thinking_level, job_dir, log_path, started_at}``, plus a
-                ``process`` entry the server keeps for a restart
+                thinking_level, job_dir, log_path, started_at}``, plus
+                ``stopped_by`` (``user`` · ``server``) once a Stop was
+                requested, and a ``process`` entry the server keeps for a restart
                 (doc/BENCHMARK_SESSIONS.md §4.5) and ``state.job`` leaves out.
         """
         self._session.job = _public_job(job)

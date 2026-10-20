@@ -476,8 +476,10 @@ strip keeping only Stop and Delete.
 
 `status` is `waiting` (for llama-server, a key or the model to load) ·
 `running` · `stopping` · `completed` · `failed` · `stopped` · `interrupted`
-(the server stopped mid-run; set at its next start). `kind` is `basics` for
-the Basics test suite, else `benchmark`. While `job` is set, `interactive` is
+(the server stopped mid-run; set at its next start). `stopped_by` appears
+once a Stop was requested: `user` for the `stop` command (§7.4j), `server`
+for a shutdown; the client shows a `<kodo_crit>` callout only for `user`.
+`kind` is `basics` for the Basics test suite, else `benchmark`. While `job` is set, `interactive` is
 `false` — the lock comes from the job record, so it survives a reload, a
 resume and a server restart.
 
