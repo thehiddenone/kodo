@@ -80,7 +80,8 @@ share; everything else is internal.
 >   sidebar mirrors it.
 > - **2026-10-19:** new event **`harbor.activity`** (§5.9m): each trial's
 >   `kodo.jsonl` events, pushed live while a window is attached and in full
->   after `session.history` on every `hello`; never persisted.
+>   after `session.history` on every `hello`; never persisted. It also carries
+>   each log's `prompt`, the step's instruction.
 > - During a run `llama.start` is refused (a `llama.state` with `error`) rather
 >   than waiting, and `llamacpp.update` / `llamacpp.uninstall` are refused
 >   (§7.6); `stop` on a benchmark session stops the run.
@@ -971,7 +972,8 @@ the job directory on the host (Harbor bind-mounts the container's
 { "type": "harbor.activity", "trial": "instruction-following__xvzkfR3",
   "log": "3f0c9a51d2e4b786", "step": "s1-exact-output",
   "started": "2026-10-18T17:15:10.948+00:00", "first": 12,
-  "events": [ { "ts": "…", "type": "tool.call", "agent": "kodo_problem_solver", … } ] }
+  "events": [ { "ts": "…", "type": "tool.call", "agent": "kodo_problem_solver", … } ],
+  "prompt": null }
 ```
 
 `log` names the log within its trial: a multi-step trial has one per step,
@@ -980,7 +982,10 @@ and the name stays the same when Harbor moves the log under `steps/`.
 running, or a single-step task). `started` is the `ts` of the log's first
 event and orders a trial's logs. `first` is the position of `events[0]` among
 the log's events: the client places events by position, so a chunk it already
-has changes nothing, in any order.
+has changes nothing, in any order. `prompt` (added 2026-10-19) is the
+instruction the log's run was given (the `instruction.md` beside it), in the
+first chunk that finds it, else `null`; a chunk whose only news is the prompt
+has empty `events`. The client keeps the first one a log gets.
 
 Sent two ways. While the run goes and a window is attached, every poll of the
 job directory (2 s) pushes what each log gained; while no window is attached

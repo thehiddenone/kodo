@@ -3,7 +3,8 @@
 The job directory is laid out as Harbor 0.23's ``docker`` environment leaves
 it: ``<trial>/agent/kodo.jsonl`` while the agent runs, moved to
 ``<trial>/steps/<step>/agent/`` after each step of a multi-step task, and
-``<trial>/result.json`` once the trial ended.
+``<trial>/result.json`` once the trial ended. ``kodo.harbor.agent`` writes
+each step's ``instruction.md`` beside its log.
 """
 
 from __future__ import annotations
@@ -129,6 +130,59 @@ def test_an_ended_trial_is_read_once_more_and_then_never_again(tmp_path: Path) -
 
     assert len(activity.read()) == 1
     _write(log, _line("text", text="written after the end"))
+    assert activity.read() == []
+
+
+def test_a_log_comes_with_the_instruction_beside_it_once(tmp_path: Path) -> None:
+    agent = tmp_path / "task__abc" / "agent"
+    _write(agent / "instruction.md", "Create `t1/summary.txt`.\n")
+    _write(agent / "kodo.jsonl", _line("run.start", home="/tmp/h1"))
+    activity = TrialActivity(tmp_path)
+    (first,) = activity.read()
+
+    _write(agent / "kodo.jsonl", _line("text", text="done"))
+    (second,) = activity.read()
+
+    assert first["prompt"] == "Create `t1/summary.txt`.\n"
+    assert second["prompt"] is None
+
+
+def test_each_step_of_a_multi_step_trial_comes_with_its_own_instruction(tmp_path: Path) -> None:
+    trial = tmp_path / "basics__abc"
+    agent = trial / "agent"
+    _write(agent / "instruction.md", "step one\n")
+    _write(agent / "kodo.jsonl", _line("run.start", home="/tmp/h1"))
+    activity = TrialActivity(tmp_path)
+    (running,) = activity.read()
+
+    filed = trial / "steps" / "s1-exact-output" / "agent"
+    filed.parent.mkdir(parents=True)
+    agent.rename(filed)
+    _write(agent / "instruction.md", "step two\n")
+    _write(agent / "kodo.jsonl", _line("run.start", ts="2026-10-18T10:05:00.000+00:00", home="/h2"))
+    by_step = {chunk["step"]: chunk for chunk in activity.read()}
+
+    assert running["prompt"] == "step one\n"
+    assert by_step["s1-exact-output"]["prompt"] is None  # already sent
+    assert by_step[None]["prompt"] == "step two\n"
+    fresh = {chunk["step"]: chunk["prompt"] for chunk in TrialActivity(tmp_path).read()}
+    assert fresh == {"s1-exact-output": "step one\n", None: "step two\n"}
+
+
+def test_an_instruction_not_found_beside_its_log_is_looked_for_again(tmp_path: Path) -> None:
+    # Harbor moved the log to steps/ but not the instruction yet, or the
+    # instruction was not there yet: the next read finds it.
+    agent = tmp_path / "task__abc" / "agent"
+    _write(agent / "kodo.jsonl", _line("run.start", home="/tmp/h1"))
+    activity = TrialActivity(tmp_path)
+    (first,) = activity.read()
+
+    _write(agent / "instruction.md", "late\n")
+    (second,) = activity.read()
+
+    assert first["prompt"] is None
+    assert second["prompt"] == "late\n"
+    assert second["events"] == []
     assert activity.read() == []
 
 

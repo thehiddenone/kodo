@@ -39,7 +39,8 @@ port 8042). While the run holds that llama-server, nothing else uses it.
 | D11 | Concurrent runs | **One at a time, server-wide**, local or cloud. A second request is refused with an error that names the running session. |
 | D12 | Showing what the agent did (added 2026-10-19) | **Read each trial's `kodo.jsonl` from the job directory on the host**, not through `docker exec` (§4.8). |
 | D13 | Agent activity on reopen | **Read the job directory again on every `hello`**; nothing is copied into the session. |
-| D14 | Grouping a multi-step trial | **One flat collapsible block per trial**, with a divider where each step starts. |
+| D14 | Grouping a multi-step trial | **One flat collapsible block per trial**, with a divider where each step starts. **Superseded 2026-10-19** by D15. |
+| D15 | Showing each step's instruction (added 2026-10-19) | **Laid out like chat turns.** Under the trial's name, each step shows its `instruction.md` as an always-visible user bubble, then its activity in its own collapsible block. Read by the server from beside each `kodo.jsonl`, so job directories from before this change show their prompts too (§4.8). |
 
 ## 2. Feasibility (what exists, what's missing)
 
@@ -342,8 +343,9 @@ The server side is `kodo.server._harbor_job` (`HarborRequest`, `HarborJob`,
 
 The trials table only says how each trial ended. What the agent did in it is
 in the trial's `kodo.jsonl`: `kodo.harbor.agent` sends `kodo-headless`'s
-JSONL events there (HEADLESS.md §2.1). The tab shows those events as one
-collapsible block per trial, drawn like a chat feed.
+JSONL events there (HEADLESS.md §2.1). The tab shows those events drawn
+like a chat feed: per step, the instruction it was given, then one
+collapsible block of what the agent did (D15).
 
 **Source (D12).** Harbor's `docker` environment bind-mounts the container's
 `/logs/agent` to `<job_dir>/<trial>/agent/` on the host, so the file grows
@@ -367,6 +369,19 @@ without it, and Harbor would fail the step. A trial whose `result.json` was
 there before a read isn't read again after it, since Harbor files every log
 before it writes that file.
 
+**Each step's instruction (D15).** `kodo.harbor.agent` writes each run's
+instruction to `/logs/agent/instruction.md` before it starts `kodo-headless`
+(it has since `kodo-harbor` was added). Harbor calls the agent once per step,
+and moves `instruction.md` to `steps/<step>/agent/` with the step's
+`kodo.jsonl`, so the instruction beside a log is always that log's step's,
+while it runs in `agent/` and once filed. `TrialActivity` sends it as the
+chunk's `prompt`, once per log, in the first chunk that finds it. A read can
+catch Harbor after it moved the log but before it moved the instruction, so a
+log whose prompt wasn't found is looked at again on the next read. The full
+resend on `hello` sends every log's prompt again. The prompt isn't put into
+`kodo.jsonl` (a `kodo-headless` event): reading the file the agent already
+writes also works for job directories from before this change.
+
 **Delivery (D13).** `HarborJob.__scan` reads it on every poll (2 s), before
 the trial rows, and pushes `harbor.activity` (WS_PROTOCOL §5.9m) only while a
 window is attached. Sending while none is attached would fill the session's
@@ -384,8 +399,8 @@ render, without ✅/⚠️ badges and with internal agent names.
 
 **Client.** See §5, "Agent activity".
 
-**Limits.** The terminus-2 control arm writes no `kodo.jsonl`, so its trials
-have no block. A tool card shows the call's visibility-filtered `rows`, as a
+**Limits.** The terminus-2 control arm writes no `kodo.jsonl` and no
+`instruction.md`, so its trials show neither a prompt nor a block. A tool card shows the call's visibility-filtered `rows`, as a
 live session's does. The `tool.call` `document` (full input and output) is
 sent but not shown, and a failed call's error output is often only in it.
 Tool cards have no "open file" link, because their paths are the container's.
@@ -451,13 +466,16 @@ webview message. On rehydrate it re-posts every log as one full chunk
 (`activityChunks`). `src/webview/benchmarkActivity.ts`'s `activityEntries`
 turns a log's events into the feed's `SessionEntry` shapes: thinking, text,
 tool cards filled by `tool.call`, `usage` as the status line, subsessions,
-errors and nudges. `BenchmarkPanel` draws one block per trial
-(`TrialActivityView`) between the trials table and the summary, with the
-subsession block's styling and collapse rules: open while the trial runs, and
-folded when it ends, but only on that transition. Inside a block, a divider
-names each step (`Step N` while its name is unknown), and the entries
-render through `groupSessionEntries`, `SessionEntryView` and
-`SubsessionGroupView`. `SessionEntryView` gained `fileLinks` (default
+errors and nudges. `BenchmarkPanel` draws each trial (`TrialActivityView`)
+between the trials table and the summary (D15): the trial's name, then per
+step a divider naming it (multi-step only; `Step N` while its name is
+unknown), the step's `prompt` as a user bubble (`styles.userPrompt` with
+smaller margins; none while unknown), and the step's activity
+(`StepActivityView`) with the subsession block's styling and collapse rules:
+open while the step runs (the running trial's last log), and folded when it
+ends, but only on that transition. The entries render through
+`groupSessionEntries`, `SessionEntryView` and `SubsessionGroupView`.
+`ActivityLog` keeps the first `prompt` a log gets. `SessionEntryView` gained `fileLinks` (default
 `true`); the panel passes `false`.
 
 ## 6. Known limits

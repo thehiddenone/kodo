@@ -7,6 +7,11 @@ the host, so the file grows there while the agent runs. In a multi-step task
 Harbor moves ``agent/``'s contents to ``steps/<step>/agent/`` after each step,
 and the next step writes a new ``agent/kodo.jsonl``.
 
+``kodo.harbor.agent`` also writes each run's instruction to
+``/logs/agent/instruction.md`` before it starts ``kodo-headless``, so the
+instruction sits beside its log and moves with it: each step's log comes with
+its own step's prompt.
+
 :class:`TrialActivity` follows these files across those moves. It names each
 log by a digest of its first line (the ``run.start`` event, whose timestamp
 and temporary home are unique to the run), so a log keeps its name, and its
@@ -28,6 +33,9 @@ from typing import BinaryIO, cast
 __all__ = ["TrialActivity"]
 
 _LOG_NAME = "kodo.jsonl"
+# The file kodo.harbor.agent writes the instruction to. That package needs the
+# harbor package, which the server does not have, so the name is repeated here.
+_INSTRUCTION_NAME = "instruction.md"
 _RESULT_NAME = "result.json"
 
 
@@ -38,6 +46,7 @@ class _Cursor:
     offset: int = 0
     count: int = 0
     step: str | None = None
+    prompted: bool = False
 
 
 class TrialActivity:
@@ -65,13 +74,18 @@ class TrialActivity:
         log before it writes that.
 
         Returns:
-            list[dict[str, object]]: One chunk per log that gained events, or
-            whose step became known: ``{trial, log, step, started, first,
-            events}``. ``log`` names the log within its trial; ``events`` are
-            its new events, in order, and ``first`` is the position of
-            ``events[0]`` among all of the log's events. ``started`` is the
-            ``ts`` of its first event. ``step`` is the step's name once
-            Harbor has filed the log under ``steps/``, else ``None``.
+            list[dict[str, object]]: One chunk per log that gained events,
+            or whose step or prompt became known: ``{trial, log, step,
+            started, first, events, prompt}``. ``log`` names the log within
+            its trial; ``events`` are its new events, in order, and ``first``
+            is the position of ``events[0]`` among all of the log's events.
+            ``started`` is the ``ts`` of its first event. ``step`` is the
+            step's name once Harbor has filed the log under ``steps/``, else
+            ``None``.
+            ``prompt`` is the instruction the run was given, in the first
+            chunk that finds it beside the log, else ``None``: a read can
+            catch Harbor after it moved the log but before it moved the
+            instruction, so later reads look again until it is found.
         """
         try:
             trial_dirs = sorted(path for path in self.__job_dir.iterdir() if path.is_dir())
@@ -111,7 +125,11 @@ class TrialActivity:
         filed = step is not None and cursor.step is None
         if filed:
             cursor.step = step
-        if not events and not filed:
+        prompt = None
+        if not cursor.prompted:
+            prompt = _read_text(path.parent / _INSTRUCTION_NAME)
+            cursor.prompted = prompt is not None
+        if not events and not filed and prompt is None:
             return None
         started = _event(head)
         return {
@@ -121,6 +139,7 @@ class TrialActivity:
             "started": str(started.get("ts", "")) if started is not None else "",
             "first": first,
             "events": events,
+            "prompt": prompt,
         }
 
 
@@ -141,6 +160,15 @@ def _trial_logs(trial_dir: Path) -> list[tuple[Path, str | None]]:
     if current.is_file():
         logs.append((current, None))
     return logs
+
+
+def _read_text(path: Path) -> str | None:
+    """*path*'s text, or ``None`` when it is not there (yet) or cannot be read."""
+    try:
+        with _open_shared(path) as stream:
+            return stream.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def _event(line: bytes) -> dict[str, object] | None:
