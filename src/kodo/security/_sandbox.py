@@ -76,6 +76,7 @@ _ALLOWED_TOOLS = frozenset(
         "read_hf_model",
         "read_webpage",
         "remaining_time",
+        "report_agent_review",
         "return_result",
         "rollback",
         "run_subagent",

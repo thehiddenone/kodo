@@ -81,6 +81,7 @@ from .._attachments import parse_attachment_marker
 from .._checkpoints import CheckpointState
 from .._gates import GateOrchestrator
 from .._session import SessionState
+from ._agent_review import AgentReviewHandoff
 from ._binding import BindingMixin
 from ._checkpointing import CheckpointCoordinator
 from ._compaction import ContextCompactor, estimate_tokens
@@ -179,6 +180,7 @@ class WorkflowEngine(
     _compactor: ContextCompactor
     _titler: SessionTitler
     _greeter: SessionGreeter
+    _agent_review: AgentReviewHandoff
     _checkpoints: CheckpointCoordinator
     _history: HistoryProjector
     _queue: asyncio.Queue[dict[str, object]]
@@ -351,6 +353,9 @@ class WorkflowEngine(
             emitters=self._emitters,
         )
         self._greeter = SessionGreeter(emitters=self._emitters)
+        self._agent_review = AgentReviewHandoff(
+            emitters=self._emitters, gate=gate, transient=transient
+        )
         self._checkpoints = CheckpointCoordinator(self, sink=sink)
         self._history = HistoryProjector(transient, self._checkpoints)
         self._services = _EngineServices(
@@ -375,6 +380,7 @@ class WorkflowEngine(
             root_paths=self._root_paths,
             local_catalog=self._local_catalog_service,
             agent_workshop=self._agent_workshop_service,
+            report_agent_review=self._agent_review.report,
         )
         # Created on first use: only the Model Importer's tools reach it.
         self._local_catalog: LocalCatalogService | None = None
@@ -502,6 +508,12 @@ class WorkflowEngine(
             # so resume is gated only on the dangling marker.
             if self._has_dangling_tool_use():
                 self._resume_subsession_pending = True
+            # An Agent Review session whose "open Agent Builder?" question was
+            # never answered asks it again — now, or once the turn being
+            # resumed ends (doc/AGENT_BUILDER.md §5.3).
+            self._agent_review.resume()
+            if not self._resume_subsession_pending:
+                self._agent_review.turn_ended()
             if not self._resume_subsession_pending:
                 pending = self._transient.pending_prompt
                 if pending is not None:
@@ -690,6 +702,7 @@ class WorkflowEngine(
         self._session.phase = "stopped"
         self._session.agent = None
         await self._emitters.emit_state()
+        self._agent_review.turn_ended()
         self._worker = asyncio.create_task(self._run_worker(), name="kodo-worker")
         _log.info("Runtime worker stopped by user (top_agent=%s); session ready", top_agent)
 

@@ -18,17 +18,30 @@ Collaborators (own their state; reach back via narrow host protocols):
 - :mod:`._titling` — silent session titling
 - :mod:`._checkpointing` — shadow-git mirrors + undo/redo/rollback
 - :mod:`._history` — session.jsonl read-back (feed rebuild, context rehydration)
+- :mod:`._agent_review` — Agent Review's findings and its Agent Builder handoff
 
 :mod:`._core` wires it all together; :mod:`._shared` holds the shared
 constants; :mod:`._services` adapts the engine to the tools' EngineServices
 protocol.
 """
 
+from ._agent_review import (
+    AGENT_BUILDER_AGENT,
+    HANDOFF_PROMPT_HEADING,
+    AgentReviewHandoff,
+    handoff_prompt,
+)
 from ._core import WorkflowEngine
+from ._events import EngineEmitters
 from ._shared import _sanitize_short_name, _slugify_project_name, _unique_child_dir
 
 __all__ = [
+    "AGENT_BUILDER_AGENT",
+    "HANDOFF_PROMPT_HEADING",
+    "AgentReviewHandoff",
+    "EngineEmitters",
     "WorkflowEngine",
+    "handoff_prompt",
     "_sanitize_short_name",
     "_slugify_project_name",
     "_unique_child_dir",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from kodo.tools import AgentWorkshopLike, LocalCatalogLike, RootPath
+from kodo.tools import AgentReview, AgentWorkshopLike, LocalCatalogLike, RootPath
 
 
 class _EngineServices:
@@ -39,6 +39,7 @@ class _EngineServices:
         root_paths: Callable[[], tuple[RootPath, ...]],
         local_catalog: Callable[[], LocalCatalogLike],
         agent_workshop: Callable[[], AgentWorkshopLike],
+        report_agent_review: Callable[[AgentReview], Awaitable[str | None]],
     ) -> None:
         self.__run_subagent = run_subagent
         self.__run_dependency_manager = run_dependency_manager
@@ -56,6 +57,7 @@ class _EngineServices:
         self.__root_paths = root_paths
         self.__local_catalog = local_catalog
         self.__agent_workshop = agent_workshop
+        self.__report_agent_review = report_agent_review
 
     async def run_subagent(
         self,
@@ -147,3 +149,7 @@ class _EngineServices:
     def agent_workshop(self) -> AgentWorkshopLike:
         """Delegate to the engine's lazily created Agent Builder service."""
         return self.__agent_workshop()
+
+    async def report_agent_review(self, review: AgentReview) -> str | None:
+        """Delegate to the engine's ``AgentReviewHandoff.report``."""
+        return await self.__report_agent_review(review)

@@ -331,6 +331,8 @@ class ResumeMixin:
             self._session.phase = "awaiting_user"
         self._session.agent = None
         await self._emitters.emit_state()
+        # The question start() held back while this turn was left to resume.
+        self._agent_review.turn_ended()
         await self._compactor.maybe_auto_compact()
 
     @staticmethod

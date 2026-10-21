@@ -31,7 +31,7 @@ from kodo.runtime._engine._events import EngineEmitters
 from kodo.runtime._engine._services import _EngineServices
 from kodo.runtime._engine._shared import _slugify_project_name, _unique_child_dir
 from kodo.runtime._session import SessionState
-from kodo.tools import AgentWorkshopLike, LocalCatalogLike, RootPath
+from kodo.tools import AgentReview, AgentWorkshopLike, LocalCatalogLike, RootPath
 
 # ---------------------------------------------------------------------------
 # _shared._slugify_project_name
@@ -107,6 +107,7 @@ def _make_services(rec: _Recorder) -> _EngineServices:
         root_paths=lambda: (),
         local_catalog=lambda: _CATALOG,
         agent_workshop=lambda: _WORKSHOP,
+        report_agent_review=rec.make("report_agent_review"),
     )
 
 
@@ -124,6 +125,15 @@ _WORKSHOP = cast(AgentWorkshopLike, object())
 
 def test_engine_services_agent_workshop_returns_the_engine_service() -> None:
     assert _make_services(_Recorder()).agent_workshop() is _WORKSHOP
+
+
+@pytest.mark.asyncio
+async def test_engine_services_report_agent_review_forwards_the_review() -> None:
+    rec = _Recorder()
+    review = AgentReview(name="acme_x", accept=True, concerns=(), summary="Accepted.")
+
+    assert await _make_services(rec).report_agent_review(review) is None
+    assert rec.calls == [("report_agent_review", (review,))]
 
 
 @pytest.mark.asyncio
@@ -271,6 +281,7 @@ def test_engine_services_has_workspace_root_paths_are_live_reads() -> None:
         ),
         local_catalog=lambda: _CATALOG,
         agent_workshop=lambda: _WORKSHOP,
+        report_agent_review=rec.make("report_agent_review"),
     )
 
     assert services.has_workspace() is False

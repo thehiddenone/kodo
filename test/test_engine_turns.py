@@ -171,6 +171,16 @@ class _FakeSink:
         self.sent.append(env)
 
 
+class _FakeAgentReview:
+    """Stands in for the engine's AgentReviewHandoff; counts turn ends."""
+
+    def __init__(self) -> None:
+        self.turns_ended = 0
+
+    def turn_ended(self) -> None:
+        self.turns_ended += 1
+
+
 class _FakeCompactor:
     def __init__(self) -> None:
         self.context_tokens = 0
@@ -208,6 +218,7 @@ def _base_engine(*, gateway: _FakeGateway | None = None) -> WorkflowEngine:
     engine._orch_session_id = "sess-1"
     engine._top_agent_turn_seq = 0
     engine._turn_halt_notice = None
+    engine._agent_review = _FakeAgentReview()
 
     def _llm_logs_dir() -> Path:
         return Path("/tmp/llm_logs")
@@ -1329,6 +1340,8 @@ async def test_run_top_agent_persists_prompt_and_runs_turn() -> None:
     assert engine._emitters.finished == ["kodo_guide"]
     assert engine._compactor.auto_compact_calls == 1
     assert engine._compactor.noted == ["key-medium"]
+    # The turn's end is what lets Agent Review's Builder question be asked.
+    assert engine._agent_review.turns_ended == 1
 
 
 async def test_run_top_agent_ends_after_the_tool_round_that_halted_it() -> None:

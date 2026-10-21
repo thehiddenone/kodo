@@ -51,6 +51,7 @@ from ._read_gguf_header import READ_GGUF_HEADER
 from ._read_hf_model import READ_HF_MODEL
 from ._read_webpage import READ_WEBPAGE
 from ._remaining_time import REMAINING_TIME
+from ._report_agent_review import REPORT_AGENT_REVIEW
 from ._return_result import RETURN_RESULT, build_return_result_spec
 from ._rollback import ROLLBACK
 from ._run_command import RUN_COMMAND
@@ -138,6 +139,7 @@ __all__ = [
     "READ_HF_MODEL",
     "READ_WEBPAGE",
     "REMAINING_TIME",
+    "REPORT_AGENT_REVIEW",
     "RETURN_RESULT",
     "ROLLBACK",
     "RUN_COMMAND",
@@ -208,6 +210,7 @@ ALL_TOOLS: tuple[ToolSpec, ...] = (
     READ_HF_MODEL,
     READ_WEBPAGE,
     REMAINING_TIME,
+    REPORT_AGENT_REVIEW,
     RETURN_RESULT,
     ROLLBACK,
     RUN_COMMAND,

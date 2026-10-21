@@ -1389,6 +1389,23 @@ EVT_SESSION_GREETING = "session.greeting"
 # of the LLM context.
 EVT_SESSION_PARAMS = "session.params"
 
+# Server → Client event. One agent review, posted by the engine when Agent
+# Review (``kodo_agent_review``) calls ``report_agent_review``
+# (doc/AGENT_BUILDER.md §5.3): ``{text}``, Markdown holding one
+# ``<kodo_warn>`` per concern and a closing ``<kodo>`` (passed) or
+# ``<kodo_info>`` (concerns) summary. Persisted as an ``agent_review`` marker
+# so it replays via ``session.history``; never part of the LLM context. When
+# the review holds concerns, the engine then fires a ``prompt.question`` with
+# ``tool_call_id`` ``agent-handoff-<id>`` asking whether to open Agent Builder.
+EVT_AGENT_REVIEW = "agent_review.report"
+
+# Server → Client event. The user said yes to that question: open a new,
+# interactive session on agent ``name`` and submit ``prompt`` as its first
+# prompt (doc/AGENT_BUILDER.md §5.3). ``{name, prompt}``. Live only, never
+# persisted or replayed — the answer itself is persisted, as an
+# ``agent_handoff`` marker, so the question is never asked twice.
+EVT_AGENT_HANDOFF = "agent.handoff"
+
 # Server → Client event. One finished trial of a benchmark session's run
 # (doc/BENCHMARK_SESSIONS.md §4.3): ``{trial, task, arm, reward, seconds,
 # exceptions, finished, total}`` — ``total`` is ``null`` until Harbor has

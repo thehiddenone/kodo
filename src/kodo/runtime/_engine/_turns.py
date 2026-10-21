@@ -278,6 +278,9 @@ class TurnLoopMixin:
         # queued, so a crash *while recovering from a crash* is not re-entered.
         self._subsession_crash_recovered = False
         await self._emitters.emit_state()
+        # Agent Review's "open Agent Builder?" question, once its turn is over
+        # (doc/AGENT_BUILDER.md §5.3); a no-op in every other session.
+        self._agent_review.turn_ended()
         await self._compactor.maybe_auto_compact()
 
     async def _report_turn_halt(self: EngineHost) -> None:

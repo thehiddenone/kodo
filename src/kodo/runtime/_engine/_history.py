@@ -288,6 +288,22 @@ class HistoryProjector:
             ]
         if kind == "greeting":
             return [{"type": "greeting", "text": str(line.get("text", ""))}]
+        if kind == "agent_review":
+            # Agent Review's findings (doc/AGENT_BUILDER.md §5.3); the review
+            # record riding on the marker is for a resumed engine, not the feed.
+            return [{"type": "agent_review", "text": str(line.get("text", ""))}]
+        if kind == "agent_handoff":
+            # The answered "open Agent Builder?" question, as the same panel an
+            # ask_user call replays to. Unanswered, there is no marker: the
+            # engine fires the question again on resume.
+            return [
+                {
+                    "type": "ask_user",
+                    "toolCallId": str(line.get("question_id", "")),
+                    "questions": line.get("questions"),
+                    "answers": line.get("answers"),
+                }
+            ]
         if kind in ("harbor_job", "harbor_trial", "harbor_finished"):
             # A benchmark session's record (doc/BENCHMARK_SESSIONS.md §4.3),
             # replayed with the live event's own payload.

@@ -28,7 +28,13 @@ from kodo.findings import apply_findings, read_findings
 from kodo.plan import create_plan, step_plan
 from kodo.project import kodo_user_dir
 from kodo.runtime import ApprovalResponse, SessionState
-from kodo.tools import DISPATCHABLE_TOOLS_BY_NAME, AgentWorkshopLike, RootPath, ToolDispatcher
+from kodo.tools import (
+    DISPATCHABLE_TOOLS_BY_NAME,
+    AgentReview,
+    AgentWorkshopLike,
+    RootPath,
+    ToolDispatcher,
+)
 from kodo.toolspecs import (
     ALL_TOOLS,
     SCHEMA_COMPLIANCE_KEY,
@@ -139,6 +145,9 @@ class _FakeServices:
         # Every plan widget this dispatcher pushed, so a plan test can assert the
         # user was shown the same state the model was told.
         self.plan_states: list[tuple[dict[str, object], str]] = []
+        # Every review report_agent_review handed over; the engine reports one
+        # per session, so a second is refused like the real one refuses it.
+        self.reviews: list[AgentReview] = []
 
     def has_workspace(self) -> bool:
         return self._has_workspace
@@ -199,6 +208,12 @@ class _FakeServices:
 
     async def emit_plan_state(self, plan: dict[str, object], reason: str, issue: str = "") -> None:
         self.plan_states.append((plan, reason))
+
+    async def report_agent_review(self, review: AgentReview) -> str | None:
+        if self.reviews:
+            return "This session already reported its review; end your turn."
+        self.reviews.append(review)
+        return None
 
 
 def _make_dispatcher(
@@ -1535,6 +1550,52 @@ async def test_agent_builder_write_tools_compliance(tmp_path: Path) -> None:
         assert "error" in parsed, (name, payload)
 
 
+@pytest.mark.asyncio
+async def test_report_agent_review_compliance(tmp_path: Path) -> None:
+    services = _FakeServices()
+    d = _make_dispatcher(tmp_path, agent_name="kodo_agent_review", services=services)
+    concern = {
+        "rule": "L4 purpose",
+        "quote": "You help.",
+        "location": "agent_acme_x.md:3",
+        "fix": "Name one purpose.",
+    }
+    for name, payload in (
+        (
+            "report_agent_review",
+            {"name": "acme_x", "accept": True, "concerns": [concern], "summary": "s"},
+        ),
+        ("report_agent_review", {"name": "acme_x", "accept": False, "concerns": []}),
+        (
+            "report_agent_review",
+            {"name": "acme_x", "accept": False, "concerns": [{"rule": "L4"}], "summary": "s"},
+        ),
+        ("report_agent_review", {"accept": False, "concerns": [concern], "summary": "s"}),
+    ):
+        parsed = _assert_compliant(name, await _dispatch(d, name, payload))
+        assert "error" in parsed, payload
+    assert services.reviews == []
+
+    reported = _assert_compliant(
+        "report_agent_review",
+        await _dispatch(
+            d,
+            "report_agent_review",
+            {"name": "acme_x", "accept": False, "concerns": [concern], "summary": "1 concern."},
+        ),
+    )
+    assert reported["reported"] is True and reported["concerns"] == 1
+    (review,) = services.reviews
+    assert review.name == "acme_x" and review.accept is False
+    assert review.concerns[0].quote == "You help."
+    again = await _dispatch(
+        d,
+        "report_agent_review",
+        {"name": "acme_x", "accept": True, "concerns": [], "summary": "Accepted."},
+    )
+    assert isinstance(again, dict) and "error" in again
+
+
 def test_all_dispatchable_tools_are_covered() -> None:
     """Fail if a new dispatchable tool is added without a compliance scenario."""
     covered = {
@@ -1582,6 +1643,7 @@ def test_all_dispatchable_tools_are_covered() -> None:
         "edit_agent",
         "validate_agent",
         "lint_agent",
+        "report_agent_review",
     }
     assert set(DISPATCHABLE_TOOLS_BY_NAME) == covered, (
         "Dispatchable tools changed; add a compliance scenario for: "

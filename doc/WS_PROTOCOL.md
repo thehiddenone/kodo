@@ -997,6 +997,50 @@ again and sends every log in full, `first: 0`, live run or long finished.
 Never persisted: the job directory is the record, so a deleted job directory
 leaves the session with only its table and summary.
 
+### 5.9n `agent_review.report` / `agent.handoff` — an agent review and its Agent Builder handoff
+
+**Added 2026-10-20.** Agent Review (`kodo_agent_review`, started by
+`agent.run`, §7.4h) ends with one `report_agent_review` tool call carrying
+Agent Critic's verdict ([AGENT_BUILDER.md](AGENT_BUILDER.md) §5.3). The
+engine, not the agent, shows it:
+
+```json
+{ "type": "agent_review.report",
+  "text": "<kodo_warn>**L4 purpose**\n\n`agent_acme_x.md:12`\n\n```text\nYou help.\n```\n\nFix: Name one purpose.</kodo_warn>\n\n<kodo_info>`acme_x`: 1 concern. Rejected: 1 concern.</kodo_info>" }
+```
+
+`text` is Markdown: one `<kodo_warn>` per concern (the rule in bold, the
+location as code, the quote as a fenced block, then `Fix:`), and a closing
+`<kodo>` (passed) or `<kodo_info>` (concerns) with the summary. A callout tag
+inside a concern can't open or close a callout: quotes are fenced, and a tag
+in a rule, fix or summary is turned into inline code. Persisted as an
+`agent_review` marker — `{type, text, agent, accept, concerns, summary,
+question_id}`; the review record is for a resumed engine — and replayed by
+`session.history` as `{type: "agent_review", text}`. Never part of an LLM
+context.
+
+When the review holds concerns, the engine fires a `prompt.question` (§6.1)
+once the turn is over, with `tool_call_id` `agent-handoff-<hex>` and one
+`single_choice` question whose options are `"Yes, open Agent Builder"` and
+`"No"`. Any answer but `"No"` opens Agent Builder; free text counts as a yes,
+and its text goes with the handoff as the user's directions. The answer is
+persisted as an `agent_handoff` marker (`{type, question_id, questions,
+answers, open}`), which `session.history` replays as an answered
+`{type: "ask_user", toolCallId, questions, answers}` panel. A resumed engine
+asks again only while no `agent_handoff` marker answers the question. On a
+yes the server pushes:
+
+```json
+{ "type": "agent.handoff", "name": "kodo_agent_builder",
+  "prompt": "# Agent Review: acme_x\n\nAgent Review found 1 concern in the user agent `acme_x`. …" }
+```
+
+The client opens a new tab on a brand-new session (`hello` `greet: false`),
+sends `agent.set` `{name}`, and submits `prompt` with `prompt.submit` as if
+the user had typed it, so the session is an ordinary interactive one.
+`agent.handoff` is live only, never persisted or replayed, so a reload can't
+open a second session.
+
 ### 5.10 `error` — unsolicited server error
 
 For errors not tied to a specific request. Errors tied to a request are returned as `response` payloads with an `error` field (§2.2).
@@ -1216,6 +1260,12 @@ Response payload — one entry per question, in order:
 ```
 
 `selected` echoes the chosen option texts verbatim (empty when the user answered only in free text); `free_text` is `null` when unused. The server normalizes malformed entries to empty answers rather than failing the tool call.
+
+**Engine-fired questions.** Not every batch comes from `ask_user`. Once an
+Agent Review turn has reported concerns, the engine itself asks whether to open
+Agent Builder (§5.9n), even though that session is autonomous. Its
+`tool_call_id` is `agent-handoff-<hex>`, which matches no `tool_use`; the
+answered panel replays from an `agent_handoff` marker instead.
 
 **Crash behaviour:** nothing the user has entered is persisted before *Confirm and Send*. If the server process restarts mid-question, resume re-dispatches the dangling `ask_user` call and the whole batch is re-asked from scratch (`SESSIONS.md`); no `pending_prompt` record is kept for questions (unlike approvals, §6.2). A live disconnect/reconnect that never restarts the process (a window reload) is a different, lighter case — see §8: the request is neither lost nor re-driven from scratch, it is simply re-sent verbatim once the window reconnects.
 
@@ -1940,7 +1990,10 @@ persisted flag to drift. The agent's turn runs and ends like any other —
 kodo-vsix notices the `phase` leaving `running` and sends
 `local_llm.registry_get` on the control connection (§7.6) so the Local LLMs
 list shows what the Model Importer wrote (doc/LLM_REGISTRY.md §4.0b). An
-Agent Review session writes nothing, so nothing is refreshed after it.
+Agent Review session writes nothing, so nothing is refreshed after it. The
+lock does not cover the one question the engine asks after Agent Review's turn
+(§5.9n): a `prompt.question.response` is a response, not input, and the
+session stays locked once the user answers it.
 
 Only built-in agents may declare `interactive: false`; a user-installed one
 that does is demoted like any other broken agent (doc/USER_AGENTS.md).

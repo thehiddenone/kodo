@@ -315,7 +315,8 @@ Command Control and Autonomous mode are ignored.
   Builder's three writers `copy_builtin_agent` / `write_agent` / `edit_agent`
   are denied for the same reason (they write `~/.kodo/agents/`), and its readers
   (`list_agents`, `read_agent`, `list_tools`, `validate_agent`, `lint_agent`)
-  are allowed. Any tool without an
+  are allowed, as is Agent Review's `report_agent_review`, which only hands a
+  verdict to the engine. Any tool without an
   explicit policy is also denied: `test_every_dispatchable_tool_has_an_explicit_sandbox_policy`
   forces a decision whenever a tool is added.
 

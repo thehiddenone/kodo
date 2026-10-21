@@ -44,6 +44,7 @@ from .._gates import GateOrchestrator
 from .._llm_selection import LlmSelection
 from .._session import SessionState
 from .._session_params import ParamsSnapshot
+from ._agent_review import AgentReviewHandoff
 from ._checkpointing import CheckpointCoordinator
 from ._compaction import ContextCompactor
 from ._events import EngineEmitters
@@ -71,6 +72,7 @@ class EngineHost(Protocol):
     _compactor: ContextCompactor
     _titler: SessionTitler
     _checkpoints: CheckpointCoordinator
+    _agent_review: AgentReviewHandoff
 
     # -- mutable session state -------------------------------------------------
     _queue: asyncio.Queue[dict[str, object]]

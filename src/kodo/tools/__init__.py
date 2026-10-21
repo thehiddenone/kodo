@@ -21,6 +21,8 @@ from __future__ import annotations
 from ._add_local_llm_quant import AddLocalLlmQuantTool
 from ._ask_user import AskUserTool
 from ._context import (
+    AgentReview,
+    AgentReviewConcern,
     AgentWorkshopLike,
     ApprovalLike,
     EditReviewFeedbackLike,
@@ -80,6 +82,7 @@ from ._read_gguf_header import ReadGgufHeaderTool
 from ._read_hf_model import ReadHfModelTool
 from ._read_webpage import ReadWebpageTool
 from ._remaining_time import RemainingTimeTool
+from ._report_agent_review import ReportAgentReviewTool
 from ._return_result import ReturnResultTool
 from ._rollback import RollbackTool
 from ._run_command import RunCommandTool
@@ -97,6 +100,8 @@ from ._web_search import WebSearchTool
 from ._write_agent import WriteAgentTool
 
 __all__ = [
+    "AgentReview",
+    "AgentReviewConcern",
     "AgentWorkshopLike",
     "CopyBuiltinAgentTool",
     "DISPATCHABLE_TOOLS_BY_NAME",
@@ -140,6 +145,7 @@ __all__ = [
     "ReadHfModelTool",
     "ReadWebpageTool",
     "RemainingTimeTool",
+    "ReportAgentReviewTool",
     "ReturnResultTool",
     "RollbackTool",
     "RootPath",

@@ -63,6 +63,8 @@ class _FakeGate:
         # and one (path, name, timeout) tuple per call.
         self.confirm_folder = confirm_folder or ConfirmFolderResponse(attached=True)
         self.confirm_folder_calls: list[tuple[str, str, float]] = []
+        # The tool_call_id of every question batch fired.
+        self.question_calls: list[str] = []
 
     async def fire_approval(
         self,
@@ -88,6 +90,12 @@ class _FakeGate:
     ) -> ConfirmFolderResponse:
         self.confirm_folder_calls.append((path, name, timeout))
         return self.confirm_folder
+
+    async def fire_questions(
+        self, questions: list[dict[str, object]], tool_call_id: str = ""
+    ) -> list[dict[str, object]]:
+        self.question_calls.append(tool_call_id)
+        return [{"selected": ["No"], "free_text": None}]
 
 
 class _FakeKeyProvider:
@@ -284,6 +292,40 @@ async def test_agent_run_drops_a_greeting_still_being_written(
     await _settle()
 
     assert _greetings(sink) == []
+
+
+def _seed_agent_review(kodo_dir: Path, *, answered: bool) -> None:
+    """A prior Agent Review session on disk whose review held one concern."""
+    seed = TransientStore(kodo_dir)
+    seed.attach_session("session-r", resumed=False)
+    seed.append_message("user", "acme_x", top_agent="kodo_agent_review")
+    seed.append_marker(
+        {
+            "type": "agent_review",
+            "text": "<kodo_warn>**L4**</kodo_warn>",
+            "agent": "acme_x",
+            "accept": False,
+            "concerns": [{"rule": "L4", "quote": "", "location": "## Purpose", "fix": "Add it."}],
+            "summary": "1 concern.",
+            "question_id": "agent-handoff-1",
+        }
+    )
+    if answered:
+        seed.append_marker({"type": "agent_handoff", "question_id": "agent-handoff-1"})
+
+
+@pytest.mark.parametrize(("answered", "asked"), [(False, ["agent-handoff-1"]), (True, [])])
+async def test_resumed_agent_review_session_asks_an_unanswered_builder_question(
+    tmp_path: Path, answered: bool, asked: list[str]
+) -> None:
+    _seed_agent_review(tmp_path / "home", answered=answered)
+    engine, _t, _sink, gate = _make_engine(tmp_path)
+    try:
+        await engine.start("session-r", resumed=True)
+        await _settle()
+        assert gate.question_calls == asked
+    finally:
+        await _cancel_worker(engine)
 
 
 async def test_start_resumed_session_restores_prefs_and_messages(tmp_path: Path) -> None:

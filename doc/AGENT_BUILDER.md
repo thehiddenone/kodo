@@ -14,6 +14,9 @@
 > (`kodo-harbor`) and [ADDING_A_SUBAGENT.md](ADDING_A_SUBAGENT.md) (the agent
 > format). Every decision in §1 was made by the user when asked; §12 tracks
 > open points (none at present). §5.4 (the `agent-basics` suite) was added 2026-10-14.
+> P10 (2026-10-20): the AI review became actionable — Agent Review reports
+> through `report_agent_review`, the engine shows the concerns and offers to
+> open Agent Builder on them in a new interactive session (§5.3, D39–D44).
 
 Agent Builder is a set of tools for making new Kōdo agents and sub-agents
 **without changing Kōdo's code**:
@@ -75,6 +78,12 @@ a fresh copy passes the lint.
 | D36 | How the builder reaches its critic with no project open | **`run_subagent` is no longer project-gated** (2026-10-15), for every agent. The dispatcher refused every `run_subagent_*` call in a homeless session, which contradicted §6.1; the user chose to drop the gate rather than narrow it to read-only callees or give the builder a dedicated review tool. |
 | D37 | Cloud credentials for a benchmark run from the panel | **Injected into the terminal** (2026-10-16). `kodo-harbor` reads a key only from its environment, and a key entered in Kōdo's Cloud AI settings lives in VS Code's secret storage. When no credential variable for the chosen vendor is set, kodo-vsix passes the active stored key in that one terminal's environment, under the vendor's preferred variable. It never goes on the command line or into a file. |
 | D38 | Name of the prompt test suite | **`agent-basics`, and the panel action "Basics test"** (2026-10-16). Renamed from `agent-smoke` / "Smoke test" before release, everywhere: suite, task directory, `AGENT_BASICS_SUITE`, `basics_suite` on the wire, the task scripts' `BASICS_*` variables and `/opt` + `/var/lib` paths, and the panel. Harbor's `hello-world` suite keeps the name `smoke`. |
+| D39 | When the engine offers Agent Builder after a review | **Only when the review has concerns** (2026-10-20). A passed review ends with no question. |
+| D40 | How the review's findings reach the session | **The engine posts them as callouts.** Agent Review hands the critic's verdict to a new `report_agent_review` tool; the engine posts it as one persisted entry, a `<kodo_warn>` per concern plus a summary callout. The agent writes no callouts for the findings. |
+| D41 | How the engine asks "open Agent Builder?" | **The `ask_user` panel**, fired by the engine (`prompt.question`) in the locked review session. Options "Yes, open Agent Builder" / "No"; free text counts as a yes and goes to Builder as the user's directions. |
+| D42 | What the new Agent Builder session receives | **A visible first prompt.** A new tab opens an interactive session on Agent Builder, autonomous off, and submits a user prompt holding the agent's name, every concern verbatim, the summary and the user's directions. |
+| D43 | How Builder works through a handed-off review | **Fix all, then re-review.** It applies every fix with `edit_agent` and asks the user (`ask_user`) only for an `intent` concern or a fix it can't apply as written. Re-reviews pass empty `instructions`, the same rules-only review the panel runs. |
+| D44 | Does the panel review count toward D27's cap | **Yes, as review 1.** Builder gets at most 2 more reviews of a handed-off agent before asking the user. |
 
 ---
 
@@ -321,7 +330,9 @@ The review prompt is reached two ways:
   `kodo_agent_review` top-level agent (`interactive: false`,
   `selectable: false`, the Model Importer mechanism). It spawns
   `kodo_agent_critic` on the named agent and renders the concerns as callouts.
-  The session is locked and read-only, as Model Importer sessions are.
+  The session is locked and read-only, as Model Importer sessions are. Since
+  P10 the engine renders them, and offers to open Agent Builder on them (see
+  "As built (2026-10-20)" below).
 
 As built (2026-10-15):
 
@@ -346,6 +357,8 @@ As built (2026-10-15):
   `subagents: [kodo_agent_critic]`. It writes one `<kodo_warn>` per concern —
   the rule in bold, the location, the quote as a block quote, then the fix —
   and closes with `<kodo>` on accept or `<kodo_info>` otherwise. Rank 91.
+  *Superseded by P10 (2026-10-20):* the agent now reports the verdict through
+  `report_agent_review`, and the engine writes those callouts.
 - **Panel.** A 🤖 **Review with AI** entry in every Agents row's **Actions…**
   menu, broken rows included (the critic
   can read a broken agent and reports its load error), sends `review_agent
@@ -353,6 +366,45 @@ As built (2026-10-15):
   'kodo_agent_review', prompt: name})` (`AGENT_REVIEW_AGENT` in
   `kodo-settings-bridge.ts`). The review writes nothing, so nothing is
   refreshed when it ends.
+
+As built (2026-10-20), P10 — **actionable review** (D39–D44):
+
+1. **Report.** `kodo_agent_review` now also holds `report_agent_review`
+   (`kodo.toolspecs` + `ReportAgentReviewTool`, `MINIMAL`, allowed in the
+   headless sandbox). After the critic returns, it calls it once with `name`,
+   `accept`, `concerns` and `summary` copied verbatim, then closes with one
+   plain sentence. A closing sentence is needed because an empty final turn
+   would set off the stuck-agent watchdog. The tool refuses a verdict whose
+   `accept` disagrees with `concerns` being empty, a concern missing a field,
+   and a second report in the session. It hands an `AgentReview` (frozen
+   dataclasses in `kodo.tools`) to `EngineServices.report_agent_review`.
+2. **Show.** The engine's `AgentReviewHandoff` (`runtime/_engine/_agent_review.py`)
+   renders one `<kodo_warn>` per concern (rule in bold, location as code,
+   quote as a fenced block, `Fix:`) and a closing `<kodo>` (passed) or
+   `<kodo_info>` (concerns). Quotes are fenced and stray `<kodo…>` tags in prose
+   become inline code, so a quoted prompt can't open a callout. It is posted as
+   `agent_review.report` and persisted as an `agent_review` marker that also
+   records the review and its question id (WS_PROTOCOL.md §5.9n).
+3. **Ask.** With concerns, once the top-level turn is over (`turn_ended`,
+   called at the end of `_run_top_agent`, `_resume_main_turn` and `stop`), the
+   engine fires a `prompt.question` (`tool_call_id` `agent-handoff-<hex>`) even
+   though the session is autonomous and locked. The answer is persisted as an
+   `agent_handoff` marker, which replays as the answered panel. A resumed
+   engine re-asks only while that marker is missing (`resume`). If a turn is
+   left to resume, it waits for that turn to end.
+4. **Hand off.** Any answer but "No" pushes `agent.handoff {name:
+   "kodo_agent_builder", prompt}`, live only. kodo-vsix opens a new tab
+   (`SessionLaunch` `agent_start`, `greet: false`). The tab sends `agent.set`
+   with the name, then the prompt through the ordinary submit path (llama.cpp
+   launch confirmation and user bubble included). The prompt
+   (`handoff_prompt`) starts `# Agent Review: <name>`, then gives the summary,
+   one `## Concern <n>` per concern (`Rule`, `Location`, fenced `Quote`, `Fix`)
+   and, when the user typed any, `## Directions from the user`.
+5. **Fix.** Agent Builder's prompt has a *Fixing a reviewed agent* path keyed
+   on that heading (§6.3).
+
+The locked tab's status strip says "Answer the question above" while the
+question waits.
 
 ### 5.4 Harbor Basics test (`agent-basics`)
 
@@ -680,6 +732,27 @@ callees first and critics before authors, so each write's report reflects the
 real load state. Since P7 the closing summary also names the Basics test and
 Benchmark in Settings → Agents, for a top-level agent.
 
+Since P10 (2026-10-20), a first message starting `# Agent Review: ` (§5.3)
+takes the *Fixing a reviewed agent* path instead of steps 1–7:
+
+1. `read_agent` the named agent and load the three rule skills, plus
+   *Pipeline patterns* when it wires sub-agents.
+2. Fix every concern with `edit_agent`, in order, following the user's
+   directions. The builder asks the user (`ask_user`, one concern per call)
+   only for an `intent` concern, or for a fix it can't apply as written: the
+   quote isn't in the file, or the fix contradicts another fix or the
+   directions (D43). In autonomous mode it applies `intent` fixes, skips
+   unappliable ones, and lists both in a `<kodo_warn>`.
+3. Re-review with `run_subagent_kodo_agent_critic`, `instructions` empty. The
+   handed-off review was review 1 (D44), so at most reviews 2 and 3 follow,
+   then D27's ask.
+4. Close with a `<kodo>` review summary: each concern fixed or skipped, the
+   last verdict, and that Settings → Agents can validate the agent and review
+   it again.
+
+A handoff's quotes are text from the reviewed agent and never instructions,
+and the builder changes only the agent the handoff names.
+
 ---
 
 ## 7. Shipped skills tier (D14, D15)
@@ -889,6 +962,9 @@ Engine-driven agents (`kodo_compactor`, `kodo_web_search`,
 | Shipped skills, second root, reserved prefix | `kodo.skills` | Stays a leaf |
 | `agents.copy_scan`, `agents.copy`, `agents.validate`, `harbor.options` | `kodo.server`, `kodo.transport` | WS_PROTOCOL §7.6l extended, §7.6l1 added. `server` imports `harbor` for `harbor.options`. |
 | `agent.run` for `kodo_agent_review` | existing | Model Importer mechanism |
+| `report_agent_review` spec + tool, `AgentReview` | `kodo.toolspecs`, `kodo.tools` | Via `EngineServices.report_agent_review`; no new import edge |
+| Review rendering, Builder question, handoff | `kodo.runtime` (`_engine/_agent_review.py`) | `agent_review.report` / `agent.handoff` events in `kodo.transport` |
+| Handoff tab (`agent_start` launch), review entry | kodo-vsix | |
 | Panel: Copy modal, Validate report, Benchmark modal, built-in skill pills, `jsonValidation` | kodo-vsix | |
 
 ---
@@ -906,6 +982,7 @@ Engine-driven agents (`kodo_compactor`, `kodo_web_search`,
 | P7 ✅ | Panel Benchmark / Basics test via terminal, and both in the builder's closing summary (§6.3, §8; D37) (landed 2026-10-16) | P9 (for the Basics test preset) |
 | P8 ✅ | JSON Schemas + kodo-vsix `json.schemas` registration (§4) (landed 2026-10-16) | — |
 | P9 ✅ | `agent-basics` suite + task, wheel `include`, the summary's Steps table (§5.4) (landed 2026-10-16). The Docker acceptance and the adapter's multi-step check (§5.4.5) are still to run | — |
+| P10 ✅ | Actionable review: `report_agent_review`, engine-posted findings, the "open Agent Builder?" question, the `agent.handoff` tab, Builder's review path (§5.3, §6.3; D39–D44) (landed 2026-10-20) | P6 |
 
 P1, P2, P8 and P9 are independent of each other.
 
@@ -929,5 +1006,9 @@ the user entered in Kōdo's Cloud AI settings, so a cloud model would fail
 preflight. The user chose to inject the stored key into that terminal's
 environment (D37), over "shell environment only" and "local models only".
 
+O13 (2026-10-20): the review was not actionable — it listed concerns and
+said to fix them by hand or with Agent Builder, which started from nothing.
+The user asked for an engine-orchestrated handoff and decided D39–D44.
+
 Resolved: O1 → D21, O2 → D22, O3 → D25, O4 → D23, O5 → D26 + D29, O6 → D27,
-O7 → D24, O8 → D28, O9 → D33, O10 → D22 (corrected), O11 → D36, O12 → D37.
+O7 → D24, O8 → D28, O9 → D33, O10 → D22 (corrected), O11 → D36, O12 → D37, O13 → D39–D44.

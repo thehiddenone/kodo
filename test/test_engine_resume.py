@@ -27,6 +27,16 @@ _REAL_REGISTRY = AgentRegistry(Path(__file__).resolve().parents[1] / "src" / "ko
 # ---------------------------------------------------------------------------
 
 
+class _FakeAgentReview:
+    """Stands in for the engine's AgentReviewHandoff; counts turn ends."""
+
+    def __init__(self) -> None:
+        self.turns_ended = 0
+
+    def turn_ended(self) -> None:
+        self.turns_ended += 1
+
+
 def _bare_engine(*, main_messages: list[Message]) -> WorkflowEngine:
     engine = object.__new__(WorkflowEngine)
     engine._main_messages = main_messages
@@ -359,6 +369,7 @@ def _resumable_engine(
     engine._top_agent_turn_seq = 0
     engine._cycle_streak = False
     engine._turn_halt_notice = None
+    engine._agent_review = _FakeAgentReview()
     # _make_cyclic_thinking_handler (doc/STUCK_DETECTION.md §2.7) reads
     # settings/routing.residence eagerly at construction time (unlike
     # _make_stall_handler's lazy check); _run_agent_turn itself is faked out
@@ -443,6 +454,8 @@ async def test_resume_main_turn_redispatches_ask_user_and_finishes(tmp_path: Pat
     assert engine._session.agent is None
     assert engine._replay_subsessions is None
     assert any(env.kind == "stream_end" for env in sink.sent)
+    # A resumed turn's end asks Agent Review's held-back Builder question.
+    assert engine._agent_review.turns_ended == 1
 
 
 @pytest.mark.asyncio

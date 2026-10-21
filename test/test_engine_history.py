@@ -454,6 +454,42 @@ async def test_history_entries_greeting_marker(tmp_path: Path) -> None:
     assert entries == [{"type": "greeting", "text": "Hello there."}]
 
 
+async def test_history_entries_agent_review_markers(tmp_path: Path) -> None:
+    projector, transient, _c = _make_projector(tmp_path)
+    questions = [{"question": "Open Agent Builder?", "kind": "single_choice", "options": ["No"]}]
+    answers = [{"selected": ["No"], "free_text": None}]
+    transient._lines = [
+        {
+            "type": "agent_review",
+            "text": "<kodo_warn>**L4**</kodo_warn>",
+            "agent": "acme_x",
+            "accept": False,
+            "concerns": [],
+            "summary": "",
+            "question_id": "agent-handoff-1",
+        },
+        {
+            "type": "agent_handoff",
+            "question_id": "agent-handoff-1",
+            "questions": questions,
+            "answers": answers,
+            "open": False,
+        },
+    ]
+    entries = await projector.history_entries()
+    # The review reads as its callouts and the answer as a frozen question
+    # panel; the review record riding on the marker stays out of the feed.
+    assert entries == [
+        {"type": "agent_review", "text": "<kodo_warn>**L4**</kodo_warn>"},
+        {
+            "type": "ask_user",
+            "toolCallId": "agent-handoff-1",
+            "questions": questions,
+            "answers": answers,
+        },
+    ]
+
+
 async def test_history_entries_greeting_marker_missing_text_defaults_empty(tmp_path: Path) -> None:
     projector, transient, _c = _make_projector(tmp_path)
     transient._lines = [{"type": "greeting"}]

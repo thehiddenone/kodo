@@ -61,6 +61,7 @@ from kodo.toolspecs import (
     READ_HF_MODEL,
     READ_WEBPAGE,
     REMAINING_TIME,
+    REPORT_AGENT_REVIEW,
     RETURN_RESULT,
     ROLLBACK,
     RUN_COMMAND,
@@ -120,6 +121,7 @@ from ._read_gguf_header import ReadGgufHeaderTool
 from ._read_hf_model import ReadHfModelTool
 from ._read_webpage import ReadWebpageTool
 from ._remaining_time import RemainingTimeTool
+from ._report_agent_review import ReportAgentReviewTool
 from ._return_result import ReturnResultTool
 from ._rollback import RollbackTool
 from ._run_command import RunCommandTool
@@ -192,6 +194,7 @@ _TOOL_CLASSES: tuple[tuple[ToolSpec, type[Tool]], ...] = (
     (EDIT_AGENT, EditAgentTool),
     (VALIDATE_AGENT, ValidateAgentTool),
     (LINT_AGENT, LintAgentTool),
+    (REPORT_AGENT_REVIEW, ReportAgentReviewTool),
 )
 
 _CLASSES_BY_NAME: dict[str, type[Tool]] = {spec.name: cls for spec, cls in _TOOL_CLASSES}

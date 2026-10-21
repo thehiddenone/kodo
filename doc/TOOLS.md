@@ -317,6 +317,16 @@ Protocols**, also defined in `_context.py`:
   with its strict loader before writing, and reloads the registry after every
   write. The eighth builder tool, `list_tools`, needs no service: it reads
   `kodo.toolspecs.ALL_TOOLS` directly.
+  **Added 2026-10-20:** `report_agent_review(review)` hands one
+  **`AgentReview`** (`name`, `accept`, `concerns: tuple[AgentReviewConcern, ...]`,
+  `summary` — frozen dataclasses in `kodo.tools`) to the engine and returns
+  `None` once it is shown, or the refusal (a session reports one review). It
+  backs the `report_agent_review` tool, which only Agent Review holds: the tool
+  checks the critic's verdict (every concern has the four string fields,
+  `rule` and `fix` non-empty; `accept` is true exactly when `concerns` is
+  empty), and the engine's `AgentReviewHandoff` posts it as callouts and,
+  on concerns, offers Agent Builder (doc/AGENT_BUILDER.md §5.3,
+  doc/WS_PROTOCOL.md §5.9n).
   All three back the single `scaffold_new_project` tool, dispatched on which
   input the agent gave: no `path` and no workspace yet → `bootstrap_project`
   (resolves a workspace-home folder — interactively or, in autonomous mode,
@@ -1157,6 +1167,7 @@ Do **not** import `subagents`, `llms`, or `runtime` from the handler.
 | [runtime/_engine/](../src/kodo/runtime/_engine/) | `_make_dispatcher`, `_run_agent_turn` (the tool loop), the `_EngineServices` adapter. |
 | [llms/model_import/](../src/kodo/llms/model_import/) | `LocalCatalogService`, the `LocalCatalogLike` behind the five Model Importer tools (`list_local_llms`, `read_hf_model`, `read_gguf_header`, `add_local_llm_quant`, `set_mtp_heads`) — doc/LLM_REGISTRY.md §4.0b. |
 | [agents/_workshop.py](../src/kodo/agents/_workshop.py) | `AgentWorkshop`, the `AgentWorkshopLike` behind Agent Builder's tools (`list_agents`, `read_agent`, `copy_builtin_agent`, `write_agent`, `edit_agent`, `validate_agent`, `lint_agent`) — doc/AGENT_BUILDER.md §6.2. |
+| [runtime/_engine/_agent_review.py](../src/kodo/runtime/_engine/_agent_review.py) | `AgentReviewHandoff`, behind `EngineServices.report_agent_review` — shows Agent Review's verdict and hands its concerns to Agent Builder — doc/AGENT_BUILDER.md §5.3. |
 | [runtime/_gates.py](../src/kodo/runtime/_gates.py) | `GateOrchestrator` (satisfies `GateLike`). |
 
 See also [INTERNALS.md §6A](INTERNALS.md) for the package's place in the

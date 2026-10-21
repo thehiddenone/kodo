@@ -31,6 +31,8 @@ from kodo.state import TransientStore
 from kodo.transport import (
     EVT_AGENT_CYCLIC_THINKING_CRITICAL,
     EVT_AGENT_FINISHED,
+    EVT_AGENT_HANDOFF,
+    EVT_AGENT_REVIEW,
     EVT_AGENT_STARTED,
     EVT_AGENT_STUCK_CRITICAL,
     EVT_AGENT_THINK_IN_TOOL_CALL_CRITICAL,
@@ -292,6 +294,44 @@ class EngineEmitters:
         """
         self._append_marker({"type": "greeting", "text": text})
         await self._sink.send(Envelope.make_event(EVT_SESSION_GREETING, {"text": text}))
+
+    async def emit_agent_review(self, text: str, record: dict[str, object]) -> None:
+        """Push one agent review's Markdown, and persist it as an ``agent_review`` marker.
+
+        Posted by :class:`~._agent_review.AgentReviewHandoff` when Agent Review
+        calls ``report_agent_review`` (doc/AGENT_BUILDER.md §5.3). The marker
+        also carries *record* — the review itself and the id of the Agent
+        Builder question it leads to — so a resumed engine can ask that
+        question again when the answer was never recorded. Like every marker it
+        carries no ``role``, so the review never re-enters an LLM context.
+
+        Args:
+            text: The rendered review, callouts included.
+            record: ``{agent, accept, concerns, summary, question_id}``.
+        """
+        self._append_marker({"type": "agent_review", "text": text, **record})
+        await self._sink.send(Envelope.make_event(EVT_AGENT_REVIEW, {"text": text}))
+
+    def record_agent_handoff(self, record: dict[str, object]) -> None:
+        """Persist the user's answer to the Agent Builder question as an ``agent_handoff`` marker.
+
+        Replays as the answered question panel, and tells a resumed engine the
+        question was already asked.
+
+        Args:
+            record: ``{question_id, questions, answers, open}``.
+        """
+        self._append_marker({"type": "agent_handoff", **record})
+
+    async def emit_agent_handoff(self, name: str, prompt: str) -> None:
+        """Tell the client to open a new interactive session on *name* with *prompt*.
+
+        Live only: the persisted ``agent_handoff`` marker is the record, and a
+        replayed handoff would open the session a second time.
+        """
+        await self._sink.send(
+            Envelope.make_event(EVT_AGENT_HANDOFF, {"name": name, "prompt": prompt})
+        )
 
     async def emit_session_params(self, first: bool, changes: list[dict[str, object]]) -> None:
         """Push what changed in the session's parameters since the last prompt, and persist it.

@@ -25,6 +25,8 @@ from kodo.project import session_temp_dir
 from ._paths import NoWorkspaceError, PathResolver
 
 __all__ = [
+    "AgentReview",
+    "AgentReviewConcern",
     "AgentWorkshopLike",
     "ApprovalLike",
     "EditReviewFeedbackLike",
@@ -60,6 +62,41 @@ class RootPath:
 
     name: str
     path: str
+
+
+@dataclass(frozen=True)
+class AgentReviewConcern:
+    """One concern of an agent review, as Agent Critic wrote it (doc/AGENT_BUILDER.md §5.3).
+
+    Attributes:
+        rule: The rule it cites — a lint rule ID, ``load``, ``intent``, or
+            ``<skill name>: <section heading>``.
+        quote: The exact text objected to; empty for something missing.
+        location: ``<file>:<line>``, ``<file>: <key>`` or ``## <section>``.
+        fix: The change that resolves it.
+    """
+
+    rule: str
+    quote: str
+    location: str
+    fix: str
+
+
+@dataclass(frozen=True)
+class AgentReview:
+    """One agent review's verdict, handed to the engine by ``report_agent_review``.
+
+    Attributes:
+        name: The reviewed agent.
+        accept: Whether it passed; true exactly when ``concerns`` is empty.
+        concerns: Every concern, in the critic's order.
+        summary: The critic's one-line summary.
+    """
+
+    name: str
+    accept: bool
+    concerns: tuple[AgentReviewConcern, ...]
+    summary: str
 
 
 class ApprovalLike(Protocol):
@@ -723,6 +760,17 @@ class EngineServices(Protocol):
 
         Bound to the process-wide agent registry, so an agent the builder writes
         reaches every session and the picker as soon as the call returns.
+        """
+        ...
+
+    async def report_agent_review(self, review: AgentReview) -> str | None:
+        """Show one agent review in the session, and offer Agent Builder on its concerns.
+
+        Backs ``report_agent_review`` (doc/AGENT_BUILDER.md §5.3). The engine
+        posts the review as one persisted entry; when it holds concerns, it
+        asks the user, once the turn ends, whether to open Agent Builder on
+        them. Returns ``None`` when shown, else why it was refused: a session
+        reports one review.
         """
         ...
 
