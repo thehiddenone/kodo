@@ -738,7 +738,7 @@ tool catalog (`kodo.toolspecs.ToolSpec` etc.), which is an unrelated concept.
 
 Manifest schema (shared verbatim with the VS Code extension's
 [`src/uv-setup.ts`](../../kodo-vsix/src/uv-setup.ts)): `{name, version, path,
-download_url}`. Versions are **pinned** (`uv=0.11.24`, `ripgrep=15.1.0`,
+download_url}`. Versions are **pinned** (`uv=0.13.5`, `ripgrep=15.1.0`,
 `fd=10.4.2`) in `UTIL_SPECS`; bumping one is a code change here (and in the
 extension, for uv).
 
