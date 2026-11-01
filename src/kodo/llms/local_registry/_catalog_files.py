@@ -43,8 +43,10 @@ without any entry file naming it.
 
 from __future__ import annotations
 
+import errno
 import json
 import re
+import stat
 from dataclasses import replace
 from pathlib import Path
 
@@ -108,6 +110,25 @@ _PATH_DERIVED_KEYS = frozenset({"name", "base_llm"})
 
 _SIZE_HINT = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(KB|MB|GB|TB)\s*$", re.IGNORECASE)
 _SIZE_UNIT_GB = {"KB": 1e-6, "MB": 1e-3, "GB": 1.0, "TB": 1e3}
+# Errors that mean "nothing is there" rather than "cannot tell" — the ones
+# Path.is_file() swallowed up to Python 3.13.
+_ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP})
+
+
+def _is_regular_file(path: Path) -> bool:
+    """``Path.is_file()``, except that a path it cannot stat raises ``OSError``.
+
+    Python 3.14's ``Path.is_file()`` answers ``False`` for *any* ``OSError``,
+    where 3.12 and 3.13 raise ``EACCES``. In a listable but unsearchable family
+    directory that turned every entry into a silent skip, so the scan reported
+    nothing and the startup purge no longer stood down.
+    """
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except OSError as exc:
+        if exc.errno in _ABSENT_ERRNOS:
+            return False
+        raise
 
 
 def _str_map(raw: object, key: str) -> dict[str, str]:
@@ -410,8 +431,8 @@ def scan_catalog_dir(root: Path) -> tuple[list[LocalLLMEntry], list[str]]:
         if model_dir.name.startswith("."):
             continue
         try:
-            is_file = model_dir.is_file()
-        except OSError as exc:  # Python 3.12 raises EACCES rather than answering False
+            is_file = _is_regular_file(model_dir)
+        except OSError as exc:
             errors.append(f"{model_dir}: cannot read: {exc}")
             continue
         if is_file:
@@ -434,7 +455,7 @@ def scan_catalog_dir(root: Path) -> tuple[list[LocalLLMEntry], list[str]]:
             ):
                 continue
             try:
-                if not path.is_file():
+                if not _is_regular_file(path):
                     continue
             except OSError as exc:  # listable but not searchable directory
                 errors.append(f"{path}: cannot read: {exc}")
@@ -483,9 +504,9 @@ def scan_mtp_sidecars(root: Path) -> tuple[dict[str, tuple[MtpSidecar, ...]], li
             if not path.is_file():
                 continue
         except OSError:
-            # The family directory can't be searched (Python 3.12 raises EACCES
-            # rather than answering False). scan_catalog_dir already reports
-            # that directory, and a heads file here may not even exist.
+            # The family directory can't be searched (Python 3.12 and 3.13
+            # raise EACCES; 3.14 answers False). scan_catalog_dir already
+            # reports that directory, and a heads file here may not even exist.
             continue
         try:
             found[model_dir.name] = load_mtp_sidecars_file(path)
