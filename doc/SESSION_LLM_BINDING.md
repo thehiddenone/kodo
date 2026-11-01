@@ -204,7 +204,7 @@ modes and agents with its own display names; `label` is the fallback.
   `webview/paramChanges.ts`): `LLM: <label> · 💬 Interactive · Edit: 🧠 Smart ·
   Tools: 🛡️ Defensive · Thinking: 🔥 High`; `LLM: not bound yet` while unbound;
   `<bound> → <next> (next prompt)` while a capture is pending. Names and glyphs
-  come from `webview/sessionParamLabels.ts`, shared with the Session Parameters
+  come from `webview/sessionParamLabels.ts`, shared with the composer's Session
   popup.
 - **Change element** (`webview/SessionParamsView.tsx`): a `session_params`
   feed entry — "Started on <LLM>" plus the non-default rows, or "Session

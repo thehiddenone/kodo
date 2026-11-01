@@ -351,7 +351,7 @@ next session with no server restart. Exposed in the Kōdo Settings panel's
 ([WS_PROTOCOL.md](WS_PROTOCOL.md) §7.6k).
 
 This only decides where a session *begins*; the agent can still be switched per
-session from Session Parameters.
+session from the composer's agent button.
 
 ## 3. Default user settings
 
