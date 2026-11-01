@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "py-kodo"
-version = "0.6.36"
+version = "0.6.37"
 description = "Kōdo — an open-source AI coding assistant"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -50,6 +50,9 @@ include = ["src/kodo/**/*.md", "src/kodo/**/*.json", "src/kodo/harbor/tasks/**"]
 include = ["src/kodo/**/*.md", "src/kodo/**/*.json", "src", "test", "doc", "scripts"]
 
 [tool.hatch.envs.default]
+# Without this hatch builds the env from the Python hatch itself runs on — on
+# CI that is pipx's, not the 3.12 setup-python installs — so tests ran on 3.14.
+python = "3.12"
 dependencies = [
     "pytest>=9.0",
     "pytest-asyncio>=1.0",
