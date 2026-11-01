@@ -11,7 +11,14 @@ crash or restart.
 > - **A session is owned by exactly one window at a time** (server-authoritative).
 >   Opening it from a second window is rejected (`session_in_use`). A disconnect
 >   starts a short **grace window** that lets the same window reload and reclaim;
->   a graceful close (`session.release`) frees it immediately.
+>   a graceful close (`session.release`) frees it immediately. A window may also
+>   hand a session from one of its connections to another without releasing it
+>   — kodo-vsix moves a session between an editor tab and its docked
+>   Secondary Side Bar view this way (2026-10-31) — and since the new
+>   connection's `hello` can be handled before the old one's disconnect,
+>   `drop_connection` starts the grace only when the dropped connection is
+>   still the session's live one; a late drop of a replaced connection starts
+>   none, or its expiry would free a session that is in use.
 > - **Resume is client-driven:** each window persists its `session_id` and sends
 >   it in `hello`. The old workspace-level guide-session **marker** and its
 >   auto-resume are gone (`GuideMarker`/`locate_guide_session`

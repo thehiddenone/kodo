@@ -126,6 +126,31 @@ async def test_same_window_reclaims_within_grace(manager_factory) -> None:  # ty
 
 
 @pytest.mark.asyncio
+async def test_late_drop_of_a_replaced_connection_keeps_the_new_one_owning(
+    manager_factory,  # type: ignore[no-untyped-def]
+) -> None:
+    """A window moving a session between two of its hosts (kodo-vsix's editor
+    tab ↔ docked view) drops one connection and opens another; the new one's
+    hello can be handled before the old one's disconnect. That late drop must
+    not start a grace window for a session that is live on its replacement —
+    its expiry would leave the session owned by nobody while in use."""
+    import asyncio
+
+    mgr: SessionManager = manager_factory(grace=0.05)
+    session: Session = await mgr.create("windowA")
+    old = _conn()
+    await mgr.bind_connection(session, old)
+
+    reclaimed = await mgr.open(session.id, "windowA")
+    assert reclaimed is not None
+    await mgr.bind_connection(reclaimed, _conn())
+    mgr.drop_connection(old)
+
+    await asyncio.sleep(0.2)  # well past the grace an expiry would have run
+    assert await mgr.open(session.id, "windowB") is None
+
+
+@pytest.mark.asyncio
 async def test_open_unknown_id_creates_fresh(manager_factory) -> None:  # type: ignore[no-untyped-def]
     mgr: SessionManager = manager_factory()
     fresh = await mgr.open("does-not-exist", "windowA")

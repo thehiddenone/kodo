@@ -169,8 +169,12 @@ modes and agents with its own display names; `label` is the fallback.
 ## 5. Client (kodo-vsix)
 
 - **Activation** (`extension/session-llm-sync.ts`). When a session tab comes to
-  the front (`panel.onDidChangeViewState`), is restored in front (after its
-  `hello.ack`), or its window regains focus (`onDidChangeWindowState`), and the
+  the front (`panel.onDidChangeViewState`), the docked Secondary Side Bar
+  session view becomes visible (`onDidChangeVisibility`), either one's webview
+  takes focus (its `focused` message — the only signal for a click into a tab
+  that is already active, or into the docked view; `session/session-host.ts`),
+  a session is restored in front (after its `hello.ack`), or its window regains
+  focus (`onDidChangeWindowState`), and the
   session is **bound**, the extension checks its pending selection (D11) and,
   unless the sidebar already shows it, writes it into the sidebar's state:
   `settings.json` (`settingsPatchFor`) + `config.reload`, plus

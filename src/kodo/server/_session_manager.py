@@ -203,12 +203,16 @@ class SessionManager:
         session_id = self.__conn_session.pop(conn.id, None)
         if session_id is None:
             return
-        if self.__live_conn.get(session_id) == conn.id:
-            del self.__live_conn[session_id]
         session = self.__sessions.get(session_id)
         if session is not None:
             session.channel.detach(conn)
-        self.__start_grace(session_id)
+        # A late drop of a connection the same window has already replaced
+        # (kodo-vsix moving a session between an editor tab and its docked
+        # view) must not start a grace: its expiry would free the session
+        # while it is live on the replacement.
+        if self.__live_conn.get(session_id) == conn.id:
+            del self.__live_conn[session_id]
+            self.__start_grace(session_id)
 
     def release(self, session_id: str) -> None:
         """Free a session immediately (graceful window close)."""
