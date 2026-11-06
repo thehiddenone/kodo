@@ -363,21 +363,24 @@ class ClaudePlugin(LLMPlugin):
                     elif isinstance(delta, SignatureDelta):
                         yield ThinkingSignature(signature=delta.signature)
 
-                elif raw_event.type == "content_block_stop":
-                    if current_tool_use_id is not None and current_tool_name is not None:
-                        raw_json = "".join(current_tool_input_parts)
-                        try:
-                            tool_input: dict[str, object] = json.loads(raw_json) if raw_json else {}
-                        except json.JSONDecodeError:
-                            tool_input = {"_raw": raw_json}
-                        yield ToolCallEvent(
-                            tool_use_id=current_tool_use_id,
-                            tool_name=current_tool_name,
-                            tool_input=tool_input,
-                        )
-                        current_tool_use_id = None
-                        current_tool_name = None
-                        current_tool_input_parts = []
+                elif (
+                    raw_event.type == "content_block_stop"
+                    and current_tool_use_id is not None
+                    and current_tool_name is not None
+                ):
+                    raw_json = "".join(current_tool_input_parts)
+                    try:
+                        tool_input: dict[str, object] = json.loads(raw_json) if raw_json else {}
+                    except json.JSONDecodeError:
+                        tool_input = {"_raw": raw_json}
+                    yield ToolCallEvent(
+                        tool_use_id=current_tool_use_id,
+                        tool_name=current_tool_name,
+                        tool_input=tool_input,
+                    )
+                    current_tool_use_id = None
+                    current_tool_name = None
+                    current_tool_input_parts = []
 
             if not cancel_event.is_set():
                 final = await stream.get_final_message()
