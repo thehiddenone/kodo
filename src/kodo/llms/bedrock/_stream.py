@@ -2,8 +2,8 @@
 
 Every other cloud plugin here talks to an SDK that is natively async
 (``openai.AsyncOpenAI``, ``anthropic.AsyncAnthropic``), so its streaming loop
-is just ``async for chunk in response``. boto3 has no async client: there is
-no ``converse``/``converse_stream`` on ``aioboto3`` either, and boto3 is
+is just ``async for chunk in response``. botocore has no async client: there is
+no ``converse``/``converse_stream`` on ``aioboto3`` either, and botocore is
 already a declared dependency of kodo, so wrapping the blocking client is the
 right trade rather than adding a second AWS SDK.
 
@@ -66,8 +66,8 @@ async def aiter_converse_stream(
     """Yield ``converse_stream`` events off a worker thread.
 
     Args:
-        client (Any): A boto3 ``bedrock-runtime`` client. Untyped because
-            boto3 ships no type information; see ``pyproject.toml``'s mypy
+        client (Any): A botocore ``bedrock-runtime`` client. Untyped because
+            botocore ships no type information; see ``pyproject.toml``'s mypy
             override.
         request (dict[str, object]): Keyword arguments for
             ``client.converse_stream``.

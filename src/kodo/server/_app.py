@@ -82,6 +82,7 @@ from kodo.llms import (
     update_profile,
     user_catalog_entry_names,
 )
+from kodo.llms.bedrock import BedrockTokenError, list_bedrock_profiles, mint_bedrock_token
 from kodo.llms.llamacpp import (
     LlamaInstall,
     LlamaServer,
@@ -151,6 +152,8 @@ from kodo.transport import (
     MSG_AGENTS_RELOAD,
     MSG_AGENTS_VALIDATE,
     MSG_BEDROCK_MODELS_REFRESH,
+    MSG_BEDROCK_PROFILES_LIST,
+    MSG_BEDROCK_TOKEN_GENERATE,
     MSG_CHECKPOINT_LIST,
     MSG_CHECKPOINT_REDO,
     MSG_CHECKPOINT_ROLL_FORWARD,
@@ -2726,6 +2729,40 @@ async def _handle_bedrock_models_refresh(req: Request) -> None:
     )
 
 
+async def _handle_bedrock_profiles_list(req: Request) -> None:
+    """``bedrock.profiles.list`` — the AWS profiles on this machine (MSG_BEDROCK_PROFILES_LIST)."""
+    profiles = await asyncio.to_thread(list_bedrock_profiles)
+    await req.reply({"type": "bedrock.profiles.list.ack", "profiles": profiles})
+
+
+async def _handle_bedrock_token_generate(req: Request) -> None:
+    """``bedrock.token.generate`` — mint a bearer token (MSG_BEDROCK_TOKEN_GENERATE).
+
+    Replies from a background task: the connection registry awaits handlers
+    one frame at a time, and minting can wait on ``credential_process`` or an
+    SSO refresh for up to a minute.
+    """
+    profile = str(req.env.payload.get("profile", ""))
+    region = str(req.env.payload.get("region", "")) or DEFAULT_BEDROCK_REGION
+
+    async def run() -> None:
+        try:
+            token = await mint_bedrock_token(profile, region)
+        except (BedrockTokenError, OSError) as exc:
+            await req.reply({"type": "bedrock.token.generate.ack", "error": str(exc)})
+            return
+        await req.reply(
+            {
+                "type": "bedrock.token.generate.ack",
+                "token": token.token,
+                "issued_at": token.issued_at,
+                "expires_at": token.expires_at,
+            }
+        )
+
+    asyncio.create_task(run())
+
+
 async def _handle_local_llm_registry_get(req: Request) -> None:
     """``local_llm.registry_get`` — re-read the registry (the Model Importer writes files)."""
     await _send_registry_state(req)
@@ -3374,6 +3411,8 @@ def create_app(config: Config) -> web.Application:
     conn_registry.register_handler(MSG_LOCAL_LLM_HF_SEARCH, _handle_local_llm_hf_search)
     conn_registry.register_handler(MSG_OPENROUTER_MODELS_REFRESH, _handle_openrouter_models_refresh)
     conn_registry.register_handler(MSG_BEDROCK_MODELS_REFRESH, _handle_bedrock_models_refresh)
+    conn_registry.register_handler(MSG_BEDROCK_PROFILES_LIST, _handle_bedrock_profiles_list)
+    conn_registry.register_handler(MSG_BEDROCK_TOKEN_GENERATE, _handle_bedrock_token_generate)
     conn_registry.register_handler(MSG_LOCAL_LLM_UNINSTALL, _handle_local_llm_uninstall)
     conn_registry.register_handler(MSG_LOCAL_LLM_REMOVE, _handle_local_llm_remove)
     conn_registry.register_handler(MSG_LOCAL_LLM_ADD_FILE, _handle_local_llm_add_file)

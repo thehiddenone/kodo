@@ -169,7 +169,7 @@ What a run does, in order:
    | `alibaba` | + `DASHSCOPE_API_KEY` |
    | `kimi` | + `MOONSHOT_API_KEY` |
    | `meta` | + `LLAMA_API_KEY` |
-   | `bedrock` | `BEDROCK_API_KEY` (kodo's JSON pair), else built from `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (no session token: kodo's Bedrock credential is a long-term key pair) |
+   | `bedrock` | `BEDROCK_API_KEY` or `AWS_BEARER_TOKEN_BEDROCK`: a pre-generated bearer token. Nothing refreshes it during a run, so it must outlast the run (at most 12 hours, and it works only in the region it was minted for). The `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` pair is no longer accepted |
 6. **Cleans up in every case**, including a timeout or SIGINT/SIGTERM (it sends
    `stop` first). It shuts down the server and any llama-server it started,
    and removes `<cwd>/.kodo` (the checkpoint mirror) if this run created it,

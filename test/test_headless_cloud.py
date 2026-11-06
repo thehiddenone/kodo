@@ -141,17 +141,19 @@ def test_vendor_key_is_read_from_its_own_name_first() -> None:
     assert resolve_vendor_api_key("anthropic", {"ANTHROPIC_API_KEY": "  "}) is None
 
 
-def test_bedrock_key_is_built_from_the_standard_aws_pair() -> None:
-    env = {
-        "AWS_ACCESS_KEY_ID": "AKIA1",
-        "AWS_SECRET_ACCESS_KEY": "s3cret",
-        "AWS_REGION": "us-west-2",
-    }
-    key = resolve_vendor_api_key("bedrock", env)
-    assert key is not None
-    assert json.loads(key) == {"access_key_id": "AKIA1", "secret_access_key": "s3cret"}
+def test_bedrock_takes_a_bearer_token_from_either_name() -> None:
+    env = {"AWS_BEARER_TOKEN_BEDROCK": "bedrock-api-key-t", "AWS_REGION": "us-west-2"}
+    assert resolve_vendor_api_key("bedrock", env) == "bedrock-api-key-t"
     assert bedrock_region(env) == "us-west-2"
-    assert resolve_vendor_api_key("bedrock", {"AWS_ACCESS_KEY_ID": "AKIA1"}) is None
+    assert resolve_vendor_api_key("bedrock", {"BEDROCK_API_KEY": "bedrock-api-key-u"}) == (
+        "bedrock-api-key-u"
+    )
+
+
+def test_bedrock_no_longer_accepts_the_aws_key_pair() -> None:
+    env = {"AWS_ACCESS_KEY_ID": "AKIA1", "AWS_SECRET_ACCESS_KEY": "s3cret"}
+    assert resolve_vendor_api_key("bedrock", env) is None
+    assert not set(env) & set(vendor_credential_env_names("bedrock"))
 
 
 def test_every_forwardable_name_resolves_the_key() -> None:

@@ -6,16 +6,14 @@ environment variables. Each vendor accepts the name kodo itself would use
 Harbor's provider table among them — so an ``--agent-env`` value lands where
 kodo looks without renaming.
 
-Bedrock is the one structured credential: kodo carries AWS's access-key pair
-as one JSON string (``kodo.llms.bedrock``'s ``parse_bedrock_credentials``).
-``BEDROCK_API_KEY`` may hold that JSON directly; otherwise it is built from the
-standard ``AWS_ACCESS_KEY_ID`` / ``AWS_SECRET_ACCESS_KEY`` pair. The region is
-not a secret and travels in settings instead (:func:`bedrock_region`).
+Bedrock takes a pre-generated bearer token, from ``BEDROCK_API_KEY`` or AWS's
+own ``AWS_BEARER_TOKEN_BEDROCK``. Nothing refreshes it during a run, so it has
+to outlast the run. The region is not a secret and travels in settings instead
+(:func:`bedrock_region`).
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 
 __all__ = [
@@ -29,8 +27,8 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "alibaba": ("DASHSCOPE_API_KEY",),
     "kimi": ("MOONSHOT_API_KEY",),
     "meta": ("LLAMA_API_KEY",),
+    "bedrock": ("AWS_BEARER_TOKEN_BEDROCK",),
 }
-_AWS_PAIR = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
 _AWS_REGION = ("AWS_REGION", "AWS_DEFAULT_REGION")
 
 
@@ -54,7 +52,7 @@ def vendor_credential_env_names(vendor: str) -> tuple[str, ...]:
     """
     names = _key_names(vendor)
     if vendor == "bedrock":
-        names = (*names, *_AWS_PAIR, *_AWS_REGION)
+        names = (*names, *_AWS_REGION)
     return names
 
 
@@ -72,12 +70,6 @@ def resolve_vendor_api_key(vendor: str, env: Mapping[str, str]) -> str | None:
         value = env.get(name, "").strip()
         if value:
             return value
-    if vendor == "bedrock":
-        access_key_id, secret_access_key = (env.get(name, "").strip() for name in _AWS_PAIR)
-        if access_key_id and secret_access_key:
-            return json.dumps(
-                {"access_key_id": access_key_id, "secret_access_key": secret_access_key}
-            )
     return None
 
 

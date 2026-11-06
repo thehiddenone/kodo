@@ -150,9 +150,9 @@ before either `kodo.llms._provider_retry` or the gateway ever see the error.
 This module and the gateway are the sole owners of retry/backoff policy for
 every cloud vendor; a new vendor plugin must construct its SDK client with
 `max_retries=0` too. **AWS Bedrock spells the same invariant differently**:
-boto3's client takes `Config(retries={"max_attempts": 1, "mode": "standard"})`,
+its botocore client takes `Config(retries={"max_attempts": 1, "mode": "standard"})`,
 where standard mode counts *total* attempts including the first — so `1`, not
-`0`, is that SDK's "no retries" value, and boto3's own default is `3`
+`0`, is that SDK's "no retries" value, and botocore's own default is `3`
 (doc/LLM_REGISTRY.md §3b). That plugin also raises botocore's read timeout to
 900s, since it applies per socket read on the event stream rather than to the
 request as a whole and the 60s default would abort a deep-thinking turn.

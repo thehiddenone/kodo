@@ -168,20 +168,17 @@ validation to run beyond a boolean. Read fresh, per LLM dispatch, by
 { "openrouter_auto_mode": false }
 ```
 
-### 2.2c `bedrock_region`
+### 2.2c `bedrock_region` and `bedrock_profile`
 
 Which AWS region Bedrock is called in (doc/LLM_REGISTRY.md §3b).
 `"us-east-1"` by default. Bedrock is regional: which models exist, which
 cross-region inference profiles can serve them, and what they cost all depend
 on this.
 
-**Deliberately a plain setting rather than part of the stored credential.**
-AWS authentication needs an access key id and a secret access key, which
-kodo-vsix packs into one JSON blob to fit the existing one-secret-per-vendor
-`api_key.request` channel — but a region is not a secret, and
-`_resolve_plugin` already hands each vendor's plugin factory the whole
-settings dict. So the region rides here, gets a plain dropdown in the Bedrock
-tab, and reaches `BedrockPlugin`'s constructor exactly the way
+**Deliberately a plain setting rather than part of the credential.** A region
+is not a secret, and `_resolve_plugin` already hands each vendor's plugin
+factory the whole settings dict. So the region rides here, gets a plain dropdown
+in the Bedrock tab, and reaches `BedrockPlugin`'s constructor exactly the way
 `meta_contributor_tier` reaches `MusePlugin`'s.
 
 Same write pattern as `meta_contributor_tier`/`openrouter_auto_mode` above —
@@ -191,10 +188,18 @@ step: the fetched model catalog is region-scoped server-side, so changing this
 makes `hello.ack`'s `bedrock_catalog` field read empty and the extension
 immediately re-fetches it for the new region (WS_PROTOCOL.md §7.6i). Read
 fresh per LLM dispatch, so a region change takes effect on the next call with
-no restart.
+no restart. A bearer token works only in the region it was minted for, so a
+region change also mints a new one.
+
+`bedrock_profile` is the AWS profile that token is minted from, also read by
+kodo-vsix, set through `setBedrockProfile`, and passed to the helper process as
+`AWS_PROFILE` (doc/LLM_REGISTRY.md §3b). `""`, the default, means no profile:
+botocore's default credential chain decides, which is what an instance role or
+environment credentials need. It is the one Bedrock setting the server only
+stores, since each `bedrock.token.generate` request names the profile.
 
 ```json
-{ "bedrock_region": "us-east-1" }
+{ "bedrock_region": "us-east-1", "bedrock_profile": "" }
 ```
 
 ### 2.2d `models.cloud_uniform.<vendor>`

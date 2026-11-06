@@ -64,6 +64,7 @@ _ASSET_NAMES: dict[str, str] = {
     "macos-arm64": "llama-b{N}-bin-macos-arm64.tar.gz",
     "macos-x64": "llama-b{N}-bin-macos-x64.tar.gz",
     "linux-x64": "llama-b{N}-bin-ubuntu-x64.tar.gz",
+    "linux-arm64": "llama-b{N}-bin-ubuntu-arm64.tar.gz",
 }
 
 _WINDOWS_CUDA_DLLS_ASSET = "cudart-llama-bin-win-cuda-13.3-x64.zip"
@@ -155,7 +156,11 @@ def _current_platform_key() -> str:
     if system == "Darwin":
         return "macos-arm64" if machine in ("arm64", "aarch64") else "macos-x64"
     if system == "Linux":
-        return "linux-x64"
+        if machine in ("arm64", "aarch64"):
+            return "linux-arm64"
+        if machine in ("x86_64", "amd64"):
+            return "linux-x64"
+        raise RuntimeError(f"Unsupported platform: Linux on {machine!r}")
     raise RuntimeError(f"Unsupported platform: {system!r}")
 
 
@@ -471,15 +476,55 @@ def verify_executable(executable: Path) -> bool:
     Returns:
         bool: ``True`` if the binary runs successfully.
     """
+    return _version_check_failure(executable) is None
+
+
+# What the dynamic loader prints when a binary needs a newer glibc than the
+# system has, e.g. "version `GLIBC_2.38' not found".
+_GLIBC_MISSING = re.compile(r"version `GLIBC_(\d+(?:\.\d+)+)' not found")
+
+
+def _version_check_failure(executable: Path) -> str | None:
+    """Why ``llama-server --version`` failed, or ``None`` if it succeeded.
+
+    The upstream Linux builds are linked on a recent Ubuntu, so on an older
+    distribution (Amazon Linux 2023 has glibc 2.34; ``ubuntu-arm64`` needs
+    2.38) the binary cannot even load. That case gets a plain explanation
+    rather than the loader's own output.
+
+    Args:
+        executable (Path): Path to the ``llama-server`` binary.
+
+    Returns:
+        str | None: A one-line reason, or ``None`` if the binary ran.
+    """
     try:
         result = subprocess.run(
             [str(executable), "--version"],
             capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
-        return result.returncode == 0
-    except Exception:
-        return False
+    except Exception as exc:  # noqa: BLE001 — any failure to run is a failed check
+        return f"could not run llama-server --version: {exc}"
+    if result.returncode == 0:
+        return None
+    stderr = result.stderr or ""
+    needed = sorted(
+        {m.group(1) for m in _GLIBC_MISSING.finditer(stderr)},
+        key=lambda v: tuple(int(p) for p in v.split(".")),
+    )
+    if needed:
+        have = platform.libc_ver()[1] or "unknown"
+        return (
+            f"this llama.cpp build needs glibc {needed[-1]} or newer, but this system has "
+            f"glibc {have}; the prebuilt llama.cpp release does not run on this Linux distribution"
+        )
+    reason = f"llama-server --version exited with code {result.returncode}"
+    lines = stderr.strip().splitlines()
+    return f"{reason}: {lines[-1]}" if lines else reason
 
 
 def check_llamacpp_update(kodo_dir: Path) -> bool:
@@ -638,8 +683,9 @@ def install_llamacpp(
             raise _fail("llama-server executable not found after extraction")
 
         _progress(95, "Verifying llama-server --version…")
-        if not verify_executable(exe):
-            raise _fail("llama-server --version returned non-zero exit code")
+        failure = _version_check_failure(exe)
+        if failure is not None:
+            raise _fail(failure)
 
         _progress(98, "Writing installation metadata…")
         _write_llama_meta(kodo_dir, build_number, exe, binary_url, cuda_dlls_url)

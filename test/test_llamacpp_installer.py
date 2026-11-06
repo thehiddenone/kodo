@@ -121,7 +121,37 @@ def test_read_llama_meta_missing_keys_returns_none(tmp_path: Path) -> None:
 def test_current_platform_key_returns_string() -> None:
     key = _current_platform_key()
     assert isinstance(key, str)
-    assert key in {"win-x64", "macos-arm64", "macos-x64", "linux-x64"}
+    assert key in {"win-x64", "macos-arm64", "macos-x64", "linux-x64", "linux-arm64"}
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [
+        ("x86_64", "linux-x64"),
+        ("AMD64", "linux-x64"),
+        ("aarch64", "linux-arm64"),
+        ("arm64", "linux-arm64"),
+    ],
+)
+def test_current_platform_key_linux_follows_cpu(
+    monkeypatch: pytest.MonkeyPatch, machine: str, expected: str
+) -> None:
+    """Linux picks the build for its CPU — an x64 build cannot run on Graviton."""
+    import platform as _platform
+
+    monkeypatch.setattr(_platform, "system", MagicMock(return_value="Linux"))
+    monkeypatch.setattr(_platform, "machine", MagicMock(return_value=machine))
+    assert _current_platform_key() == expected
+
+
+def test_current_platform_key_linux_unknown_cpu_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Linux CPU with no upstream build is refused rather than handed the x64 one."""
+    import platform as _platform
+
+    monkeypatch.setattr(_platform, "system", MagicMock(return_value="Linux"))
+    monkeypatch.setattr(_platform, "machine", MagicMock(return_value="riscv64"))
+    with pytest.raises(RuntimeError, match="Unsupported platform: Linux on 'riscv64'"):
+        _current_platform_key()
 
 
 def test_current_platform_key_unsupported_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -145,8 +175,13 @@ def test_asset_url_returns_name_and_url() -> None:
     assert url.endswith(name)
 
 
+def test_asset_url_linux_arm64() -> None:
+    name, _ = _asset_url(11454, "linux-arm64")
+    assert name == "llama-b11454-bin-ubuntu-arm64.tar.gz"
+
+
 def test_asset_url_all_platforms() -> None:
-    for platform_key in ("win-x64", "macos-arm64", "macos-x64", "linux-x64"):
+    for platform_key in ("win-x64", "macos-arm64", "macos-x64", "linux-x64", "linux-arm64"):
         name, url = _asset_url(100, platform_key)
         assert name.startswith("llama-b100-")
         assert f"b100/{name}" in url
@@ -614,13 +649,18 @@ def test_install_llamacpp_already_installed_returns_existing(
     assert not progress_calls or progress_calls[-1][0] == 100
 
 
-def test_install_llamacpp_calls_expected_steps(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """install_llamacpp calls fetch, download, extract, verify, write in order."""
+def _stage_install(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, version_run: MagicMock) -> Path:
+    """Stub everything ``install_llamacpp`` touches up to ``--version``.
+
+    ``version_run`` stands in for ``subprocess.run`` — the ``llama-server
+    --version`` call is the step under test. Returns the staged executable.
+    """
+    import io
+    import subprocess as _subprocess
+    import tarfile
+
     import kodo.llms.llamacpp._installer as _inst
 
-    # Create a real llama-server binary for verification.
     exe = tmp_path / "llama-server"
     exe.write_text("#!/bin/sh", encoding="utf-8")
     exe.chmod(0o755)
@@ -628,7 +668,6 @@ def test_install_llamacpp_calls_expected_steps(
     install_dir = tmp_path / "llama.cpp" / "b5143"
     install_dir.mkdir(parents=True)
 
-    # Mock find_installed to return None.
     monkeypatch.setattr(_inst, "find_installed", MagicMock(return_value=None))
     monkeypatch.setattr(_inst, "fetch_latest_build_number", MagicMock(return_value=5143))
     monkeypatch.setattr(_inst, "_current_platform_key", MagicMock(return_value="linux-x64"))
@@ -642,30 +681,77 @@ def test_install_llamacpp_calls_expected_steps(
             )
         ),
     )
-
-    # Mock _download to do nothing (we'll create the archive ourselves).
-    download_mock = MagicMock()
-    monkeypatch.setattr(_inst, "_download", download_mock)
-
-    # Create a fake tar.gz archive at the expected path.
-    import tarfile
-
+    # _download does nothing; the archive it would have fetched is staged here.
+    monkeypatch.setattr(_inst, "_download", MagicMock())
     archive_path = install_dir / "llama-b5143-bin-ubuntu-x64.tar.gz"
     with tarfile.open(archive_path, "w:gz") as tf:
-        import io
-
         data = io.BytesIO(b"fake archive content")
         info = tarfile.TarInfo(name="llama-server")
         info.size = len(data.getvalue())
         tf.addfile(info, data)
 
     monkeypatch.setattr(_inst, "server_executable", MagicMock(return_value=exe))
-    monkeypatch.setattr(_inst, "verify_executable", MagicMock(return_value=True))
+    monkeypatch.setattr(_subprocess, "run", version_run)
+    return exe
+
+
+def _ran(returncode: int, stderr: str = "") -> MagicMock:
+    return MagicMock(return_value=MagicMock(returncode=returncode, stdout="", stderr=stderr))
+
+
+def test_install_llamacpp_calls_expected_steps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """install_llamacpp calls fetch, download, extract, verify, write in order."""
+    import kodo.llms.llamacpp._installer as _inst
+
+    exe = _stage_install(monkeypatch, tmp_path, _ran(0))
 
     result = _inst.install_llamacpp(tmp_path)
     assert result.build == 5143
     assert result.executable == exe
-    download_mock.assert_called_once()
+    assert _meta_path(tmp_path).is_file()
+
+
+def test_install_llamacpp_explains_a_glibc_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A build the system's glibc cannot load fails with the versions spelled out.
+
+    Seen for real: ``ubuntu-arm64`` on Amazon Linux 2023 (glibc 2.34).
+    """
+    import platform as _platform
+
+    import kodo.llms.llamacpp._installer as _inst
+
+    loader_error = "\n".join(
+        f"{tmp_path}/llama-server: /lib64/libc.so.6: "
+        f"version `GLIBC_{v}' not found (required by libllama.so.0)"
+        for v in ("2.38", "2.36", "2.38")
+    )
+    _stage_install(monkeypatch, tmp_path, _ran(1, loader_error))
+    monkeypatch.setattr(_platform, "libc_ver", MagicMock(return_value=("glibc", "2.34")))
+    reported: list[tuple[int, str]] = []
+
+    with pytest.raises(
+        RuntimeError, match=r"needs glibc 2\.38 or newer, but this system has glibc 2\.34"
+    ):
+        _inst.install_llamacpp(tmp_path, progress_cb=lambda pct, msg: reported.append((pct, msg)))
+    assert reported[-1][0] == -1
+    assert "does not run on this Linux distribution" in reported[-1][1]
+    assert not _meta_path(tmp_path).exists()
+
+
+def test_install_llamacpp_reports_the_version_check_stderr(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Any other --version failure names the exit code and the last stderr line."""
+    import kodo.llms.llamacpp._installer as _inst
+
+    _stage_install(monkeypatch, tmp_path, _ran(127, "warming up\nerror: libcuda.so.1 missing\n"))
+
+    with pytest.raises(RuntimeError, match=r"exited with code 127: error: libcuda\.so\.1 missing$"):
+        _inst.install_llamacpp(tmp_path)
 
 
 # ---------------------------------------------------------------------------

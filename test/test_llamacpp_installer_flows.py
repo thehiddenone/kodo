@@ -128,7 +128,7 @@ def github(monkeypatch: pytest.MonkeyPatch) -> _GitHub:
 @pytest.fixture
 def version_ok(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     """``llama-server --version`` outcome, settable per test (exit 0 by default)."""
-    outcome = SimpleNamespace(returncode=0)
+    outcome = SimpleNamespace(returncode=0, stderr="")
 
     def fake_run(argv: list[str], **_kwargs: object) -> SimpleNamespace:
         assert argv[1:] == ["--version"]
@@ -152,6 +152,7 @@ def _on_platform(monkeypatch: pytest.MonkeyPatch, system: str, machine: str = "x
     ("system", "machine", "asset"),
     [
         ("Linux", "x86_64", "llama-b7001-bin-ubuntu-x64.tar.gz"),
+        ("Linux", "aarch64", "llama-b7001-bin-ubuntu-arm64.tar.gz"),
         ("Darwin", "x86_64", "llama-b7001-bin-macos-x64.tar.gz"),
         ("Darwin", "arm64", "llama-b7001-bin-macos-arm64.tar.gz"),
     ],
@@ -220,7 +221,7 @@ def test_install_fails_when_the_binary_does_not_run(
     github.builds = {7001}
     version_ok.returncode = 1
 
-    with pytest.raises(RuntimeError, match="--version returned non-zero"):
+    with pytest.raises(RuntimeError, match="--version exited with code 1"):
         install_llamacpp(tmp_path, version=7001)
     assert find_installed(tmp_path) is None
 

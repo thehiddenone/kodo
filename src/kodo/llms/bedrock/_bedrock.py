@@ -1,4 +1,4 @@
-"""AWS Bedrock LLM plugin — streams via Bedrock's Converse API (boto3)."""
+"""AWS Bedrock LLM plugin — streams via Bedrock's Converse API (botocore)."""
 
 from __future__ import annotations
 
@@ -6,10 +6,9 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-import boto3
 from botocore.config import Config
 
 from kodo.llms._interface import (
@@ -25,8 +24,9 @@ from kodo.llms._interface import (
     Usage,
 )
 
+from ._client import bearer_client
 from ._convert import build_converse_messages, build_converse_tool_config, build_system_blocks
-from ._credentials import parse_bedrock_credentials
+from ._credentials import require_bedrock_token
 from ._reasoning import max_tokens_for, reasoning_fields_for
 from ._retry import with_retry_iter
 from ._stream import aiter_converse_stream
@@ -45,7 +45,7 @@ _RUNTIME_SERVICE = "bedrock-runtime"
 # SDK retrying underneath them defeats both the (2, 8, 32)s backoff and the
 # gateway's exponential 429 backoff (see _provider_retry's module docstring,
 # doc/LLM_GATEWAY.md). Standard mode counts *total attempts* including the
-# first, so 1 -- not 0 -- is the "no retries" value here; boto3's default is 3.
+# first, so 1 -- not 0 -- is the "no retries" value here; botocore's default is 3.
 _NO_SDK_RETRIES = {"max_attempts": 1, "mode": "standard"}
 
 # A reasoning model can go a long time between stream events, and botocore's
@@ -53,6 +53,12 @@ _NO_SDK_RETRIES = {"max_attempts": 1, "mode": "standard"}
 # as a whole -- the 60s default would abort a deep-thinking turn mid-flight.
 _READ_TIMEOUT_SECONDS = 900
 _CONNECT_TIMEOUT_SECONDS = 15
+
+_CLIENT_CONFIG = Config(
+    retries=_NO_SDK_RETRIES,
+    read_timeout=_READ_TIMEOUT_SECONDS,
+    connect_timeout=_CONNECT_TIMEOUT_SECONDS,
+)
 
 # Converse's own stop-reason vocabulary -> kodo's canonical one. Bedrock
 # normalises across providers here, so unlike the Chat-Completions vendors
@@ -86,14 +92,15 @@ class BedrockPlugin(LLMPlugin):
     support varies across the catalog. Three things are genuinely different,
     each forced by AWS rather than chosen:
 
-    * **Credentials are a pair, not a string.** A long-term IAM user access
-      key means an access key id *and* a secret access key, which kodo-vsix
-      packs into one JSON blob to fit the existing one-secret-per-vendor pull
-      protocol unchanged (:mod:`kodo.llms.bedrock._credentials`). The
-      **region** is not part of it — it rides in settings as
-      ``bedrock_region`` and arrives as this plugin's second constructor
-      argument.
-    * **The SDK is synchronous.** boto3 has no async client, so the blocking
+    * **The credential expires.** A short-term bearer token lasts at most an
+      hour and kodo-vsix replaces it at 75% of its life, while a plugin can
+      outlive that: it is resolved once for a whole turn, and one turn is many
+      LLM calls. So this plugin re-reads the current token before every call
+      instead of holding the one it was built with
+      (:mod:`kodo.llms.bedrock._token_mint`, doc/LLM_REGISTRY.md §3b). The
+      **region** rides in settings as ``bedrock_region`` and arrives as this
+      plugin's second constructor argument.
+    * **The SDK is synchronous.** botocore has no async client, so the blocking
       ``converse_stream`` call and its ``EventStream`` iteration run on a
       worker thread feeding an :class:`asyncio.Queue`
       (:mod:`kodo.llms.bedrock._stream`).
@@ -109,36 +116,36 @@ class BedrockPlugin(LLMPlugin):
     """
 
     __client: Any
+    __token: str
+    __key_source: Callable[[], Awaitable[str]] | None
     __region: str
     __cancel_events: dict[str, asyncio.Event]
 
-    def __init__(self, api_key: str, region: str) -> None:
-        """Initialise with an IAM access-key blob and an AWS region.
+    def __init__(
+        self,
+        api_key: str,
+        region: str,
+        key_source: Callable[[], Awaitable[str]] | None = None,
+    ) -> None:
+        """Initialise with a bearer token and an AWS region.
 
         Args:
-            api_key (str): The JSON credential blob kodo-vsix returns for the
-                ``bedrock`` vendor (not written to disk per NFR-06) — see
-                :func:`~kodo.llms.bedrock._credentials.parse_bedrock_credentials`.
+            api_key (str): The bearer token kodo-vsix returns for the
+                ``bedrock`` vendor (not written to disk per NFR-06).
             region (str): AWS region to call Bedrock in, e.g. ``"us-east-1"``.
                 Bedrock is regional: which models exist, and which inference
                 profiles can serve them, both depend on this.
+            key_source (Callable[[], Awaitable[str]] | None): Returns the
+                current token, called before every LLM call. ``None`` keeps
+                *api_key* for this plugin's whole life.
 
         Raises:
-            InvalidCredentialsError: *api_key* is not a usable access-key pair.
+            InvalidCredentialsError: *api_key* is not a usable bearer token.
         """
-        credentials = parse_bedrock_credentials(api_key)
+        self.__token = require_bedrock_token(api_key)
+        self.__key_source = key_source
         self.__region = region
-        self.__client = boto3.client(
-            _RUNTIME_SERVICE,
-            aws_access_key_id=credentials.access_key_id,
-            aws_secret_access_key=credentials.secret_access_key,
-            region_name=region,
-            config=Config(
-                retries=_NO_SDK_RETRIES,
-                read_timeout=_READ_TIMEOUT_SECONDS,
-                connect_timeout=_CONNECT_TIMEOUT_SECONDS,
-            ),
-        )
+        self.__client = bearer_client(_RUNTIME_SERVICE, self.__token, region, _CLIENT_CONFIG)
         self.__cancel_events = {}
 
     @property
@@ -240,6 +247,18 @@ class BedrockPlugin(LLMPlugin):
         finally:
             self.__cancel_events.pop(stream_id, None)
 
+    async def __current_client(self) -> Any:
+        """The client for the current token, rebuilt only when the token changed."""
+        if self.__key_source is None:
+            return self.__client
+        token = require_bedrock_token(await self.__key_source())
+        if token != self.__token:
+            self.__client = await asyncio.to_thread(
+                bearer_client, _RUNTIME_SERVICE, token, self.__region, _CLIENT_CONFIG
+            )
+            self.__token = token
+        return self.__client
+
     def __build_request(
         self,
         *,
@@ -288,6 +307,7 @@ class BedrockPlugin(LLMPlugin):
         # Bedrock's cachePoint support is per-model -- see _convert.py.
         del cache_breakpoints
 
+        client = await self.__current_client()
         request = self.__build_request(
             model=model,
             system=system,
@@ -313,7 +333,7 @@ class BedrockPlugin(LLMPlugin):
         # abandoned mid-iteration on cancellation, and without a deterministic
         # close its teardown (which is what closes the HTTP stream, and so
         # what lets the reader thread exit) would wait on garbage collection.
-        stream = aiter_converse_stream(self.__client, request, cancel_event)
+        stream = aiter_converse_stream(client, request, cancel_event)
         async with contextlib.aclosing(stream) as events:
             async for event in events:
                 if cancel_event.is_set():

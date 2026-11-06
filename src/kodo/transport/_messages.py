@@ -749,10 +749,10 @@ MSG_OPENROUTER_MODELS_REFRESH = "openrouter.models.refresh"
 # Bedrock catalog is ever fetched: ListFoundationModels is a signed AWS call
 # and the server holds no credentials of its own, so there is no background
 # TTL loop to fall back on. The payload therefore carries the credentials with
-# it — ``{api_key: "<JSON access-key blob>", region: "us-east-1"}``, the same
-# blob the client would answer an ``api_key.request`` with (§6.3) — rather
-# than the server pulling them, since a control-connection handler has no
-# session response channel to pull over.
+# it — ``{api_key: "<bearer token>", region: "us-east-1"}``, the same token the
+# client would answer an ``api_key.request`` with (§6.3) — rather than the
+# server pulling them, since a control-connection handler has no session
+# response channel to pull over.
 #
 # Replies ``bedrock.models.refresh.ack`` ``{models: [{id, name, provider,
 # context_length, inference_profile, supports_streaming}], region}``, the same
@@ -760,6 +760,21 @@ MSG_OPENROUTER_MODELS_REFRESH = "openrouter.models.refresh"
 # failure still replies with whatever was already cached for that region
 # (kodo.llms.refresh_bedrock_catalog's own fallback) rather than an error.
 MSG_BEDROCK_MODELS_REFRESH = "bedrock.models.refresh"
+
+# Client → Server. Control connection only. List the AWS profiles on this
+# machine for the Bedrock tab's profile dropdown. Replies
+# ``bedrock.profiles.list.ack`` ``{profiles: ["default", ...]}``.
+MSG_BEDROCK_PROFILES_LIST = "bedrock.profiles.list"
+
+# Client → Server. Control connection only. Mint a short-term Bedrock bearer
+# token (kodo.llms.bedrock.mint_bedrock_token) from ``{profile, region}``; an
+# empty profile means botocore's default credential chain. The server keeps
+# nothing: kodo-vsix stores the token in SecretStorage and owns its refresh.
+#
+# Replies ``bedrock.token.generate.ack`` ``{token, issued_at, expires_at}``
+# (epoch seconds), or ``{error}`` with a message for the user. Replies from a
+# background task, because minting can wait on credential_process or SSO.
+MSG_BEDROCK_TOKEN_GENERATE = "bedrock.token.generate"
 
 # Client → Server. Local Inference Settings webview actions (doc/LLM_REGISTRY.md),
 # sent over the control connection like the block above. All mutate the

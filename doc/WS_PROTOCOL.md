@@ -1356,6 +1356,12 @@ has no key to give. For the same reason the client-side serialization queue
 swallows failures instead of leaving a rejected promise in the chain, which
 would silently skip every later request in that window.
 
+**Vendor `bedrock` never prompts.** Its answer is a bearer token that the
+extension keeps fresh on its own (§7.6n), and the server asks again before every
+LLM call because the token expires during long turns. When no token can be
+minted, `error` carries the reason, an expired SSO login for instance, because
+that is the message the session has to show.
+
 Before falling back to the prompt, the extension prunes any key whose
 SecretStorage secret has gone missing and tells the user it did
 (LLM_REGISTRY.md §6) — otherwise a key the settings UI still lists as active
@@ -2636,7 +2642,7 @@ behind it.
 
 ```json
 { "type": "bedrock.models.refresh",
-  "api_key": "{\"access_key_id\": \"AKIA…\", \"secret_access_key\": \"…\"}",
+  "api_key": "bedrock-api-key-…",
   "region": "us-east-1" }
 ```
 
@@ -2646,17 +2652,16 @@ behind it.
 per-entry shape as `hello.ack`'s `bedrock_catalog` field.
 
 **This is the one command that carries credentials in its payload.**
-`ListFoundationModels` is a signed AWS call; the server holds no Bedrock
+`ListFoundationModels` is an authenticated AWS call; the server holds no Bedrock
 credentials of its own, and a control-connection handler has no session
 response channel to pull them over the way `api_key.request` (§6.3) does. The
 `api_key` value is byte-for-byte what the client would answer an
-`api_key.request` for vendor `bedrock` with — a JSON blob holding the IAM
-access key pair (doc/LLM_REGISTRY.md §3b) — travelling the same local
-WebSocket. A client that has no Bedrock key stored should simply not send this
-command.
+`api_key.request` for vendor `bedrock` with — a short-term bearer token
+(doc/LLM_REGISTRY.md §3b), minted for this region — travelling the same local
+WebSocket.
 
-Replies synchronously, like §7.6h. A missing/invalid credential blob is **not**
-an error reply: the fetch fails, the server falls back to whatever was cached
+Replies synchronously, like §7.6h. A missing/invalid token is **not** an error
+reply: the fetch fails, the server falls back to whatever was cached
 for that region, and the client renders an empty or stale picker — the same
 non-actionable outcome as a network failure.
 
@@ -3078,6 +3083,35 @@ it passes to the terminal (AGENT_BUILDER D37). `suites` is the suite catalog:
 built-in plus `~/.kodo/harbor/suites/`. `llama_running`/`llama_model` describe
 the server's own llama-server, for the modal's memory warning (D20). A suite
 file that does not load gives `{ok: false, error}`.
+
+### 7.6n `bedrock.profiles.list` / `bedrock.token.generate` — Bedrock's AWS credentials
+
+Control connection only. Together they back the AWS Bedrock tab's profile
+section and the extension's token refresh (doc/LLM_REGISTRY.md §3b).
+
+```json
+{ "type": "bedrock.profiles.list" }
+```
+
+→ `bedrock.profiles.list.ack` `{ "profiles": ["default", "work"] }`, botocore's
+`available_profiles`, sorted. Empty when there are none or the AWS config can't
+be parsed.
+
+```json
+{ "type": "bedrock.token.generate", "profile": "work", "region": "us-east-1" }
+```
+
+→ `bedrock.token.generate.ack`
+`{ "token": "bedrock-api-key-…", "issued_at": 1730000000.0, "expires_at": 1730003600.0 }`
+(epoch seconds), or `{ "error": "<message for the user>" }`. An empty `profile`
+means botocore's default credential chain. `expires_at` can be under an hour
+after `issued_at`, because a token ends with the AWS session behind it.
+
+The server runs a short-lived child process with `AWS_PROFILE` and `AWS_REGION`
+in its environment and keeps nothing. Storing and refreshing the token is the
+client's job. The reply comes from a background task, like §7.6m, because
+minting can wait up to 60 s on `credential_process` or SSO and the connection
+registry handles frames one at a time.
 
 ### 7.6m `local_llm.hf_search` — search Hugging Face for GGUF repos
 

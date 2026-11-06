@@ -191,13 +191,19 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
     # Which AWS region Bedrock is called in. Bedrock is regional: the model
     # catalog, the available cross-region inference profiles, and pricing all
     # depend on it, so this is a first-class setting rather than something
-    # buried in the credential. Deliberately NOT part of the stored
-    # credential blob (kodo/llms/bedrock/_credentials.py) -- a region is not
-    # a secret, and keeping it here means the region picker is plain settings
-    # UI and the plugin factory reads it off the settings dict exactly like
-    # meta_contributor_tier above. Read fresh per LLM dispatch, so a region
-    # change takes effect on the next call with no restart.
+    # buried in the credential. A region is not a secret, and keeping it here
+    # means the region picker is plain settings UI and the plugin factory
+    # reads it off the settings dict exactly like meta_contributor_tier above.
+    # Read fresh per LLM dispatch, so a region change takes effect on the next
+    # call with no restart. A bearer token only works in the region it was
+    # minted for, so kodo-vsix also replaces the token when this changes.
     "bedrock_region": "us-east-1",
+    # Which AWS profile kodo-vsix mints Bedrock's bearer token from. Empty
+    # means none: AWS_PROFILE stays unset and botocore resolves its default
+    # credential chain, which is what an instance role or environment
+    # credentials need. Read by the extension only; the server is told the
+    # profile in each bedrock.token.generate request.
+    "bedrock_profile": "",
     # Governs the stuck-agent watchdog (kodo.runtime._engine._watchdog,
     # doc/STUCK_DETECTION.md) — detects a turn that ended without finishing
     # its task (e.g. an empty final response, or a truncated generation) and

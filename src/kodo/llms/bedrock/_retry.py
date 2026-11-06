@@ -16,7 +16,7 @@ This module therefore does the classification itself, in
 importable hierarchy (:class:`BedrockRateLimitError`,
 :class:`BedrockUnrecoverableError`, :class:`BedrockRetryableError`) that the
 shared core can then classify by class exactly like every other vendor's. The
-plugin calls that translator around every boto3 call, so nothing outside this
+plugin calls that translator around every botocore call, so nothing outside this
 package ever sees a raw ``ClientError``.
 
 Codes not in either table fall back to the HTTP status: 5xx is retried, 4xx is
@@ -203,7 +203,7 @@ def translate_botocore_error(exc: BaseException) -> BaseException:
     """Map a botocore exception onto this module's classifiable hierarchy.
 
     Args:
-        exc (BaseException): Whatever a boto3 call raised.
+        exc (BaseException): Whatever a botocore call raised.
 
     Returns:
         BaseException: A :class:`BedrockStatusError` subclass for anything

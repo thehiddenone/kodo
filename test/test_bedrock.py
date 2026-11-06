@@ -26,7 +26,7 @@ from kodo.llms._interface import (
 )
 from kodo.llms.bedrock._bedrock import BedrockPlugin, _map_stop_reason
 
-_CREDENTIALS = json.dumps({"access_key_id": "AKIATEST", "secret_access_key": "s3cr3t"})
+_CREDENTIALS = "bedrock-api-key-test"
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +136,72 @@ def test_invalid_credentials_fail_at_construction() -> None:
     from kodo.llms.bedrock import InvalidCredentialsError
 
     with pytest.raises(InvalidCredentialsError):
-        BedrockPlugin("AKIA-bare-key", "us-east-1")
+        BedrockPlugin('{"access_key_id": "AKIA", "secret_access_key": "s"}', "us-east-1")
+
+
+# ---------------------------------------------------------------------------
+# Token refresh within a plugin's life
+# ---------------------------------------------------------------------------
+
+
+_TURN_END_EVENTS: list[dict[str, Any]] = [
+    {"messageStop": {"stopReason": "end_turn"}},
+    {"metadata": {"usage": {"inputTokens": 1, "outputTokens": 1}}},
+]
+
+
+def _token_clients(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record the token of every client the plugin builds."""
+    built: list[str] = []
+
+    def _build(_service: str, token: str, _region: str, _config: object) -> _FakeBedrockClient:
+        built.append(token)
+        return _FakeBedrockClient(list(_TURN_END_EVENTS), None)
+
+    monkeypatch.setattr("kodo.llms.bedrock._bedrock.bearer_client", _build)
+    return built
+
+
+@pytest.mark.asyncio
+async def test_a_refreshed_token_is_used_by_the_next_call_of_the_same_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built = _token_clients(monkeypatch)
+    current = ["bedrock-api-key-first"]
+
+    async def _source() -> str:
+        return current[0]
+
+    plugin = BedrockPlugin("bedrock-api-key-first", "us-east-1", _source)
+    await _collect(plugin)
+    current[0] = "bedrock-api-key-second"
+    await _collect(plugin)
+    assert built == ["bedrock-api-key-first", "bedrock-api-key-second"]
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_token_keeps_the_same_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    built = _token_clients(monkeypatch)
+
+    async def _source() -> str:
+        return "bedrock-api-key-first"
+
+    plugin = BedrockPlugin("bedrock-api-key-first", "us-east-1", _source)
+    await _collect(plugin)
+    await _collect(plugin)
+    assert built == ["bedrock-api-key-first"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_token_refresh_reaches_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    _token_clients(monkeypatch)
+
+    async def _source() -> str:
+        raise RuntimeError("API key request rejected: run aws sso login")
+
+    plugin = BedrockPlugin("bedrock-api-key-first", "us-east-1", _source)
+    with pytest.raises(RuntimeError, match="aws sso login"):
+        await _collect(plugin)
 
 
 # ---------------------------------------------------------------------------

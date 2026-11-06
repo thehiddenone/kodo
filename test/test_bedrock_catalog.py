@@ -3,12 +3,11 @@
 Covers the two-call merge (ListFoundationModels + ListInferenceProfiles), the
 filtering rules, the region-scoped on-disk cache, and the failure tolerances
 that keep a bad fetch from wiping out a good catalog -- all against a faked
-boto3 client, no AWS access.
+botocore client, no AWS access.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +23,7 @@ from kodo.llms._bedrock_catalog import (
     refresh_bedrock_catalog,
 )
 
-_CREDENTIALS = json.dumps({"access_key_id": "AKIATEST", "secret_access_key": "s3cr3t"})
+_CREDENTIALS = "bedrock-api-key-test"
 
 
 def _summary(model_id: str, **overrides: Any) -> dict[str, Any]:
@@ -66,7 +65,7 @@ class _FakeControlPlaneClient:
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, client: _FakeControlPlaneClient) -> None:
-    monkeypatch.setattr(catalog_module.boto3, "client", lambda *a, **k: client)
+    monkeypatch.setattr(catalog_module, "bearer_client", lambda *a, **k: client)
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +297,7 @@ async def test_failed_fetch_keeps_the_previous_catalog(
             "ListFoundationModels",
         )
 
-    monkeypatch.setattr(catalog_module.boto3, "client", _boom)
+    monkeypatch.setattr(catalog_module, "bearer_client", _boom)
     models = await refresh_bedrock_catalog(tmp_path, _CREDENTIALS, "us-east-1")
     assert [m.id for m in models] == ["anthropic.claude-opus-5"]
 

@@ -613,8 +613,12 @@ by URL ([HEADLESS.md](HEADLESS.md) §5):
 - **Linux containers only** (`capabilities.windows` is false).
 - **Web tools** need the network in the agent phase; `read_webpage` also needs a
   Playwright browser the image lacks.
-- **Bedrock** needs a long-term access-key pair; session tokens are not
-  supported by Kōdo's Bedrock credential.
+- **Bedrock** needs a pre-generated bearer token in `AWS_BEARER_TOKEN_BEDROCK`
+  or `BEDROCK_API_KEY`, minted for the run's region. Nothing can refresh it
+  inside a task container, so it has to outlast the job: generate one long
+  enough yourself (the maximum is 12 hours, capped by your AWS session). A
+  **panel Benchmark** passes the window's current token, which has at most an
+  hour left, so a run longer than that fails when it expires.
 - **Security-rule measurement (the `GatedEnvironment` idea) was dropped:** an
   exec-level gate never sees the commands of installed agents (they run inside
   one `exec`), sees terminus-2's commands only as `tmux send-keys`, and cannot

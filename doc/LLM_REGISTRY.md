@@ -557,45 +557,100 @@ behind one vendor's API key and bills you itself, Bedrock serves them from
 of every way this vendor deviates from OpenRouter, and each deviation below is
 forced by AWS, not chosen.
 
-**Credentials are a pair, not a string.** Kōdo authenticates with a long-term
-IAM user access key: an access key id *and* a secret access key. The
-`api_key.request` pull protocol (WS_PROTOCOL.md §6.3) moves exactly one opaque
-string per vendor, and widening it for one vendor would touch the key broker,
-the named-multi-key store, the revoke path, and every other vendor's flow. So
-kodo-vsix packs both values into one JSON object and sends *that* as the "api
-key" — `{"access_key_id": "AKIA…", "secret_access_key": "…"}` — and
-`kodo/llms/bedrock/_credentials.py` is the only place that knows the string is
-structured. Nothing else in the credential path changes: the blob lives in VS
-Code SecretStorage under the same UUID scheme, is listed/activated/forgotten
-by the same `cloud-credentials.ts` code, and is never written to disk by the
-server (NFR-06). A user who pastes a bare access key id — the shape every
-other vendor's key has — gets a named `InvalidCredentialsError` at plugin
-construction naming what was actually expected, rather than an opaque
-`UnrecognizedClientException` from deep inside botocore.
+**Credentials are a short-term bearer token, minted from an AWS profile.**
+Kōdo never stores AWS credentials. It generates a `bedrock-api-key-…` bearer
+token with AWS's `aws-bedrock-token-generator` from whichever credentials
+botocore's default chain resolves, and the token is all that leaves that step.
+It replaced a long-term IAM key pair that kodo-vsix used to pack into one JSON
+object, and because the token is a single opaque string, the
+`api_key.request` pull protocol (WS_PROTOCOL.md §6.3) and the key broker carry
+it unchanged. `kodo/llms/bedrock/_credentials.py` still rejects that old JSON
+shape by name, so a `BEDROCK_API_KEY` left over in a headless environment says
+what is wrong instead of failing as a bare 403.
 
-The **region is deliberately not in that blob**. A region is not a secret, it
-belongs to the account's Bedrock setup rather than to the credential, and
-`_resolve_plugin` already passes the whole settings dict to each vendor's
-plugin factory — so `bedrock_region` (doc/SETTINGS.md §2.2c, default
-`us-east-1`) is a plain setting with a plain dropdown, read fresh on every
-dispatch exactly like `meta_contributor_tier`. The minimum IAM policy is
-`bedrock:InvokeModelWithResponseStream` plus `bedrock:ListFoundationModels`
-and `bedrock:ListInferenceProfiles` for the catalog.
+The pieces, in the order a token moves through them:
+
+* **Choosing credentials.** `bedrock_profile` (doc/SETTINGS.md §2.2c) names an
+  AWS profile; empty means no profile, so `AWS_PROFILE` stays unset and the
+  default chain applies, which is what an instance role or environment
+  credentials need. The Bedrock tab's dropdown offers *Default credential
+  chain*, botocore's `available_profiles` (`bedrock.profiles.list`,
+  WS_PROTOCOL.md §7.6n), and *Custom*, which enables an edit box for a name.
+* **Minting.** `bedrock.token.generate` `{profile, region}` makes the server
+  spawn `python -m kodo.llms.bedrock._token_child` with `AWS_PROFILE` and
+  `AWS_REGION` in that child's environment. A child, because the generator
+  reads its choice from the environment and the server is one process shared
+  by every session: changing its own `os.environ` would race them. It also
+  keeps a slow `credential_process` or SSO refresh off the event loop, and
+  makes it killable (60 s limit).
+* **Keeping.** The server forgets the token. kodo-vsix stores it in SecretStorage
+  under `kodo.bedrock.token` as `{token, issuedAt, expiresAt, profile, region}`
+  (`extension/bedrock-token.ts`).
+* **Refreshing.** A per-window timer replaces the token at **75% of its
+  lifetime**, and `api_key.request` checks the same rule, in case a laptop slept
+  through the timer. The rule is `bedrock-token-policy.ts`. Replacing an aging
+  token that fails falls back on that token, since it still works; the Bedrock
+  tab shows the failure, one warning appears per streak of AWS failures, and the
+  timer retries every minute until the token expires.
+* **Using.** `BedrockPlugin` asks for the current token before **every LLM
+  call**. A plugin is resolved once per turn and one turn is many calls, so the
+  token it was built with can expire underneath it. The client is rebuilt only
+  when the token actually changed.
+
+Four invariants the code depends on, each found the hard way:
+
+1. **A token is good only for its own profile and region.** AWS accepts a
+   short-term key only in the region that generated it, so a stored token whose
+   `profile` or `region` differs from the settings is treated as absent, never
+   as a fallback. Changing either mints a new token and re-fetches the catalog.
+2. **Lifetime is measured, not assumed.** A token lasts for the shorter of the
+   requested hour and the AWS session behind it, so `_token_child.py` reports
+   `expires_at` from the credentials' `_expiry_time`. botocore has no public
+   accessor, so it is read defensively. A profile with 20 minutes of session
+   left refreshes at 15 minutes, not 45.
+3. **`AWS_PROFILE` alone does not select a profile.** botocore's `EnvProvider`
+   runs first, and only a session-level profile disables it, so
+   `AWS_ACCESS_KEY_ID` in the environment silently beats `AWS_PROFILE`; and
+   `AWS_DEFAULT_PROFILE` outranks `AWS_PROFILE`. `_token_mint.py` strips those
+   variables from the child's environment when a profile is chosen, and leaves
+   them alone for the default chain.
+4. **Clients authenticate per client, not per process.** AWS's documented
+   `AWS_BEARER_TOKEN_BEDROCK` is process-wide, which can't work in a shared
+   server. `kodo/llms/bedrock/_client.py` registers a token provider on a
+   private botocore session instead. It also sets throwaway credentials so
+   `create_client` doesn't walk the credential chain (a metadata-service probe on
+   every rebuild), and blanks the profile variable so a stale `AWS_PROFILE`
+   inherited from VS Code can't fail client creation with `ProfileNotFound`.
+
+Nothing mints unattended for a window that isn't using Bedrock
+(`isBedrockInUse`): the catalog auto-fetch runs on every `hello.ack`, and a user
+of another vendor must not end up talking to AWS. Upgrading deletes any stored
+Bedrock IAM keys from SecretStorage silently at activation
+(`cloudCredentials.forgetAllKeys`); the AWS keys themselves stay active in IAM
+until the user revokes them there.
+
+The **region is deliberately not stored as a secret**. It is not one, and
+`_resolve_plugin` already passes the whole settings dict to each vendor's plugin
+factory, so `bedrock_region` (doc/SETTINGS.md §2.2c, default `us-east-1`) is a
+plain setting with a plain dropdown, read fresh on every dispatch exactly like
+`meta_contributor_tier`. The minimum IAM policy is
+`bedrock:CallWithBearerToken` and `bedrock:InvokeModelWithResponseStream`, plus
+`bedrock:ListFoundationModels` and `bedrock:ListInferenceProfiles` for the
+catalog.
 
 **The catalog fetch needs credentials, so there is no background loop.**
 OpenRouter's `/models` endpoint is unauthenticated, which is what lets the
 server refresh it on a 12-hour TTL loop from startup. `ListFoundationModels`
-is a signed AWS call, and the server holds no credentials of its own — they
-are pulled per LLM dispatch over a *session's* response channel, which a
+is an authenticated AWS call, and the server holds no credentials of its own —
+they are pulled per LLM dispatch over a *session's* response channel, which a
 control-connection handler doesn't have. A server-side loop would therefore
 either fire a credential prompt at the user unprompted or silently do nothing.
 So the Bedrock refresh is **client-driven and carries its credentials with
 it**: `bedrock.models.refresh` `{api_key, region}` (WS_PROTOCOL.md §7.6i),
-sent by kodo-vsix from the tab's "Refresh model list" button, after a key is
-added, after a region change, and unattended on every `hello.ack` when the
-catalog is empty (`maybeRefreshBedrockCatalog`). That last path resolves the
-*active* key without the interactive add-a-key fallback, so a window with no
-Bedrock key configured is never nagged for one.
+sent by kodo-vsix from the tab's "Refresh model list" button, after a profile
+or region change, and unattended on every `hello.ack` when the catalog is empty
+(`maybeRefreshBedrockCatalog`). That last path does nothing unless the window is
+using Bedrock, so nobody else is ever nagged or sent to AWS.
 
 **The cache is region-scoped, and that is the invalidation mechanism.**
 `kodo/llms/_bedrock_catalog.py` caches to `~/.kodo/etc/bedrock-models.json`
@@ -646,9 +701,9 @@ prefix; the closest call, `qwen.qwen3-…` against Alibaba's `qwen`, does match
 and still costs nothing, since Alibaba's `compute_cost` returns `0.0` for a
 model id absent from its own table.
 
-**boto3 is synchronous, so the stream runs on a worker thread.** Every other
-plugin here uses a natively async SDK; boto3 has no async client (and
-`aioboto3` has no Converse support at all), while boto3 is already a declared
+**botocore is synchronous, so the stream runs on a worker thread.** Every other
+plugin here uses a natively async SDK; botocore has no async client (and
+`aioboto3` has no Converse support at all), while botocore is already a declared
 kodo dependency — so adding a second AWS SDK to avoid a thread would be the
 worse trade. `kodo/llms/bedrock/_stream.py` runs the blocking
 `converse_stream` call and its `EventStream` iteration on a

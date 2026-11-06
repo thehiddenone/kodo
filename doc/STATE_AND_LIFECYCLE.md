@@ -77,6 +77,21 @@
 >   venv, then show the error dialog. Once a `WsClient` has connected it never
 >   gives up (backoff capped at 10 s), and session tabs are kicked to
 >   reconnect whenever the control connection opens.
+>
+> **Missing-prerequisite preflight (2026-11-03).** The server `sys.exit(1)`s at
+> start-up when `git` is not on PATH (`_check_git_on_path`), and Amazon Linux
+> 2/2023 ships without git. On a fresh Remote-SSH host that exit looked like
+> any other start failure: the reconnect budget ran out, the venv was rebuilt,
+> and the final modal blamed the Python environment. The only line naming the
+> cause was in `server.out.log`. kodo-vsix now checks first
+> (`prerequisites.ts`, called by `ServerLauncher.launch` on the spawn path,
+> before any uv/venv work). The lookup mirrors `shutil.which`: a PATH scan,
+> never running `git`, because the macOS `/usr/bin/git` stub opens the
+> Command Line Tools installer when run. A miss throws
+> `MissingPrerequisiteError`. `launchKodoServer` routes it *around*
+> `handleServerStartFailure`, so it does not count as a failure and does not
+> retry or rebuild. It shows a non-modal error naming the host and the
+> OS-specific install command, with a **Retry** button that relaunches.
 
 This document covers how Kodo represents, persists, and recovers state across cold starts, interruptions, and normal operation. It assumes the file-native model from [CLAUDE.md](../CLAUDE.md) — sub-agents read and write the project's **real files** directly via `filesystem`/`edit_file`/`create_file`/`create_directory`/`read_file`; a per-file, append-only `.jsonl` evolution log (`kodo.guided_state`) tracks each document's revision/review history, with status always derived from the last line.
 

@@ -24,6 +24,7 @@ from huggingface_hub.errors import GatedRepoError
 
 from kodo.common import Envelope
 from kodo.llms import DEFAULT_BEDROCK_REGION, LocalLLMEntry
+from kodo.llms.bedrock import BedrockToken, BedrockTokenError
 from kodo.llms.llamacpp import LlamaInstall, LlamaServer, LlamaServerConfig, RunningServer
 from kodo.llms.local import LocalModelError, LocalModelManager, ModelRecord
 from kodo.llms.local_registry import (
@@ -639,6 +640,50 @@ async def test_bedrock_refresh_uses_the_request_credentials_and_default_region(
         "region": DEFAULT_BEDROCK_REGION,
     }
     assert calls == [("k", DEFAULT_BEDROCK_REGION)]
+
+
+async def test_bedrock_profiles_are_listed(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(f"{_APP}.list_bedrock_profiles", lambda: ["default", "work"])
+    assert await _request(ws, "bedrock.profiles.list") == {
+        "type": "bedrock.profiles.list.ack",
+        "profiles": ["default", "work"],
+    }
+
+
+async def test_bedrock_token_generate_passes_profile_and_region(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def _mint(profile: str, region: str) -> BedrockToken:
+        calls.append((profile, region))
+        return BedrockToken("bedrock-api-key-t", 100.0, 3700.0)
+
+    monkeypatch.setattr(f"{_APP}.mint_bedrock_token", _mint)
+    reply = await _request(ws, "bedrock.token.generate", profile="work", region="eu-west-1")
+    assert reply == {
+        "type": "bedrock.token.generate.ack",
+        "token": "bedrock-api-key-t",
+        "issued_at": 100.0,
+        "expires_at": 3700.0,
+    }
+    assert calls == [("work", "eu-west-1")]
+
+
+async def test_bedrock_token_generate_reports_a_failure_to_the_client(
+    ws: aiohttp.ClientWebSocketResponse, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _mint(_profile: str, _region: str) -> BedrockToken:
+        raise BedrockTokenError("The SSO session has expired")
+
+    monkeypatch.setattr(f"{_APP}.mint_bedrock_token", _mint)
+    reply = await _request(ws, "bedrock.token.generate", profile="", region="")
+    assert reply == {
+        "type": "bedrock.token.generate.ack",
+        "error": "The SSO session has expired",
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -223,7 +223,7 @@ def test_runtime_catalog_vendors_accept_any_model_id(tmp_path: Path) -> None:
 
 
 def test_bedrock_allows_its_regional_endpoint(tmp_path: Path) -> None:
-    env = {"AWS_ACCESS_KEY_ID": "a", "AWS_SECRET_ACCESS_KEY": "s", "AWS_REGION": "eu-west-1"}
+    env = {"AWS_BEARER_TOKEN_BEDROCK": "bedrock-api-key-t", "AWS_REGION": "eu-west-1"}
     model = BenchModel.resolve("bedrock/us.anthropic.claude-sonnet-4-6", env, tmp_path)
     assert model.allowed_hosts() == ["bedrock-runtime.eu-west-1.amazonaws.com"]
     assert set(model.kodo_env()) == set(env)

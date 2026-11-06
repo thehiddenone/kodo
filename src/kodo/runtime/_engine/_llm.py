@@ -57,7 +57,9 @@ from .._llm_selection import resolve_model_key
 from ._proto import EngineHost
 
 # Dotted plugin module (kodo.llms._cloud_registry's _CLOUD_VENDOR_MODULE
-# value) -> a (api_key, settings) constructor for that vendor's LLMPlugin.
+# value) -> a (api_key, settings, key_source) constructor for that vendor's
+# LLMPlugin. key_source re-reads the vendor's key: Bedrock's expires, and one
+# plugin serves a whole turn of LLM calls, so it needs the current one.
 # The full settings dict is passed (not just api_key) so a vendor whose
 # plugin needs more than the key -- Meta, for its meta_contributor_tier
 # account-level toggle, and Bedrock, whose AWS region is a non-secret
@@ -66,19 +68,21 @@ from ._proto import EngineHost
 # below. Adding a vendor here is
 # the last step after registering it in _cloud_registry.py and implementing
 # its plugin package.
-_VENDOR_PLUGIN_FACTORIES: dict[str, Callable[[str, dict[str, object]], LLMPlugin]] = {
-    "kodo.llms.anthropic": lambda api_key, _settings: ClaudePlugin(api_key),
-    "kodo.llms.openai": lambda api_key, _settings: GPTPlugin(api_key),
-    "kodo.llms.meta": lambda api_key, settings: MusePlugin(
+_VENDOR_PLUGIN_FACTORIES: dict[
+    str, Callable[[str, dict[str, object], Callable[[], Awaitable[str]]], LLMPlugin]
+] = {
+    "kodo.llms.anthropic": lambda api_key, _settings, _key_source: ClaudePlugin(api_key),
+    "kodo.llms.openai": lambda api_key, _settings, _key_source: GPTPlugin(api_key),
+    "kodo.llms.meta": lambda api_key, settings, _key_source: MusePlugin(
         api_key, contributor=bool(settings.get("meta_contributor_tier", False))
     ),
-    "kodo.llms.google": lambda api_key, _settings: GeminiPlugin(api_key),
-    "kodo.llms.alibaba": lambda api_key, _settings: QwenPlugin(api_key),
-    "kodo.llms.deepseek": lambda api_key, _settings: DeepSeekPlugin(api_key),
-    "kodo.llms.kimi": lambda api_key, _settings: KimiPlugin(api_key),
-    "kodo.llms.openrouter": lambda api_key, _settings: OpenRouterPlugin(api_key),
-    "kodo.llms.bedrock": lambda api_key, settings: BedrockPlugin(
-        api_key, str(settings.get("bedrock_region", DEFAULT_BEDROCK_REGION))
+    "kodo.llms.google": lambda api_key, _settings, _key_source: GeminiPlugin(api_key),
+    "kodo.llms.alibaba": lambda api_key, _settings, _key_source: QwenPlugin(api_key),
+    "kodo.llms.deepseek": lambda api_key, _settings, _key_source: DeepSeekPlugin(api_key),
+    "kodo.llms.kimi": lambda api_key, _settings, _key_source: KimiPlugin(api_key),
+    "kodo.llms.openrouter": lambda api_key, _settings, _key_source: OpenRouterPlugin(api_key),
+    "kodo.llms.bedrock": lambda api_key, settings, key_source: BedrockPlugin(
+        api_key, str(settings.get("bedrock_region", DEFAULT_BEDROCK_REGION)), key_source
     ),
 }
 
@@ -206,11 +210,13 @@ class LLMPlumbingMixin:
         if factory is None:
             raise RuntimeError(f"Unsupported cloud vendor: {vendor!r}")
 
-        key_result: ApiKey = await self._key_provider.get_key(vendor)
-        if key_result.error:
-            raise RuntimeError(f"API key request rejected: {key_result.error}")
+        async def current_key() -> str:
+            key_result: ApiKey = await self._key_provider.get_key(vendor)
+            if key_result.error:
+                raise RuntimeError(f"API key request rejected: {key_result.error}")
+            return key_result.api_key
 
-        plugin = factory(key_result.api_key, settings)
+        plugin = factory(await current_key(), settings, current_key)
         routing = LLMRouting(residence="cloud", vendor=vendor)
         return LoggingLLMPlugin(plugin, self._llm_logs_dir()), model_key, routing
 

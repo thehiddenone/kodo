@@ -45,10 +45,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-import boto3
 from botocore.config import Config
 
-from .bedrock import parse_bedrock_credentials
+from .bedrock import bearer_client, require_bedrock_token
 
 __all__ = [
     "BEDROCK_REGIONS",
@@ -286,18 +285,15 @@ def _backing_model(
     return None
 
 
-def _fetch_catalog(
-    access_key_id: str, secret_access_key: str, region: str
-) -> list[BedrockModelInfo]:
+def _fetch_catalog(token: str, region: str) -> list[BedrockModelInfo]:
     """Blocking control-plane fetch — run off the event loop by the caller."""
-    client = boto3.client(
+    client = bearer_client(
         _CONTROL_PLANE_SERVICE,
-        aws_access_key_id=access_key_id,
-        aws_secret_access_key=secret_access_key,
-        region_name=region,
+        token,
+        region,
         # Same no-SDK-retries rule as the runtime client (doc/LLM_GATEWAY.md);
         # a failed catalog fetch is non-fatal and simply keeps the old cache.
-        config=Config(retries={"max_attempts": 1, "mode": "standard"}),
+        Config(retries={"max_attempts": 1, "mode": "standard"}),
     )
     models = _foundation_models(client)
     known = {m.id: m for m in models}
@@ -322,8 +318,7 @@ async def refresh_bedrock_catalog(
 
     Args:
         kodo_dir: User-level ``~/.kodo`` directory.
-        api_key: The JSON IAM credential blob (see
-            :func:`kodo.llms.bedrock.parse_bedrock_credentials`).
+        api_key: The Bedrock bearer token, minted for *region*.
         region: AWS region to enumerate.
 
     Returns:
@@ -334,13 +329,7 @@ async def refresh_bedrock_catalog(
         :func:`kodo.llms.refresh_openrouter_catalog`.
     """
     try:
-        credentials = parse_bedrock_credentials(api_key)
-        models = await asyncio.to_thread(
-            _fetch_catalog,
-            credentials.access_key_id,
-            credentials.secret_access_key,
-            region,
-        )
+        models = await asyncio.to_thread(_fetch_catalog, require_bedrock_token(api_key), region)
     except Exception as exc:  # noqa: BLE001 — any credential/network/API failure is non-fatal
         _log.warning("Failed to fetch Bedrock model catalog for %s: %s", region, exc)
         return get_bedrock_catalog(kodo_dir, region)
