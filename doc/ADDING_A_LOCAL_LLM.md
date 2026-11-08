@@ -94,8 +94,9 @@ Settle these with the person making the change. Don't pick them silently:
   the same quantizer, and quote sizes. **Update 2026-11-07:** bartowski's
   newer repos (per-tensor layouts, from about b11716) have no `_XL` builds
   and no embedding-at-Q8_0 `_L` builds, so the large-model tail doesn't
-  exist there. Ornith15-122B ships IQ3_M/Q3_K_M/Q2_K instead
-  (`catalog/Ornith15-122B/README.md`). Pick the tail from the repo's actual
+  exist there. Ornith15-122B briefly shipped IQ3_M/Q3_K_M/Q2_K instead,
+  before its bartowski entries were dropped for a stale chat template (§8;
+  `catalog/Ornith15-122B/README.md`). Pick the tail from the repo's actual
   sizes, not its names (§8).
 - **The family slug (`base_llm`).** It's the group header kodo-vsix shows,
   and it keys the thinking tables. Offer the naming styles already in the
@@ -428,7 +429,8 @@ Each of these has cost a real change before:
   carry ornith-ai's revised one (`catalog/Ornith15-122B/README.md`). Diff each
   repo's template against the base repo's current `chat_template.jinja` and
   its history, and record which quants have which. kodo can't override an
-  entry's template.
+  entry's template, so Ornith15-122B dropped its bartowski entries and
+  ships unsloth's only.
 - **Truncated templates.** kodo's own header reader cuts strings at 2000
   characters, so read the full `tokenizer.chat_template` with a tool that
   doesn't (§2).

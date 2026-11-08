@@ -6,6 +6,17 @@ llama.cpp b11716. Added 2026-11-07. Like its `Ornith15-35B-A3B` sibling it
 is a sparse MoE on Qwen 3.5's hybrid architecture (`qwen3_5_moe` in the base
 `config.json`), only wider and deeper.
 
+**Update 2026-11-07 (later the same day): the family now ships only the ten
+unsloth quants.** It was first added with eight bartowski quants
+(`bartowski-ornith15-122b-*`, commit `55fb0c4`), and the unsloth ones joined
+them (`9915d16`). Then it turned out that bartowski's GGUFs embed ornith-ai's
+outdated chat template and unsloth's the revised one (see the update under
+Thinking). kodo can't override an entry's template, so the maintainer
+dropped the bartowski entries. They were never pushed, so no user had
+downloads or profiles keyed to those names, and the startup purge has nothing
+to delete. The sections below keep the original bartowski-based notes. Each
+says, where it matters, what holds for the unsloth entries.
+
 ## Architecture (verified from the GGUF headers)
 
 All eight shipped quants were read directly (2026-11-07):
@@ -70,8 +81,16 @@ added below embed the revised template, byte-identical to the current
 `chat_template.jinja`. kodo can't swap an entry's template, so the bartowski
 entries keep the older behavior. Prefer the unsloth builds when multi-turn
 reasoning matters. Both templates select the same Qwen3-Coder parser.
+That preference became the decision: the bartowski entries were removed
+(see the update at the top).
 
 ## llama.cpp pin: 11063
+
+**Update 2026-11-07:** the analysis below was done on bartowski's build, and
+it carries over to the unsloth entries. Points 1-4 depend on the
+architecture, the parser path and the tensor types, not on who quantized.
+The unsloth template reaches the same Qwen3-Coder parser, and its tensor
+types are all standard (see "Unsloth quants").
 
 bartowski built the quants at b11716, but nothing newer than b11063 is
 needed to run them correctly:
@@ -114,6 +133,11 @@ have put two rungs 3.5 GB apart, out of order. IQ3_M/Q3_K_M/Q2_K keeps the
 brings the model within reach of a 64 GB machine. Q4_K_M is the rung
 bartowski recommends. IQ2_M (46.4 GB) and smaller were left out.
 
+**Update 2026-11-07:** this ladder no longer ships; the bartowski entries
+were dropped (see the update at the top). The shipped ladder is unsloth's
+full set of ten, listed under "Unsloth quants". It runs from BF16 down to
+UD-IQ1_M (40.4 GB), with UD-Q4_K_XL (79.7 GB) as the general-purpose rung.
+
 ## Sampling (maintainer decision, 2026-11-07)
 
 ornith-ai's card gives two recipes: "For general tasks: temperature=1.0,
@@ -128,7 +152,8 @@ carry the coding one (`general.sampling.temp = 0.6`, `top_p = 0.95`,
 otherwise apply its own 0.05. Presence and repetition penalties are already
 at llama.cpp's neutral defaults. `Ornith15-35B-A3B` ships no sampling
 defaults (its headers say temp 1.0), so the two Ornith 1.5 MoE sizes
-sample differently out of the box.
+sample differently out of the box. The unsloth headers carry the same
+`general.sampling.*` values, so the unsloth entries ship the same defaults.
 
 ## Unsloth quants (added 2026-11-07)
 
@@ -168,4 +193,6 @@ below bartowski's smallest (Q2_K, 49.0 GB), down to a 48 GB machine.
 Running the model. The catalog checks, header reads and HEAD requests (all
 24 shard files return 200) prove that the files exist and are described
 correctly, not that the model behaves well in kodo's agent loop, nor the
-memory totals. The unsloth files return 200 too (34 shard files).
+memory totals. The unsloth files return 200 too (34 shard files). Since
+the bartowski entries were dropped, the unsloth files are the only ones
+shipped.
