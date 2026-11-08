@@ -1360,7 +1360,7 @@ so it is the floor for both families' heads. unsloth measured the BF16
 Flash-Next head as bigger *and slower* than Q8_0 with near-identical
 acceptance (66.5% vs 66.1%); it is still listed first because the list is
 ordered by precision, not by speed. The other MTP families (Ornith15-35B-A3B,
-Qwen35-9B, Qwen36-*, Ling-3.0-Flash, Qwen38-9B-Distill, Qwen38-35B-A3B-Distill) publish no standalone heads and keep the checkbox.
+Ornith15-122B, Qwen35-9B, Qwen36-*, Ling-3.0-Flash, Qwen38-9B-Distill, Qwen38-35B-A3B-Distill) publish no standalone heads and keep the checkbox.
 
 ### 4.0b The Model Importer agent — catalog files from a Hugging Face repo
 
@@ -1872,7 +1872,7 @@ before it must answer. Four mechanisms exist, keyed off `base_llm` (never
 
 - **`qwen_reasoning_budget`** (6 tiers: `minimal`, `low`, `medium`, `high`,
   `huge`, `unlimited`) — `Qwen36-27B`, `Qwen36-35B-A3B`, `Qwen35-9B`,
-  `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith15-35B-A3B`, `Ornith15-9B`,
+  `Gemma4-26B-A4B`, `Gemma4-31B`, `Ornith15-122B`, `Ornith15-35B-A3B`, `Ornith15-9B`,
   `Ornith10-35B-A3B`, `Ornith10-9B`, `Qwen38-27B`,
   `Laguna-S-2.1`, `Laguna-XS-2.1`, `Nanbeige4.2-3B`, `Nemotron35-30B-A3B`,
   `Ling-3.0-Flash`, `Granite-4.2-30B`, `Granite-4.2-8B`, `Qwen38-9B-Distill`,
@@ -2306,6 +2306,8 @@ confirming the metadata key directly, the same discipline the context-knob
 code above already insists on for `arch_key`.
 
 As of this writing, `mtp_supported=True` on: every Ornith15-35B-A3B entry,
+every Ornith15-122B entry (`qwen35moe.nextn_predict_layers = 1`, checked on
+all eight quants 2026-11-07),
 every Qwen35-9B entry, every Qwen36-35B-A3B entry, every Qwen38-27B entry,
 every Ling-3.0-Flash entry (`bailingmoe3.nextn_predict_layers = 1`, checked
 on all eight quants 2026-10-09), every Qwen38-9B-Distill entry
@@ -2328,7 +2330,8 @@ picker, §4.0a).
 **Which context knob an Ornith entry takes is decided by the GGUF's
 architecture key, not by the family name** — the 35B-A3B and 9B builds of
 one generation are not the same architecture. `Ornith-1.0-35B-A3B` and
-`Ornith-1.5-35B-A3B` record `general.architecture = qwen35moe` and take
+`Ornith-1.5-35B-A3B` (and, since 2026-11-07, `Ornith-1.5-122B`) record
+`general.architecture = qwen35moe` and take
 `context-qwen35moe`; `Ornith-1.0-9B` and `Ornith-1.5-9B` are *dense*, record
 `qwen35`, and take `context-qwen35`. `Ornith-1.0-9B` listed the MoE knob
 until 2026-09-18, and the symptom is worth remembering because nothing fails

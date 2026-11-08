@@ -33,6 +33,7 @@ QWEN_REASONING_BUDGET_FAMILY: frozenset[str] = frozenset(
         "Qwen35-9B",
         "Gemma4-26B-A4B",
         "Gemma4-31B",
+        "Ornith15-122B",
         "Ornith15-35B-A3B",
         "Ornith15-9B",
         "Ornith10-35B-A3B",
@@ -147,6 +148,13 @@ QWEN_TIER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
         "medium": 4096,
         "high": 8192,
         "huge": 16384,
+    },
+    "Ornith15-122B": {
+        "minimal": 256,
+        "low": 768,
+        "medium": 1536,
+        "high": 3072,
+        "huge": 6144,
     },
     "Ornith15-35B-A3B": {
         "minimal": 256,

@@ -108,8 +108,15 @@ read `common_chat_template_detect_params_init` in `common/chat.cpp` to see
 which dedicated parser the template's source matches (null means the
 autoparser). Run `git log <quant build>..HEAD -- common/chat.cpp
 common/chat-peg-parser.cpp common/peg-parser.cpp common/parsers/<parser>.cpp`,
-and use `git tag --contains <sha> | grep '^b' | sort -V | head -1` to get each
-fix's first build.
+and use `git tag --contains <sha> | grep -E '^b[0-9]+$' | sort -V | head -1`
+to get each fix's first build (a bare `'^b'` also matches llama.cpp's
+`backup/…` tags). When a sibling family's README already records a checked
+range, only the builds after it need reading.
+
+For check 4 (open upstream issues), `gh` may not be installed; the search API
+works without auth:
+`curl -s 'https://api.github.com/search/issues?q=repo:ggml-org/llama.cpp+"<Model-Name>"'`.
+Search the exact model name too, because a bare family word is fuzzy-matched.
 
 ## 4a. MTP heads
 

@@ -65,7 +65,7 @@ QWEN_CONTEXT_KNOB = make_yarn_context_knob(
 )
 
 #: Sparse-MoE Qwen builds (Qwen3.6-35B-A3B, Ornith10-35B-A3B,
-#: Ornith15-35B-A3B).
+#: Ornith15-35B-A3B, Ornith15-122B, Qwen38-35B-A3B-Distill).
 QWEN_MOE_CONTEXT_KNOB = make_yarn_context_knob(
     knob_id="context-qwen35moe",
     arch_key="qwen35moe",

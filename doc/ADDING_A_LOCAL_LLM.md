@@ -91,7 +91,12 @@ Settle these with the person making the change. Don't pick them silently:
   three-rung low-RAM tail. The tail is Q3_K_XL/IQ3_M/Q2_K_L on large models
   and Q3_K_L/IQ3_M/Q2_K on small ones, for the size reason in §8. Ornith 1.5
   and Ling-3.0-Flash follow it. Offer the closest existing family's ladder by
-  the same quantizer, and quote sizes.
+  the same quantizer, and quote sizes. **Update 2026-11-07:** bartowski's
+  newer repos (per-tensor layouts, from about b11716) have no `_XL` builds
+  and no embedding-at-Q8_0 `_L` builds, so the large-model tail doesn't
+  exist there. Ornith15-122B ships IQ3_M/Q3_K_M/Q2_K instead
+  (`catalog/Ornith15-122B/README.md`). Pick the tail from the repo's actual
+  sizes, not its names (§8).
 - **The family slug (`base_llm`).** It's the group header kodo-vsix shows,
   and it keys the thinking tables. Offer the naming styles already in the
   catalog: `Qwen38-27B`, `Ornith15-9B`, or dotted names like
@@ -397,7 +402,13 @@ Each of these has cost a real change before:
 - **`_L`/`_XL` quants are not smaller at small parameter counts.** They keep
   embedding/output tensors at Q8_0, which dominate a small model: Ornith 1.5
   9B's Q3_K_XL is 6.00 GB, larger than its own 5.91 GB Q4_K_M. Never copy a
-  quant name across sizes without checking bytes.
+  quant name across sizes without checking bytes. **Update 2026-11-07:** in
+  bartowski's per-tensor-layout repos (e.g. `bartowski/Ornith-1.5-122B-GGUF`,
+  made with b11716) the suffix means something else. `_S`/`_M`/`_L` are the
+  small/medium/large sizes of the base type (about 90/70/50 % of the body
+  kept at the base precision), `_XL` is gone, and an i-quant can be larger
+  than a K-quant of the same bit width: there, IQ3_M is 67.6 GB and Q3_K_L
+  64.2 GB. Read the repo's card and sizes before reusing a ladder.
 - **Vision models ship text-only.** `LocalLLMEntry` has no projector field,
   so `mmproj-*` companions can't be declared. Say so in the README. Wiring it
   would need a `_types.py` field, download wiring and a `--mmproj` launch arg.
