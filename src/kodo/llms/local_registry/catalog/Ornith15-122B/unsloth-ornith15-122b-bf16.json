@@ -1,0 +1,34 @@
+{
+  "description": "Ornith 1.5 122B BF16 by Unsloth",
+  "repo_id": "unsloth/Ornith-1.5-122B-GGUF",
+  "filename": "BF16/Ornith-1.5-122B-BF16-00001-of-00007.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "BF16",
+  "size_hint": "249 GB",
+  "llm_author": "Ornith AI",
+  "license_name": "MIT License",
+  "license_url": "https://opensource.org/license/mit",
+  "gpu_tip": "~255GB total at 128K context — Unsloth's full-precision build, in seven files. It is a sparse MoE (8 of 256 experts routed per token), so most of those weights sit idle on any given token: a 16GB GPU (e.g. RTX 4080) holds the always-on attention and shared layers at full speed while llama.cpp offloads the inactive experts to a 256GB DDR5 workstation kit. Q8_0 gets within a hair of it at about half the memory.",
+  "mac_tip": "Needs ~255GB — beyond every MacBook Pro and past a 256GB Mac Studio once macOS takes its share; only a 512GB M3 Ultra Mac Studio holds it.",
+  "context_window": 262144,
+  "llamacpp_version": 11063,
+  "min_memory": 256,
+  "memory": 384,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35moe",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {
+    "kv-cache": "f16",
+    "tail-culling": "none",
+    "temperature": "t06",
+    "nucleus-sampling": "k20-p095"
+  }
+}

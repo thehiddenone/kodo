@@ -2307,7 +2307,7 @@ code above already insists on for `arch_key`.
 
 As of this writing, `mtp_supported=True` on: every Ornith15-35B-A3B entry,
 every Ornith15-122B entry (`qwen35moe.nextn_predict_layers = 1`, checked on
-all eight quants 2026-11-07),
+all eight bartowski and all ten unsloth quants 2026-11-07),
 every Qwen35-9B entry, every Qwen36-35B-A3B entry, every Qwen38-27B entry,
 every Ling-3.0-Flash entry (`bailingmoe3.nextn_predict_layers = 1`, checked
 on all eight quants 2026-10-09), every Qwen38-9B-Distill entry

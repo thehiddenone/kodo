@@ -57,6 +57,20 @@ turn), and it serializes tool-call arguments with `tojson` for objects and
 arrays and `string` otherwise, where the 35B-A3B's does it the other way
 round. Neither changes which parser llama.cpp picks.
 
+**Update 2026-11-07 (same day):** the two-line difference is not a
+bartowski choice. It is a stale copy of ornith-ai's own template. ornith-ai
+revised `chat_template.jinja` on 2026-10-16 (commits `7b0a4adc` and
+`38c106ad`), and the card says the template was adjusted "to ensure
+consistency between training and inference". The revised template renders
+**every** past assistant turn with its `<think>…</think>` block, not just
+the turns after the last user message. `tokenizer_config.json` still carries
+the earlier template, and bartowski's GGUFs embed that one: it is
+byte-identical to `chat_template.jinja` at `6f3399b7`. The unsloth quants
+added below embed the revised template, byte-identical to the current
+`chat_template.jinja`. kodo can't swap an entry's template, so the bartowski
+entries keep the older behavior. Prefer the unsloth builds when multi-turn
+reasoning matters. Both templates select the same Qwen3-Coder parser.
+
 ## llama.cpp pin: 11063
 
 bartowski built the quants at b11716, but nothing newer than b11063 is
@@ -116,9 +130,42 @@ at llama.cpp's neutral defaults. `Ornith15-35B-A3B` ships no sampling
 defaults (its headers say temp 1.0), so the two Ornith 1.5 MoE sizes
 sample differently out of the box.
 
+## Unsloth quants (added 2026-11-07)
+
+The family also ships all ten quants of `unsloth/Ornith-1.5-122B-GGUF`, as
+the maintainer chose: BF16 (249 GB), Q8_0 (133 GB), UD-Q6_K_XL (114 GB),
+UD-Q5_K_XL (94.6 GB), UD-Q4_K_XL (79.7 GB), UD-Q3_K_XL (59.8 GB),
+UD-IQ3_XXS (49.5 GB), UD-Q2_K_XL (44.5 GB), UD-IQ2_XXS (42.0 GB) and
+UD-IQ1_M (40.4 GB). They sit beside the bartowski ladder, and the
+descriptions (`… by Unsloth`) tell them apart. BF16 and Q8_0 overlap
+bartowski's in size and precision. The UD-Q2_K_XL and smaller builds reach
+below bartowski's smallest (Q2_K, 49.0 GB), down to a 48 GB machine.
+
+- **Headers.** All ten were read on 2026-11-07, and they agree with
+  bartowski's on every key above: `qwen35moe`, 262144 context,
+  `nextn_predict_layers = 1` with no shared-target key, and the same
+  `general.sampling.*` values. So the entries carry the same knobs,
+  `mtp_supported: true`, sampling defaults (`kv-cache: f16` on BF16) and the
+  11063 pin. Their template is the revised one (see the update under
+  Thinking). It contains `<tool_call>`/`<function=`/`<parameter=` and none of
+  the earlier detectors' markers, so it gets the same Qwen3-Coder parser.
+- **Tensor types.** Only standard ggml types (F32, BF16, Q8_0, the K-quants
+  and the IQ1-IQ4 i-quants), all far older than the pin.
+- **Split layout.** unsloth's split quants put metadata only in the first
+  shard (`gguf.tensor_count = 0`, `split.tensors.count = 899`) and the
+  tensors in the rest. llama.cpp loads that layout normally. Point
+  `gguf_header.py --tensors` at shard 2 to see the tensor list; its
+  self-containment verdict only means something for MTP heads.
+- **MTP.** The repo has no standalone heads; the built-in layer serves.
+  Unsloth's card doesn't say at what precision the MTP layer is stored.
+- **Memory.** Sized with the same header math, file + ~4 GB (BF16
+  + ~5.5 GB). Not measured.
+- **Build.** Unsloth's card names no llama.cpp build. The repo was uploaded
+  2026-10-20.
+
 ## Not verified
 
 Running the model. The catalog checks, header reads and HEAD requests (all
 24 shard files return 200) prove that the files exist and are described
 correctly, not that the model behaves well in kodo's agent loop, nor the
-memory totals.
+memory totals. The unsloth files return 200 too (34 shard files).

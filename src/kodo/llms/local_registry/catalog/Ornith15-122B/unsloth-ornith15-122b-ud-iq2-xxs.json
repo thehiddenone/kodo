@@ -1,0 +1,33 @@
+{
+  "description": "Ornith 1.5 122B UD-IQ2_XXS by Unsloth",
+  "repo_id": "unsloth/Ornith-1.5-122B-GGUF",
+  "filename": "Ornith-1.5-122B-UD-IQ2_XXS.gguf",
+  "quant_author": "Unsloth",
+  "quant_type": "UD-IQ2_XXS",
+  "size_hint": "42.0 GB",
+  "llm_author": "Ornith AI",
+  "license_name": "MIT License",
+  "license_url": "https://opensource.org/license/mit",
+  "gpu_tip": "~46GB total at 128K context. A very aggressive 2-bit i-quant: expect visibly weaker output than the 3-bit builds. An 8GB GPU (e.g. RTX 4060) plus a 48GB DDR5 kit runs it via expert offloading.",
+  "mac_tip": "Needs ~46GB — right at the limit of a 48GB MacBook Pro (M4 Pro/Max or M5 Pro/Max); a 64GB config is the safe choice.",
+  "context_window": 262144,
+  "llamacpp_version": 11063,
+  "min_memory": 48,
+  "memory": 64,
+  "mtp_supported": true,
+  "knobs": [
+    "kv-cache",
+    "tail-culling",
+    "temperature",
+    "gpu-layers",
+    "cpu-moe",
+    "nucleus-sampling",
+    "context-qwen35moe",
+    "spec-decoding-mtp"
+  ],
+  "knob_defaults": {
+    "tail-culling": "none",
+    "temperature": "t06",
+    "nucleus-sampling": "k20-p095"
+  }
+}

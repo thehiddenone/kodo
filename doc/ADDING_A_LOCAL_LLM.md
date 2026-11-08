@@ -421,6 +421,14 @@ Each of these has cost a real change before:
 - **Renaming a shipped `name` deletes users' downloads** at their next start
   (§4 above, [LLM_REGISTRY.md](LLM_REGISTRY.md) §4.1b). Renaming a family
   directory also breaks startup until `_thinking.py` follows (§5).
+- **Quant repos of one model can embed different chat templates.** The
+  converter takes `tokenizer_config.json`'s `chat_template`, and a lab can
+  fix `chat_template.jinja` without updating it. bartowski's Ornith 1.5 122B
+  GGUFs carry the pre-fix template, which drops past reasoning; unsloth's
+  carry ornith-ai's revised one (`catalog/Ornith15-122B/README.md`). Diff each
+  repo's template against the base repo's current `chat_template.jinja` and
+  its history, and record which quants have which. kodo can't override an
+  entry's template.
 - **Truncated templates.** kodo's own header reader cuts strings at 2000
   characters, so read the full `tokenizer.chat_template` with a tool that
   doesn't (§2).
